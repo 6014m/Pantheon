@@ -2296,12 +2296,8 @@ function module.register()
         settings = {
             { type = "toggle", name = "Hold mode (vs toggle)", default = false,
               onChange = function(v) targetSelect.setHoldMode(v) end },
-            { type = "toggle", name = "Realistic FOV (60 deg)", default = false,
-              onChange = function(v) state.realisticEnabled = v end },
             { type = "toggle", name = "Skip dead / shielded", default = true,
               onChange = function(v) state.checkHealthEnabled = v end },
-            { type = "toggle", name = "Require visibility (raycast)", default = false,
-              onChange = function(v) state.visibilityCheckEnabled = v end },
             { type = "slider", name = "Range (0 = inf)",
               min = 0, max = 500, step = 5, default = 0,
               onChange = function(v) state.rangeLimit = v end },
