@@ -42,7 +42,43 @@ local self_state = {
     hookInstalled = false,
     blockedWrites = 0,
     lastBlockedLog = 0,
+    weldCheckLast = 0,
+    weldCheckResult = false,
 }
+
+-- Cached check: are we welded (via Weld/WeldConstraint/Motor6D) to a part on
+-- a different character? Battlegrounds-style grab moves weld the attacker to
+-- the victim; if we then rotate our own root via shiftlock, the weld drags
+-- the victim around too -- which is what the user was seeing.
+local function isLocalWeldedToOther()
+    local char = self_state.character
+    if not char then return false end
+
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("Weld") or d:IsA("WeldConstraint") or d:IsA("Motor6D") then
+            local p0, p1 = d.Part0, d.Part1
+            for _, p in ipairs({ p0, p1 }) do
+                if p and p.Parent and not p:IsDescendantOf(char) then
+                    local m = p:FindFirstAncestorOfClass("Model")
+                    if m and m ~= char and m:FindFirstChildOfClass("Humanoid") then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function weldedToOther()
+    -- 50ms cache so we don't walk descendants every frame.
+    local now = os.clock()
+    if now - self_state.weldCheckLast > 0.05 then
+        self_state.weldCheckResult = isLocalWeldedToOther()
+        self_state.weldCheckLast = now
+    end
+    return self_state.weldCheckResult
+end
 
 local function lp() return Players.LocalPlayer end
 
@@ -456,6 +492,10 @@ local function step()
     if self_state.externalSkipRotation and self_state.externalSkipRotation() then
         return
     end
+
+    -- Skip the root.CFrame write while we're welded to another character
+    -- (grab moves, etc.) so we don't drag them around with us.
+    if weldedToOther() then return end
 
     local cam = workspace.CurrentCamera
     if not cam then return end
