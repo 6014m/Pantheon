@@ -35,6 +35,9 @@ local state = {
     -- Camera lock
     lockHeightOffset       = 0,
 
+    -- Swap target hotkey
+    swap_enabled           = true,
+
     -- Camera resistance modifier: deadzone-then-lerp toward target
     resistance_enabled     = false,
     resistance_threshold   = 5,    -- degrees of free-aim cone around target

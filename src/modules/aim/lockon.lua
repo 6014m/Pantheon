@@ -122,6 +122,17 @@ local function cameraStep()
     cam.CFrame = CFrame.new(camPos, camPos + dir)
 end
 
+-- Cycle to the next-best target (excluding the current one).
+function LockOn.swapTarget()
+    if not state.swap_enabled then return end
+    if not state.lockon_enabled or not state.lockon_locked then return end
+    local next_ = targeting.getBestTarget(state.lockon_target)
+    if next_ then
+        state.setTarget(next_, "player")
+        s.lastDir = nil
+    end
+end
+
 -- Called by the central keybind dispatcher on key press.
 function LockOn.hotkeyPress()
     if not state.lockon_enabled then return end

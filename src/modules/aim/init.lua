@@ -48,7 +48,7 @@ function module.register()
         id           = "aim.lockon",
         name         = "Lock-On",
         default      = false,
-        defaultKey   = Enum.KeyCode.E,
+        defaultKey   = Enum.KeyCode.X,
         onToggle     = function(v) lockon.setEnabled(v) end,
         onKey        = function() lockon.hotkeyPress()   end,
         onKeyRelease = function() lockon.hotkeyRelease() end,
@@ -65,6 +65,16 @@ function module.register()
               min = 0, max = 500, step = 5, default = 0,
               onChange = function(v) state.rangeLimit = v end },
         },
+    }).root)
+
+    -- Swap Target -------------------------------------------------------------
+    cat:add(feature.declare({
+        id         = "aim.swap_target",
+        name       = "Swap Target",
+        default    = true,
+        defaultKey = Enum.KeyCode.C,
+        onToggle   = function(v) state.swap_enabled = v end,
+        onKey      = function() lockon.swapTarget() end,
     }).root)
 
     -- Resistance --------------------------------------------------------------

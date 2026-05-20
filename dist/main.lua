@@ -1168,6 +1168,9 @@ local state = {
     -- Camera lock
     lockHeightOffset       = 0,
 
+    -- Swap target hotkey
+    swap_enabled           = true,
+
     -- Camera resistance modifier: deadzone-then-lerp toward target
     resistance_enabled     = false,
     resistance_threshold   = 5,    -- degrees of free-aim cone around target
@@ -1925,6 +1928,17 @@ local function cameraStep()
     cam.CFrame = CFrame.new(camPos, camPos + dir)
 end
 
+-- Cycle to the next-best target (excluding the current one).
+function LockOn.swapTarget()
+    if not state.swap_enabled then return end
+    if not state.lockon_enabled or not state.lockon_locked then return end
+    local next_ = targeting.getBestTarget(state.lockon_target)
+    if next_ then
+        state.setTarget(next_, "player")
+        s.lastDir = nil
+    end
+end
+
 -- Called by the central keybind dispatcher on key press.
 function LockOn.hotkeyPress()
     if not state.lockon_enabled then return end
@@ -2022,7 +2036,7 @@ function module.register()
         id           = "aim.lockon",
         name         = "Lock-On",
         default      = false,
-        defaultKey   = Enum.KeyCode.E,
+        defaultKey   = Enum.KeyCode.X,
         onToggle     = function(v) lockon.setEnabled(v) end,
         onKey        = function() lockon.hotkeyPress()   end,
         onKeyRelease = function() lockon.hotkeyRelease() end,
@@ -2039,6 +2053,16 @@ function module.register()
               min = 0, max = 500, step = 5, default = 0,
               onChange = function(v) state.rangeLimit = v end },
         },
+    }).root)
+
+    -- Swap Target -------------------------------------------------------------
+    cat:add(feature.declare({
+        id         = "aim.swap_target",
+        name       = "Swap Target",
+        default    = true,
+        defaultKey = Enum.KeyCode.C,
+        onToggle   = function(v) state.swap_enabled = v end,
+        onKey      = function() lockon.swapTarget() end,
     }).root)
 
     -- Resistance --------------------------------------------------------------
