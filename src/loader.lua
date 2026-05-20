@@ -1,0 +1,51 @@
+-- Pantheon dev loader.
+-- Fetches each src/*.lua live with a cache-bust query, assembles the same
+-- require shim the bundle uses, and boots from src/init.lua.
+-- For releases, users should load dist/main.lua instead.
+
+local REPO_RAW = "https://raw.githubusercontent.com/6014m/Pantheon/main/"
+
+local _MODULES, _LOADED = {}, {}
+
+local function require_(name)
+    if _LOADED[name] ~= nil then return _LOADED[name] end
+    local m = _MODULES[name]
+    if not m then error("[Pantheon] module not found: " .. tostring(name)) end
+    _LOADED[name] = true
+    local r = m()
+    _LOADED[name] = (r == nil) and true or r
+    return _LOADED[name]
+end
+
+local function fetch(rel)
+    return game:HttpGet(REPO_RAW .. "src/" .. rel .. "?v=" .. tostring(tick()), true)
+end
+
+local function loadModule(name, rel)
+    local src = fetch(rel)
+    local chunk, err = loadstring(src, "=[Pantheon:" .. name .. "]")
+    if not chunk then
+        error("[Pantheon] compile failed for " .. name .. ": " .. tostring(err))
+    end
+    local penv = setmetatable({ require = require_ }, { __index = getfenv() })
+    setfenv(chunk, penv)
+    _MODULES[name] = chunk
+end
+
+local files = {
+    { "core.env",        "core/env.lua" },
+    { "core.signal",     "core/signal.lua" },
+    { "core.log",        "core/log.lua" },
+    { "core.persist",    "core/persist.lua" },
+    { "ui.theme",        "ui/theme.lua" },
+    { "ui.window",       "ui/window.lua" },
+    { "ui.components",   "ui/components.lua" },
+    { "ui.notify",       "ui/notify.lua" },
+    { "games.registry",  "games/registry.lua" },
+    { "modules.example", "modules/example.lua" },
+    { "init",            "init.lua" },
+}
+
+for _, e in ipairs(files) do loadModule(e[1], e[2]) end
+
+return require_("init")
