@@ -1769,6 +1769,11 @@ local self_state = {
     lastBlockedLog = 0,
     weldCheckLast = 0,
     weldCheckResult = false,
+    -- After Pantheon is disabled, hold the released state for this many
+    -- seconds even though shiftlock_enabled is false. Prevents the half-tick
+    -- where the game's shiftlock re-locks before we've finished writing
+    -- Default + AutoRotate=true.
+    releaseCooldownUntil = 0,
 }
 
 -- Cached check: are we welded (via Weld/WeldConstraint/Motor6D) to a part on
@@ -1975,9 +1980,14 @@ local function installMouseBehaviorHook()
 
     local hookFn = function(self, key, value)
         -- killForeign behaviour is gated on Pantheon's shiftlock master toggle.
-        -- When Pantheon shiftlock is OFF, the hook is a pass-through and the
-        -- game's normal shiftlock works again.
-        if state.shiftlock_enabled and state.killForeign and self == UserInputService then
+        -- When Pantheon shiftlock is OFF the hook becomes a pass-through and
+        -- the game's normal shiftlock works again. During the brief
+        -- release-cooldown after disable we still block foreign writes so
+        -- the hand-off doesn't flicker.
+        local inCooldown = os.clock() < self_state.releaseCooldownUntil
+        if state.killForeign
+           and (state.shiftlock_enabled or inCooldown)
+           and self == UserInputService then
             local block = false
             if key == "MouseBehavior" then
                 local wanted = state.shiftlock_active
@@ -2145,12 +2155,16 @@ function Shiftlock.setEnabled(v)
         if state.killForeign then sweepForeigns("enable") end
     else
         Shiftlock.forceOff()
-        -- Restore everything we touched so the game's normal shiftlock can
-        -- take over: re-enable scripts we disabled and hand DevEnableMouseLock
-        -- back to the game.
-        local n = reEnableForeignScripts()
-        if n > 0 then log.info("shiftlock: re-enabled " .. n .. " script(s) on disable") end
-        pcall(function() lp().DevEnableMouseLock = true end)
+        -- Hold the released state for half a second so the game's still-active
+        -- shiftlock script doesn't race us back into locked-state during the
+        -- transition. After the cooldown we hand control fully back -- the
+        -- game's shiftlock script then drives the cursor naturally.
+        --
+        -- DELIBERATELY NOT setting DevEnableMouseLock = true: that re-engages
+        -- Roblox's built-in MouseLockController, which is NOT what the user
+        -- wants. The game's own shiftlock script (which we never disabled)
+        -- is what should run.
+        self_state.releaseCooldownUntil = os.clock() + 0.5
     end
 end
 
@@ -2164,13 +2178,13 @@ local function step()
     -- enabled and currently active.
     local shouldLock = state.shiftlock_enabled and state.shiftlock_active
 
-    -- ===== pin pass (only while Pantheon's shiftlock is enabled) =====
+    -- ===== pin pass =====
     -- Forces all four shiftlock-related properties to our desired state every
-    -- frame so foreign scripts can't ghost-control them. Gated on
-    -- shiftlock_enabled so that disabling Pantheon's shiftlock hands control
-    -- back to the game's normal shiftlock (otherwise the pin would keep
-    -- writing Default and the game's lock wouldn't work).
-    if state.shiftlock_enabled and state.killForeign then
+    -- frame so foreign scripts can't ghost-control them. Runs when Pantheon
+    -- is enabled, OR briefly after disable (releaseCooldownUntil) so the
+    -- released state actually holds during the hand-off back to the game.
+    local inCooldown = os.clock() < self_state.releaseCooldownUntil
+    if state.killForeign and (state.shiftlock_enabled or inCooldown) then
         local hum = self_state.humanoid
 
         if hum then
