@@ -1,12 +1,7 @@
 -- Draggable category container. The outline itself is hex-angled at all four
--- corners (60-degree chamfer = hexagon interior angle). The shape is built in
--- two passes:
---   1. Row-stack: stacked horizontal strips whose width tapers along the
---      60-degree slope, drawing the FILL.
---   2. Anti-aliased diagonal overlays: each chamfered edge gets a rotated
---      rectangle laid directly on top of it. Rotated frame edges in Roblox
---      ARE anti-aliased (axis-aligned frame edges are not), so the rotated
---      overlay smooths the stairsteps visible in pass 1.
+-- corners (60-degree chamfer = hexagon interior angle). The shape is built as
+-- a row-stack: stacked horizontal strips whose width tapers along the
+-- 60-degree slope.
 --
 -- Layout (vertical stack via UIListLayout):
 --     /===========\        <- top chamfered region (accent, header)
@@ -16,6 +11,11 @@
 --   |               |
 --    \             /       <- bottom chamfered region (theme.bg)
 --     \===========/
+--
+-- Larger chamfer values picked so the hex shape reads obviously despite the
+-- inherent pixel-step on the diagonals (Roblox UI doesn't anti-alias
+-- axis-aligned frame edges; we accept that rather than overlay rotated
+-- rectangles, which read as a separate piece sitting on top of the stack).
 
 local theme = require("ui.theme")
 
@@ -26,64 +26,22 @@ Container.__index = Container
 
 local nextIndex = 0
 
--- Chamfer geometry — these give a 60-degree slope (= regular hex angle).
-local CHAMFER_Y   = 24
-local CHAMFER_X   = 14            -- = round(CHAMFER_Y / sqrt(3))
-local HEADER_FLAT = 16
+local CHAMFER_Y   = 32                                  -- bigger chamfer = more obvious hex
+local CHAMFER_X   = math.floor(CHAMFER_Y / math.sqrt(3) + 0.5)  -- = 18, 60-degree slope
+local HEADER_FLAT = 14
 
 local function buildChamferRegion(parent, totalW, chamferY, chamferX, color, mirror)
-    -- ---------- pass 1: row-stack fill ----------
     for y = 0, chamferY - 1 do
         local pct = (y + 0.5) / chamferY
         if mirror then pct = 1 - pct end
         local stripW = math.floor(totalW - 2 * chamferX * (1 - pct) + 0.5)
         local strip = Instance.new("Frame")
-        -- 2px tall = 1px overlap between adjacent strips so the fill has no gaps.
-        strip.Size = UDim2.fromOffset(stripW, 2)
+        strip.Size = UDim2.fromOffset(stripW, 2)  -- 1px overlap with neighbour to avoid gaps
         strip.Position = UDim2.fromOffset(totalW * 0.5, y)
         strip.AnchorPoint = Vector2.new(0.5, 0)
         strip.BackgroundColor3 = color
         strip.BorderSizePixel = 0
         strip.Parent = parent
-    end
-
-    -- ---------- pass 2: anti-aliased diagonal overlay ----------
-    local hyp = math.sqrt(chamferX * chamferX + chamferY * chamferY)
-    local angleDeg = math.deg(math.atan2(chamferY, chamferX))  -- ~60.0 for our ratio
-
-    local function placeEdge(midX, midY, rotation)
-        local edge = Instance.new("Frame")
-        -- A rotated rectangle laid over the diagonal. The long-axis edges of
-        -- this rectangle (the diagonals as seen on screen) get the Roblox
-        -- rotated-edge anti-aliasing pass, which is what smooths the
-        -- row-stack stairsteps below it. The 4px thickness extends ~2px on
-        -- each side of the ideal diagonal — enough to cover the stairsteps
-        -- and small enough that the tiny intrusion into the cut-corner area
-        -- isn't visible.
-        edge.Size = UDim2.fromOffset(hyp + 4, 4)
-        edge.AnchorPoint = Vector2.new(0.5, 0.5)
-        edge.Position = UDim2.fromOffset(midX, midY)
-        edge.Rotation = rotation
-        edge.BackgroundColor3 = color
-        edge.BorderSizePixel = 0
-        edge.Parent = parent
-    end
-
-    -- Diagonals run from corner to corner of each region. Each diagonal's
-    -- screen-space angle is angleDeg or 180-angleDeg depending on which
-    -- corner of which region.
-    if not mirror then
-        -- Top region: narrow up top, full width at bottom.
-        --   left edge:  (chamferX, 0) -> (0, chamferY)        -> 180 - angleDeg
-        --   right edge: (W-chamferX, 0) -> (W, chamferY)      -> angleDeg
-        placeEdge(chamferX / 2,         chamferY / 2, 180 - angleDeg)
-        placeEdge(totalW - chamferX / 2, chamferY / 2, angleDeg)
-    else
-        -- Bottom region: full width up top, narrow at bottom.
-        --   left edge:  (0, 0) -> (chamferX, chamferY)        -> angleDeg
-        --   right edge: (W, 0) -> (W-chamferX, chamferY)      -> 180 - angleDeg
-        placeEdge(chamferX / 2,         chamferY / 2, angleDeg)
-        placeEdge(totalW - chamferX / 2, chamferY / 2, 180 - angleDeg)
     end
 end
 
@@ -110,7 +68,7 @@ function Container.new(parent, name)
     rootList.FillDirection = Enum.FillDirection.Vertical
     rootList.SortOrder = Enum.SortOrder.LayoutOrder
 
-    -- ============= TOP: chamfered header (accent) =============
+    -- TOP: chamfered header
     local header = Instance.new("Frame")
     header.Name = "Header"
     header.Size = UDim2.new(1, 0, 0, HEADER_H)
@@ -145,7 +103,7 @@ function Container.new(parent, name)
     dragHandle.ZIndex = 8
     dragHandle.Parent = header
 
-    -- ============= MIDDLE: body (dark, holds features) =============
+    -- MIDDLE: body
     local body = Instance.new("Frame")
     body.Name = "Body"
     body.Size = UDim2.new(1, 0, 0, 0)
@@ -166,7 +124,7 @@ function Container.new(parent, name)
     featuresList.SortOrder = Enum.SortOrder.LayoutOrder
     featuresList.Padding = UDim.new(0, 1)
 
-    -- ============= BOTTOM: chamfered region (dark, mirror of top) =============
+    -- BOTTOM: chamfered region (mirror of top, body-colored)
     local bottom = Instance.new("Frame")
     bottom.Name = "Bottom"
     bottom.Size = UDim2.new(1, 0, 0, BOTTOM_H)
