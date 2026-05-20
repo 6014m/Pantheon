@@ -32,18 +32,25 @@ local function loadModule(name, rel)
     _MODULES[name] = chunk
 end
 
+-- Keep in sync with BUILD_ORDER in tools/build.py
 local files = {
-    { "core.env",        "core/env.lua" },
-    { "core.signal",     "core/signal.lua" },
-    { "core.log",        "core/log.lua" },
-    { "core.persist",    "core/persist.lua" },
-    { "ui.theme",        "ui/theme.lua" },
-    { "ui.window",       "ui/window.lua" },
-    { "ui.components",   "ui/components.lua" },
-    { "ui.notify",       "ui/notify.lua" },
-    { "games.registry",  "games/registry.lua" },
-    { "modules.example", "modules/example.lua" },
-    { "init",            "init.lua" },
+    { "core.env",                "core/env.lua" },
+    { "core.signal",             "core/signal.lua" },
+    { "core.log",                "core/log.lua" },
+    { "core.persist",            "core/persist.lua" },
+    { "ui.theme",                "ui/theme.lua" },
+    { "ui.window",               "ui/window.lua" },
+    { "ui.components",           "ui/components.lua" },
+    { "ui.notify",               "ui/notify.lua" },
+    { "games.registry",          "games/registry.lua" },
+    { "modules.aim.state",       "modules/aim/state.lua" },
+    { "modules.aim.targeting",   "modules/aim/targeting.lua" },
+    { "modules.aim.highlight",   "modules/aim/highlight.lua" },
+    { "modules.aim.shiftlock",   "modules/aim/shiftlock.lua" },
+    { "modules.aim.lockon_plus", "modules/aim/lockon_plus.lua" },
+    { "modules.aim.lockon",      "modules/aim/lockon.lua" },
+    { "modules.aim.init",        "modules/aim/init.lua" },
+    { "init",                    "init.lua" },
 }
 
 for _, e in ipairs(files) do loadModule(e[1], e[2]) end

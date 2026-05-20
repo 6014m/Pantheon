@@ -9,6 +9,7 @@ generates dist/main.lua with a tiny require shim. Run from anywhere:
 from pathlib import Path
 import sys
 
+# Keep in sync with the `files` table in src/loader.lua
 BUILD_ORDER = [
     "core/env",
     "core/signal",
@@ -19,7 +20,13 @@ BUILD_ORDER = [
     "ui/components",
     "ui/notify",
     "games/registry",
-    "modules/example",
+    "modules/aim/state",
+    "modules/aim/targeting",
+    "modules/aim/highlight",
+    "modules/aim/shiftlock",
+    "modules/aim/lockon_plus",
+    "modules/aim/lockon",
+    "modules/aim/init",
     "init",
 ]
 

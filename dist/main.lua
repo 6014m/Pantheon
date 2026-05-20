@@ -715,51 +715,886 @@ end
 return registry
 end
 
-_MODULES["modules.example"] = function()
--- Example universal module: walk speed / jump power / notify demo.
--- Acts as a template for new modules and a smoke test for the UI primitives.
+_MODULES["modules.aim.state"] = function()
+-- Shared state for the aim-assist subsystem.
+-- Targeting writes the target; lockon writes the locked/held flags; lockon+ and
+-- highlight read. All sub-modules access this single table by reference.
 
-local components = require("ui.components")
-local notify     = require("ui.notify")
+local Signal = require("core.signal")
+
+local state = {
+    -- Lock-on
+    lockon_enabled     = false,
+    lockon_held        = false,
+    lockon_locked      = false,
+    lockon_target      = nil,
+    lockon_target_type = nil, -- "player" or "npc"
+
+    -- Targeting options
+    realisticEnabled       = false,
+    checkHealthEnabled     = true,
+    visibilityCheckEnabled = false,
+    rangeLimit             = 0,  -- 0 = infinite
+
+    -- Highlight options
+    highlightEnabled       = true,
+    highlightSecondEnabled = false,
+    selfFadeEnabled        = false,
+
+    -- LockOn+ options
+    lockonPlusEnabled      = false,
+    bgSafeEnabled          = true,
+
+    -- Shiftlock options
+    shiftlock_enabled      = false,
+    shiftlock_active       = false,
+    killForeign            = true,
+
+    -- Friendlies map (UserId -> true). Other systems (team filters, party
+    -- modules) can mutate this freely; targeting reads at runtime.
+    friendlies = {},
+
+    -- Signals
+    onTargetChanged = Signal.new(),
+    onLockChanged   = Signal.new(),
+}
+
+function state.setTarget(target, type_)
+    if state.lockon_target ~= target then
+        state.lockon_target = target
+        state.lockon_target_type = type_
+        state.onTargetChanged:Fire(target, type_)
+    end
+end
+
+function state.setLocked(v)
+    v = v and true or false
+    if state.lockon_locked ~= v then
+        state.lockon_locked = v
+        state.onLockChanged:Fire(v)
+    end
+end
+
+function state.isFriendly(plr)
+    if not plr or not plr.UserId then return false end
+    return state.friendlies[plr.UserId] == true
+end
+
+return state
+end
+
+_MODULES["modules.aim.targeting"] = function()
+-- Target picking. Ports LockOnTargetingModule. Pure — does not mutate aim state.
+
+local state = require("modules.aim.state")
+
+local Players   = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+
+local Targeting = {}
+
+local function rootOf(char)
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function isInFront(root)
+    if not state.realisticEnabled then return true end
+    local cam = Workspace.CurrentCamera
+    if not cam then return true end
+    local camCF = cam.CFrame
+    local toTarget = root.Position - camCF.Position
+    local mag = toTarget.Magnitude
+    if mag <= 0.01 then return false end
+    return (toTarget / mag):Dot(camCF.LookVector) >= math.cos(math.rad(60))
+end
+
+local function isAlive(char)
+    if not char then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return false end
+    if state.checkHealthEnabled then
+        if hum.Health <= 0 then return false end
+        if char:FindFirstChildOfClass("ForceField") then return false end
+    end
+    return true
+end
+
+local function isVisible(plr)
+    local char = plr.Character
+    local root = rootOf(char)
+    if not root then return false end
+    local cam = Workspace.CurrentCamera
+    if not cam then return true end
+
+    local origin = cam.CFrame.Position
+    local direction = root.Position - origin
+    if direction.Magnitude <= 0.01 then return true end
+
+    local ignoreList = { Players.LocalPlayer.Character }
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Blacklist
+    params.FilterDescendantsInstances = ignoreList
+
+    while true do
+        local result = Workspace:Raycast(origin, direction, params)
+        if not result then return true end
+
+        local hit = result.Instance
+        if hit:IsDescendantOf(char) then return true end
+
+        if hit:IsA("BasePart") and (hit.Transparency or 0) > 0.4 and not hit.CanCollide then
+            -- Punch through transparent non-colliding parts (glass, decorative)
+            table.insert(ignoreList, hit)
+            params.FilterDescendantsInstances = ignoreList
+            local dirUnit = direction.Unit
+            origin = result.Position + dirUnit * 0.05
+            direction = root.Position - origin
+            if direction.Magnitude <= 0.01 then return true end
+        else
+            return false
+        end
+    end
+end
+
+function Targeting.getBestTarget(exclude)
+    local localPlayer = Players.LocalPlayer
+    local myRoot = rootOf(localPlayer.Character)
+    if not myRoot then return nil end
+
+    local visCheck = state.visibilityCheckEnabled
+    local closestPlr, closestDist = nil, math.huge
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= localPlayer and plr ~= exclude and not state.isFriendly(plr) then
+            local char = plr.Character
+            local root = rootOf(char)
+            if root and isInFront(root) and isAlive(char) and (not visCheck or isVisible(plr)) then
+                local dist = (root.Position - myRoot.Position).Magnitude
+                if (state.rangeLimit <= 0 or dist <= state.rangeLimit) and dist < closestDist then
+                    closestDist = dist
+                    closestPlr  = plr
+                end
+            end
+        end
+    end
+    return closestPlr
+end
+
+return Targeting
+end
+
+_MODULES["modules.aim.highlight"] = function()
+-- Target highlights + optional self-fade. Ports LockOnVisualModule.
+
+local state = require("modules.aim.state")
 
 local Players = game:GetService("Players")
 
-local function setHumanoid(prop, value)
-    local char = Players.LocalPlayer.Character
-    local hum  = char and char:FindFirstChildOfClass("Humanoid")
-    if not hum then return end
-    if prop == "JumpPower" then hum.UseJumpPower = true end
-    hum[prop] = value
+local Highlight = {}
+
+local highlights = {} -- [Player] = Highlight instance
+
+local function setOne(plr, color, on)
+    local h = highlights[plr]
+    if on then
+        local char = plr.Character
+        if not char then
+            if h then h:Destroy() end
+            highlights[plr] = nil
+            return
+        end
+        if not h or not h.Parent then
+            h = Instance.new("Highlight")
+            h.Name = "PantheonLockOnHighlight"
+            highlights[plr] = h
+        end
+        h.Adornee = char
+        h.FillColor = color
+        h.FillTransparency = 0.5
+        h.OutlineColor = color
+        h.OutlineTransparency = 0
+        h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        h.Parent = char
+    else
+        if h then h:Destroy() end
+        highlights[plr] = nil
+    end
 end
+
+function Highlight.clearAll()
+    for plr in pairs(highlights) do
+        setOne(plr, Color3.new(1, 0, 0), false)
+    end
+end
+
+function Highlight.update(currentTarget, getSecondFn)
+    Highlight.clearAll()
+    if not state.highlightEnabled or not state.lockon_locked then return end
+
+    if currentTarget and not state.isFriendly(currentTarget) then
+        setOne(currentTarget, Color3.new(1, 0, 0), true)
+    end
+
+    if state.highlightSecondEnabled and getSecondFn then
+        local second = getSecondFn(currentTarget)
+        if second and not state.isFriendly(second) then
+            setOne(second, Color3.new(1, 1, 0), true)
+        end
+    end
+end
+
+local function applySelfFade(char)
+    if not char then return end
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("BasePart") then
+            d.LocalTransparencyModifier = state.selfFadeEnabled and 0.6 or 0
+        elseif d:IsA("Decal") then
+            d.Transparency = state.selfFadeEnabled and 0.6 or 0
+        end
+    end
+end
+
+function Highlight.setSelfFade(v)
+    state.selfFadeEnabled = v and true or false
+    applySelfFade(Players.LocalPlayer.Character)
+end
+
+function Highlight.setEnabled(v)
+    state.highlightEnabled = v and true or false
+    if not v then Highlight.clearAll() end
+end
+
+function Highlight.setSecondEnabled(v)
+    state.highlightSecondEnabled = v and true or false
+end
+
+function Highlight.init()
+    Players.LocalPlayer.CharacterAdded:Connect(function(char)
+        if state.selfFadeEnabled then
+            char:WaitForChild("HumanoidRootPart", 5)
+            applySelfFade(char)
+        end
+    end)
+end
+
+return Highlight
+end
+
+_MODULES["modules.aim.shiftlock"] = function()
+-- Custom shiftlock. Ports ShiftLockModule with two improvements:
+--   1. BindToRenderStep at Camera+100 (deterministic timing vs RenderStepped:Connect competitors)
+--   2. On enable, sweeps PlayerGui for ScreenGuis matching known foreign shiftlock names
+--      and Destroys them, which breaks the foreign script's loop (their WaitForChild/
+--      FindFirstChild on the GUI fails downstream).
+--
+-- The externalSkipRotation gate from the legacy module is preserved so LockOn+ can
+-- still take over rotation cleanly without two CFrame writes per frame.
+
+local state = require("modules.aim.state")
+local log   = require("core.log")
+
+local Players          = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService       = game:GetService("RunService")
+
+local Shiftlock = {}
+
+local RENDER_BIND = "PantheonShiftlock"
+local GUI_NAME    = "PantheonShiftLockVGui"
+
+-- ScreenGui names commonly used by other custom shiftlock scripts. Does not
+-- include our own GUI_NAME so the sweep never touches us.
+local FOREIGN_GUI_NAMES = {
+    "ShiftLockVGui", "ShiftLockIcon", "ShiftLockHud", "ShiftLockButton",
+    "CustomShiftLock", "ShiftLockGui", "ShiftlockGui",
+}
+
+local self_state = {
+    character = nil,
+    humanoid  = nil,
+    root      = nil,
+    gui       = nil,
+    vIcon     = nil,
+    charConn  = nil,
+    humConn   = nil,
+    focusConn = nil,
+    externalSkipRotation = nil,
+    bound = false,
+}
+
+local function lp() return Players.LocalPlayer end
+
+local function disableGameShiftLock()
+    pcall(function() lp().DevEnableMouseLock = false end)
+end
+
+local function killForeignGuis()
+    local pg = lp():FindFirstChildOfClass("PlayerGui")
+    if not pg then return 0 end
+    local count = 0
+    for _, gui in ipairs(pg:GetChildren()) do
+        if gui:IsA("ScreenGui") and gui.Name ~= GUI_NAME then
+            for _, foreign in ipairs(FOREIGN_GUI_NAMES) do
+                if gui.Name == foreign then
+                    gui:Destroy()
+                    count = count + 1
+                    break
+                end
+            end
+        end
+    end
+    return count
+end
+
+local function buildGui()
+    if self_state.gui and self_state.gui.Parent then return end
+    local pg = lp():WaitForChild("PlayerGui")
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = GUI_NAME
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.Parent = pg
+
+    local vIcon = Instance.new("ImageLabel")
+    vIcon.Name = "VIcon"
+    vIcon.BackgroundTransparency = 1
+    vIcon.Size = UDim2.new(0, 150, 0, 150)
+    vIcon.AnchorPoint = Vector2.new(0.5, 0.5)
+    vIcon.Position = UDim2.new(0.5, 0, 0.5, 0)
+    vIcon.Visible = false
+    vIcon.Image = "rbxassetid://18913450789"
+    vIcon.ScaleType = Enum.ScaleType.Fit
+    vIcon.BorderSizePixel = 5
+    vIcon.BorderColor3 = Color3.new(1, 1, 1)
+    vIcon.Parent = gui
+
+    self_state.gui = gui
+    self_state.vIcon = vIcon
+end
+
+local function updateCharRefs(char)
+    self_state.character = char
+    self_state.humanoid  = char:WaitForChild("Humanoid")
+    self_state.root      = char:WaitForChild("HumanoidRootPart")
+
+    if self_state.humConn then self_state.humConn:Disconnect() end
+    self_state.humConn = self_state.humanoid.Died:Connect(function()
+        state.shiftlock_active = false
+        Shiftlock.forceOff()
+    end)
+end
+
+local function applyLock()
+    state.shiftlock_active = true
+    disableGameShiftLock()
+    if self_state.humanoid then self_state.humanoid.AutoRotate = false end
+    if self_state.vIcon    then self_state.vIcon.Visible = true end
+    UserInputService.MouseIconEnabled = false
+    UserInputService.MouseBehavior    = Enum.MouseBehavior.LockCenter
+end
+
+function Shiftlock.forceOff()
+    state.shiftlock_active = false
+    if self_state.humanoid then self_state.humanoid.AutoRotate = true end
+    if self_state.vIcon    then self_state.vIcon.Visible = false end
+    UserInputService.MouseIconEnabled = true
+    UserInputService.MouseBehavior    = Enum.MouseBehavior.Default
+end
+
+function Shiftlock.toggle()
+    if not state.shiftlock_enabled then
+        Shiftlock.setEnabled(true)
+    end
+    if state.shiftlock_active then
+        Shiftlock.forceOff()
+    else
+        applyLock()
+    end
+end
+
+function Shiftlock.setEnabled(v)
+    v = v and true or false
+    if state.shiftlock_enabled == v then return end
+    state.shiftlock_enabled = v
+    if v then
+        disableGameShiftLock()
+        if state.killForeign then
+            local n = killForeignGuis()
+            if n > 0 then log.info("shiftlock: killed", n, "foreign GUI(s)") end
+        end
+    else
+        Shiftlock.forceOff()
+    end
+end
+
+function Shiftlock.setExternalSkipRotation(fn)
+    self_state.externalSkipRotation = fn
+end
+
+local function step()
+    if not state.shiftlock_enabled then return end
+
+    local hum = self_state.humanoid
+    if hum then hum.CameraOffset = Vector3.new(0, 0, 0) end
+
+    if not state.shiftlock_active or not self_state.root or not hum then return end
+    if hum.PlatformStand or hum.Health <= 0 then return end
+
+    local s = hum:GetState()
+    if s == Enum.HumanoidStateType.Ragdoll
+       or s == Enum.HumanoidStateType.FallingDown
+       or s == Enum.HumanoidStateType.Physics
+       or s == Enum.HumanoidStateType.Dead then
+        return
+    end
+
+    if UserInputService.MouseBehavior ~= Enum.MouseBehavior.LockCenter then
+        UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+    end
+
+    -- Yield rotation to LockOn+ when it's actively rotating to a target
+    if self_state.externalSkipRotation and self_state.externalSkipRotation() then
+        return
+    end
+
+    local cam = workspace.CurrentCamera
+    if not cam then return end
+    local look = cam.CFrame.LookVector
+    local flat = Vector3.new(look.X, 0, look.Z)
+    if flat.Magnitude > 0 then
+        self_state.root.CFrame = CFrame.lookAt(self_state.root.Position, self_state.root.Position + flat)
+    end
+end
+
+function Shiftlock.init()
+    buildGui()
+
+    local char = lp().Character or lp().CharacterAdded:Wait()
+    updateCharRefs(char)
+
+    self_state.charConn = lp().CharacterAdded:Connect(function(c)
+        updateCharRefs(c)
+        Shiftlock.forceOff()
+    end)
+
+    self_state.focusConn = UserInputService.WindowFocusReleased:Connect(function()
+        if state.shiftlock_active then Shiftlock.forceOff() end
+    end)
+
+    if not self_state.bound then
+        RunService:BindToRenderStep(RENDER_BIND, Enum.RenderPriority.Camera.Value + 100, step)
+        self_state.bound = true
+    end
+end
+
+function Shiftlock.destroy()
+    if self_state.bound then
+        pcall(function() RunService:UnbindFromRenderStep(RENDER_BIND) end)
+        self_state.bound = false
+    end
+    Shiftlock.forceOff()
+    if self_state.gui then self_state.gui:Destroy() end
+    self_state.gui, self_state.vIcon = nil, nil
+end
+
+return Shiftlock
+end
+
+_MODULES["modules.aim.lockon_plus"] = function()
+-- Rotates own character body to face the lock-on target while camera stays free.
+-- Ports LockOnPlusModule with a "battlegrounds-safe" gate:
+--   Suppresses rotation when either the local OR target Humanoid is in a non-
+--   walking state (Physics, FallingDown, Ragdoll, Seated, PlatformStanding) or
+--   has PlatformStand=true. This catches the ragdoll-cycle window after a hit,
+--   the time when forcing rotation visibly fights the move's animation/weld and
+--   makes it obvious a script is running.
+--
+-- On resume from a suppress window, the direct CFrame snap is held back for
+-- ~0.15s so the body slides into position via AlignOrientation instead of
+-- teleporting.
+
+local state = require("modules.aim.state")
+
+local Players    = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local LockOnPlus = {}
+
+local BIND = "PantheonLockOnPlus"
+local SMOOTH_DURATION = 0.15
+
+local SUPPRESS_STATES = {
+    [Enum.HumanoidStateType.Physics]          = true,
+    [Enum.HumanoidStateType.FallingDown]      = true,
+    [Enum.HumanoidStateType.Ragdoll]          = true,
+    [Enum.HumanoidStateType.Seated]           = true,
+    [Enum.HumanoidStateType.PlatformStanding] = true,
+}
+
+local self_state = {
+    align            = nil,
+    attachment       = nil,
+    suppressedSince  = 0,
+    smoothUntil      = 0,
+    bound            = false,
+}
+
+local function lp() return Players.LocalPlayer end
+
+local function rootOf(charOrModel)
+    return charOrModel and charOrModel:FindFirstChild("HumanoidRootPart")
+end
+
+local function targetChar()
+    local t = state.lockon_target
+    if not t then return nil end
+    if state.lockon_target_type == "player" then return t.Character end
+    return t
+end
+
+local function getHumanoids()
+    local myChar = lp().Character
+    local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
+    local tChar = targetChar()
+    local tHum = tChar and tChar:FindFirstChildOfClass("Humanoid")
+    return myHum, tHum
+end
+
+local function shouldRotate()
+    return state.lockon_enabled
+        and state.lockon_held
+        and state.lockon_locked
+        and state.lockon_target ~= nil
+        and state.lockonPlusEnabled
+end
+
+local function bgSuppressed()
+    if not state.bgSafeEnabled then return false end
+    local myHum, tHum = getHumanoids()
+    if myHum then
+        if myHum.PlatformStand then return true end
+        if SUPPRESS_STATES[myHum:GetState()] then return true end
+    end
+    if tHum then
+        if tHum.PlatformStand then return true end
+        if SUPPRESS_STATES[tHum:GetState()] then return true end
+    end
+    return false
+end
+
+local function ensureConstraint(myRoot)
+    if not self_state.attachment or not self_state.attachment.Parent then
+        self_state.attachment = Instance.new("Attachment")
+        self_state.attachment.Name = "PantheonLockOnPlusAttachment"
+        self_state.attachment.Parent = myRoot
+    end
+    if not self_state.align or not self_state.align.Parent then
+        self_state.align = Instance.new("AlignOrientation")
+        self_state.align.Name = "PantheonLockOnPlusAlign"
+        self_state.align.Mode = Enum.OrientationAlignmentMode.OneAttachment
+        self_state.align.Attachment0 = self_state.attachment
+        self_state.align.RigidityEnabled = true
+        self_state.align.Responsiveness = 200
+        self_state.align.MaxTorque = math.huge
+        self_state.align.Parent = myRoot
+    end
+end
+
+local function disableAlign()
+    if self_state.align then self_state.align.Enabled = false end
+end
+
+local function step()
+    if not shouldRotate() then
+        disableAlign()
+        return
+    end
+
+    local myChar = lp().Character
+    if not myChar then return end
+    local myRoot = rootOf(myChar)
+    local myHum  = myChar:FindFirstChildOfClass("Humanoid")
+    if not myRoot or not myHum then return end
+
+    local tRoot = rootOf(targetChar())
+    if not tRoot then return end
+
+    if bgSuppressed() then
+        self_state.suppressedSince = os.clock()
+        disableAlign()
+        return
+    end
+
+    local now = os.clock()
+    if self_state.suppressedSince > 0 then
+        self_state.smoothUntil = now + SMOOTH_DURATION
+        self_state.suppressedSince = 0
+    end
+
+    local dir = tRoot.Position - myRoot.Position
+    local flat = Vector3.new(dir.X, 0, dir.Z)
+    if flat.Magnitude < 0.1 then return end
+
+    myHum.AutoRotate = false
+    ensureConstraint(myRoot)
+    if self_state.align then
+        self_state.align.Enabled = true
+        self_state.align.CFrame = CFrame.lookAt(Vector3.zero, flat)
+    end
+
+    -- Skip the direct CFrame snap during the smooth-resume window so we slide
+    -- in via AlignOrientation instead of teleporting after the ragdoll ends.
+    if now >= self_state.smoothUntil then
+        local cf = CFrame.lookAt(myRoot.Position, myRoot.Position + flat)
+        local _, yAngle, _ = cf:ToEulerAnglesYXZ()
+        myRoot.CFrame = CFrame.new(myRoot.Position) * CFrame.Angles(0, yAngle, 0)
+    end
+end
+
+-- True when LockOn+ is currently driving the body rotation. Shiftlock uses this
+-- to yield: when LockOn+ is active, shiftlock skips its own camera-based rotation.
+function LockOnPlus.isActive()
+    return shouldRotate() and not bgSuppressed()
+end
+
+function LockOnPlus.init()
+    if self_state.bound then return end
+    RunService:BindToRenderStep(BIND, Enum.RenderPriority.Camera.Value + 150, step)
+    self_state.bound = true
+end
+
+function LockOnPlus.destroy()
+    if self_state.bound then
+        pcall(function() RunService:UnbindFromRenderStep(BIND) end)
+        self_state.bound = false
+    end
+    if self_state.align then pcall(function() self_state.align:Destroy() end); self_state.align = nil end
+    if self_state.attachment then pcall(function() self_state.attachment:Destroy() end); self_state.attachment = nil end
+end
+
+return LockOnPlus
+end
+
+_MODULES["modules.aim.lockon"] = function()
+-- Main lock-on driver. Owns the hotkey, the toggle/hold state machine, and the
+-- per-frame target-validity loop. Writes to the shared aim state; lockon+ and
+-- highlight react.
+
+local state     = require("modules.aim.state")
+local targeting = require("modules.aim.targeting")
+local highlight = require("modules.aim.highlight")
+
+local UserInputService = game:GetService("UserInputService")
+local RunService       = game:GetService("RunService")
+
+local LockOn = {}
+
+local self_state = {
+    hotkey       = Enum.KeyCode.E,
+    holdMode     = false,
+    runConn      = nil,
+    inputConn    = nil,
+    inputEndConn = nil,
+}
+
+local function releaseLock()
+    state.setLocked(false)
+    state.lockon_held = false
+    state.setTarget(nil, nil)
+    highlight.update(nil, nil)
+end
+
+local function engageLock()
+    local t = targeting.getBestTarget()
+    if not t then return false end
+    state.setTarget(t, "player")
+    state.setLocked(true)
+    state.lockon_held = true
+    return true
+end
+
+local function step()
+    if not state.lockon_enabled or not state.lockon_locked then return end
+
+    local t = state.lockon_target
+    if state.lockon_target_type == "player" then
+        local char = t and t.Character
+        local hum  = char and char:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 or not char.Parent or state.isFriendly(t) then
+            releaseLock()
+            return
+        end
+    elseif state.lockon_target_type == "npc" then
+        local hum = t and t:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 or not t.Parent then
+            releaseLock()
+            return
+        end
+    end
+
+    highlight.update(t, function(exclude) return targeting.getBestTarget(exclude) end)
+end
+
+local function onInputBegan(input, gpe)
+    if gpe then return end
+    if not state.lockon_enabled then return end
+    if input.KeyCode ~= self_state.hotkey then return end
+
+    if self_state.holdMode then
+        engageLock()
+    else
+        if state.lockon_locked then releaseLock() else engageLock() end
+    end
+end
+
+local function onInputEnded(input)
+    if input.KeyCode ~= self_state.hotkey then return end
+    if self_state.holdMode and state.lockon_locked then
+        releaseLock()
+    end
+end
+
+function LockOn.setHotkey(key)
+    self_state.hotkey = key
+end
+
+function LockOn.setHoldMode(v)
+    self_state.holdMode = v and true or false
+end
+
+function LockOn.setEnabled(v)
+    state.lockon_enabled = v and true or false
+    if not v then releaseLock() end
+end
+
+function LockOn.init()
+    self_state.inputConn    = UserInputService.InputBegan:Connect(onInputBegan)
+    self_state.inputEndConn = UserInputService.InputEnded:Connect(onInputEnded)
+    self_state.runConn      = RunService.Heartbeat:Connect(step)
+end
+
+function LockOn.destroy()
+    if self_state.inputConn    then self_state.inputConn:Disconnect()    end
+    if self_state.inputEndConn then self_state.inputEndConn:Disconnect() end
+    if self_state.runConn      then self_state.runConn:Disconnect()      end
+end
+
+return LockOn
+end
+
+_MODULES["modules.aim.init"] = function()
+-- Aim Assist wiring: brings up targeting / lockon / lockon+ / highlight / shiftlock
+-- and registers the UI tab.
+
+local state       = require("modules.aim.state")
+local components  = require("ui.components")
+local highlight   = require("modules.aim.highlight")
+local shiftlock   = require("modules.aim.shiftlock")
+local lockon_plus = require("modules.aim.lockon_plus")
+local lockon      = require("modules.aim.lockon")
+local log         = require("core.log")
 
 local module = {}
 
 function module.register(window)
-    local tab = window:AddTab("Movement")
+    -- Boot sub-systems
+    highlight.init()
+    shiftlock.init()
+    lockon_plus.init()
+    lockon.init()
 
-    components.Section(tab, "Locomotion")
-    components.Slider(tab, {
-        text    = "WalkSpeed",
-        min     = 16,
-        max     = 200,
-        default = 16,
-        step    = 1,
-        onChange = function(v) setHumanoid("WalkSpeed", v) end,
-    })
-    components.Slider(tab, {
-        text    = "JumpPower",
-        min     = 50,
-        max     = 500,
-        default = 50,
-        step    = 1,
-        onChange = function(v) setHumanoid("JumpPower", v) end,
-    })
+    -- Shiftlock yields rotation to LockOn+ while LockOn+ is driving
+    shiftlock.setExternalSkipRotation(lockon_plus.isActive)
 
-    components.Section(tab, "Demo")
+    local tab = window:AddTab("Aim Assist")
+
+    -- Shiftlock ------------------------------------------------------------
+    components.Section(tab, "Shiftlock")
+    components.Toggle(tab, {
+        text     = "Custom Shiftlock",
+        default  = false,
+        onChange = function(v) shiftlock.setEnabled(v) end,
+    })
+    components.Toggle(tab, {
+        text     = "Kill foreign shiftlock GUIs on enable",
+        default  = true,
+        onChange = function(v) state.killForeign = v end,
+    })
     components.Button(tab, {
-        text    = "Test notification",
-        onClick = function() notify.success("Hello from Pantheon.") end,
+        text    = "Toggle Shiftlock Now",
+        onClick = function() shiftlock.toggle() end,
     })
+
+    -- Lock-on --------------------------------------------------------------
+    components.Section(tab, "Lock-On")
+    components.Toggle(tab, {
+        text     = "Enable Lock-On (hotkey E)",
+        default  = false,
+        onChange = function(v) lockon.setEnabled(v) end,
+    })
+    components.Toggle(tab, {
+        text     = "Hold mode (vs toggle)",
+        default  = false,
+        onChange = function(v) lockon.setHoldMode(v) end,
+    })
+    components.Toggle(tab, {
+        text     = "Realistic FOV (60 deg)",
+        default  = false,
+        onChange = function(v) state.realisticEnabled = v end,
+    })
+    components.Toggle(tab, {
+        text     = "Skip dead / shielded",
+        default  = true,
+        onChange = function(v) state.checkHealthEnabled = v end,
+    })
+    components.Toggle(tab, {
+        text     = "Require visibility (raycast)",
+        default  = false,
+        onChange = function(v) state.visibilityCheckEnabled = v end,
+    })
+    components.Slider(tab, {
+        text     = "Range limit (0 = infinite)",
+        min      = 0,
+        max      = 500,
+        default  = 0,
+        step     = 5,
+        onChange = function(v) state.rangeLimit = v end,
+    })
+
+    -- Highlight ------------------------------------------------------------
+    components.Section(tab, "Highlight")
+    components.Toggle(tab, {
+        text     = "Highlight target (red)",
+        default  = true,
+        onChange = function(v) highlight.setEnabled(v) end,
+    })
+    components.Toggle(tab, {
+        text     = "Highlight next-best (yellow)",
+        default  = false,
+        onChange = function(v) highlight.setSecondEnabled(v) end,
+    })
+    components.Toggle(tab, {
+        text     = "Self-fade",
+        default  = false,
+        onChange = function(v) highlight.setSelfFade(v) end,
+    })
+
+    -- Lock-on+ -------------------------------------------------------------
+    components.Section(tab, "Lock-On+")
+    components.Toggle(tab, {
+        text     = "Enable Lock-On+ (rotate body to target)",
+        default  = false,
+        onChange = function(v) state.lockonPlusEnabled = v end,
+    })
+    components.Toggle(tab, {
+        text     = "Battlegrounds-safe (suppress on ragdoll)",
+        default  = true,
+        onChange = function(v) state.bgSafeEnabled = v end,
+    })
+
+    log.info("Aim Assist registered")
 end
 
 return module
@@ -780,8 +1615,8 @@ local w = window.new("Pantheon")
 
 -- Universal modules
 do
-    local example = require("modules.example")
-    example.register(w)
+    local aim = require("modules.aim.init")
+    aim.register(w)
 end
 
 -- Per-game module (if registered for this PlaceId)

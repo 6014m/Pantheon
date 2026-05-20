@@ -12,8 +12,8 @@ local w = window.new("Pantheon")
 
 -- Universal modules
 do
-    local example = require("modules.example")
-    example.register(w)
+    local aim = require("modules.aim.init")
+    aim.register(w)
 end
 
 -- Per-game module (if registered for this PlaceId)
