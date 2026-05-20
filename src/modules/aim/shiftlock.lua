@@ -369,34 +369,49 @@ function Shiftlock.setExternalSkipRotation(fn)
 end
 
 local function step()
-    if not state.shiftlock_enabled then return end
+    -- "shouldLock" is the SINGLE source of truth for whether the cursor should
+    -- be locked right now. It is true only when Pantheon's shiftlock is both
+    -- enabled and currently active.
+    local shouldLock = state.shiftlock_enabled and state.shiftlock_active
 
-    local hum = self_state.humanoid
-    if hum then
-        hum.CameraOffset = Vector3.new(0, 0, 0)
-        -- Force AutoRotate every frame. Some game shiftlocks don't touch
-        -- MouseBehavior at all - they lock by toggling Humanoid.AutoRotate
-        -- and writing root.CFrame from a render-step loop. Pinning AutoRotate
-        -- here catches that path even when the hook doesn't see anything.
-        local wantedAR = not state.shiftlock_active
-        if hum.AutoRotate ~= wantedAR then
-            hum.AutoRotate = wantedAR
-        end
-    end
-
-    -- Pin mouse icon properties every frame too. The hook catches direct
-    -- writes; this catches anything that slips past (e.g. a foreign script
-    -- that hooks first, sees our hook re-install, and writes between
-    -- ticks of our hook guard).
+    -- ===== always-on pin pass (when killForeign is on) =====
+    -- Runs even when Pantheon's shiftlock toggle is OFF, so foreign scripts
+    -- can't keep the cursor locked / cursor hidden / cursor icon swapped /
+    -- character rotation locked after we go inactive. Our BindToRenderStep
+    -- priority is Last (= 2000), so these writes are the final ones before
+    -- the frame renders.
     if state.killForeign then
-        local wantedEnabled = not state.shiftlock_active
+        local hum = self_state.humanoid
+
+        if hum then
+            local wantedAR = not shouldLock
+            if hum.AutoRotate ~= wantedAR then
+                hum.AutoRotate = wantedAR
+            end
+        end
+
+        local wantedMB = shouldLock
+            and Enum.MouseBehavior.LockCenter
+            or Enum.MouseBehavior.Default
+        if UserInputService.MouseBehavior ~= wantedMB then
+            UserInputService.MouseBehavior = wantedMB
+        end
+
+        local wantedEnabled = not shouldLock
         if UserInputService.MouseIconEnabled ~= wantedEnabled then
             UserInputService.MouseIconEnabled = wantedEnabled
         end
+
         if UserInputService.MouseIcon ~= "" then
             UserInputService.MouseIcon = ""
         end
     end
+
+    -- ===== locked-mode rotation pass (only when our shiftlock is engaged) =====
+    if not state.shiftlock_enabled then return end
+
+    local hum = self_state.humanoid
+    if hum then hum.CameraOffset = Vector3.new(0, 0, 0) end
 
     if not state.shiftlock_active or not self_state.root or not hum then return end
     if hum.PlatformStand or hum.Health <= 0 then return end
@@ -407,10 +422,6 @@ local function step()
        or st == Enum.HumanoidStateType.Physics
        or st == Enum.HumanoidStateType.Dead then
         return
-    end
-
-    if UserInputService.MouseBehavior ~= Enum.MouseBehavior.LockCenter then
-        UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
     end
 
     if self_state.externalSkipRotation and self_state.externalSkipRotation() then
