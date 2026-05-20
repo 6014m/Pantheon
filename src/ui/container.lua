@@ -1,8 +1,9 @@
 -- Draggable category window. Holds feature rows. Wurst-style — stacks left-to-right
--- by default; user can drag them anywhere. Sharp corners with rotated-square
--- diamond accents at each corner for a hex/HUD look.
+-- by default; user can drag them anywhere.
+-- Real hexagon corner accents (rendered via ui/hex) at each corner of the box.
 
 local theme = require("ui.theme")
+local hex   = require("ui.hex")
 
 local UIS = game:GetService("UserInputService")
 
@@ -11,23 +12,21 @@ Container.__index = Container
 
 local nextIndex = 0
 
-local function cornerDiamond(parent, position, color)
-    local d = Instance.new("Frame")
-    d.Size = UDim2.fromOffset(10, 10)
-    d.Position = position
-    d.AnchorPoint = Vector2.new(0.5, 0.5)
-    d.Rotation = 45
-    d.BackgroundColor3 = color
-    d.BorderSizePixel = 0
-    d.ZIndex = 5
-    d.Parent = parent
+-- 14x12 ≈ regular hex proportions (12/14 ≈ 0.857; ideal is 0.866).
+local CORNER_HEX_W = 14
+local CORNER_HEX_H = 12
+
+local function placeCornerHex(parent, position, color)
+    local h = hex.build(parent, CORNER_HEX_W, CORNER_HEX_H, color, 5)
+    h.AnchorPoint = Vector2.new(0.5, 0.5)
+    h.Position    = position
 end
 
-local function addCornerDiamonds(parent, color)
-    cornerDiamond(parent, UDim2.new(0, 0, 0, 0), color) -- TL
-    cornerDiamond(parent, UDim2.new(1, 0, 0, 0), color) -- TR
-    cornerDiamond(parent, UDim2.new(0, 0, 1, 0), color) -- BL
-    cornerDiamond(parent, UDim2.new(1, 0, 1, 0), color) -- BR
+local function addCornerHexes(parent, color)
+    placeCornerHex(parent, UDim2.new(0, 0, 0, 0), color) -- TL
+    placeCornerHex(parent, UDim2.new(1, 0, 0, 0), color) -- TR
+    placeCornerHex(parent, UDim2.new(0, 0, 1, 0), color) -- BL
+    placeCornerHex(parent, UDim2.new(1, 0, 1, 0), color) -- BR
 end
 
 function Container.new(parent, name)
@@ -75,8 +74,8 @@ function Container.new(parent, name)
     list.SortOrder = Enum.SortOrder.LayoutOrder
     list.Padding = UDim.new(0, 1)
 
-    -- Corner diamonds (added last so they render on top of stroke + header)
-    addCornerDiamonds(root, theme.accent)
+    -- Real hexagon corner accents (drawn last so they sit on top of stroke + header)
+    addCornerHexes(root, theme.accent)
 
     -- Drag on header
     do

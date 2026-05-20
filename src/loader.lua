@@ -40,6 +40,7 @@ local files = {
     { "core.persist",              "core/persist.lua" },
     { "core.keybinds",             "core/keybinds.lua" },
     { "ui.theme",                  "ui/theme.lua" },
+    { "ui.hex",                    "ui/hex.lua" },
     { "ui.components",             "ui/components.lua" },
     { "ui.window",                 "ui/window.lua" },
     { "ui.container",              "ui/container.lua" },

@@ -17,6 +17,7 @@ BUILD_ORDER = [
     "core/persist",
     "core/keybinds",
     "ui/theme",
+    "ui/hex",
     "ui/components",
     "ui/window",
     "ui/container",

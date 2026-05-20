@@ -1,9 +1,10 @@
--- Pantheon root UI. Hosts a ScreenGui that contains a `Containers` parent (for
--- draggable category windows) plus a floating hexagonal open/close button.
+-- Pantheon root UI. Hosts a ScreenGui that contains a `Containers` parent
+-- (for draggable category windows) plus a floating hexagonal open/close button.
 -- Master hotkey (default RightControl) toggles visibility.
 
 local env      = require("core.env")
 local theme    = require("ui.theme")
+local hex      = require("ui.hex")
 local keybinds = require("core.keybinds")
 
 local UIS = game:GetService("UserInputService")
@@ -18,54 +19,18 @@ local s = {
     masterKey = Enum.KeyCode.RightControl,
 }
 
--- Flat-top hex P button. ClipsDescendants on host clips the two rotated
--- diamonds at the top and bottom edges, creating the flat top/bottom of the
--- hex shape. The diamonds' horizontal vertices align with the host width,
--- and the middle rectangle covers the diamonds' inner halves so the silhouette
--- is one continuous hexagon.
+-- Flat-top regular hexagon (46x40, very close to the 2/sqrt(3) ratio).
 local function buildHexButton(sg)
     local host = Instance.new("Frame")
     host.Name = "PantheonOpenButton"
-    host.Size = UDim2.fromOffset(46, 50)
-    host.Position = UDim2.new(0, 16, 1, -66)
+    host.Size = UDim2.fromOffset(46, 40)
+    host.Position = UDim2.new(0, 16, 1, -56)
     host.BackgroundTransparency = 1
-    host.ClipsDescendants = true
     host.ZIndex = 10
     host.Parent = sg
 
-    -- Top half: rotated square centered at y=12.5. Its top vertex extends
-    -- above the host (clipped at y=0 -> flat top). Side vertices at y=12.5
-    -- align with the middle rectangle's top edge.
-    local top = Instance.new("Frame")
-    top.Size = UDim2.fromOffset(33, 33)
-    top.AnchorPoint = Vector2.new(0.5, 0.5)
-    top.Position = UDim2.new(0.5, 0, 0, 12.5)
-    top.Rotation = 45
-    top.BackgroundColor3 = theme.accent
-    top.BorderSizePixel = 0
-    top.ZIndex = 10
-    top.Parent = host
-
-    -- Middle rectangle (y=12.5 to y=37.5)
-    local mid = Instance.new("Frame")
-    mid.Size = UDim2.new(1, 0, 0, 25)
-    mid.Position = UDim2.fromOffset(0, 12.5)
-    mid.BackgroundColor3 = theme.accent
-    mid.BorderSizePixel = 0
-    mid.ZIndex = 11
-    mid.Parent = host
-
-    -- Bottom half: rotated square centered at y=37.5, bottom vertex clipped
-    -- at y=50 -> flat bottom.
-    local bot = Instance.new("Frame")
-    bot.Size = UDim2.fromOffset(33, 33)
-    bot.AnchorPoint = Vector2.new(0.5, 0.5)
-    bot.Position = UDim2.new(0.5, 0, 0, 37.5)
-    bot.Rotation = 45
-    bot.BackgroundColor3 = theme.accent
-    bot.BorderSizePixel = 0
-    bot.ZIndex = 10
-    bot.Parent = host
+    -- The hex itself
+    hex.build(host, 46, 40, theme.accent, 10)
 
     local label = Instance.new("TextLabel")
     label.Size = UDim2.fromScale(1, 1)
@@ -73,7 +38,7 @@ local function buildHexButton(sg)
     label.Text = "P"
     label.TextColor3 = theme.fg
     label.Font = theme.fontBold
-    label.TextSize = 20
+    label.TextSize = 18
     label.ZIndex = 12
     label.Parent = host
 

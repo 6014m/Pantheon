@@ -294,6 +294,61 @@ local theme = {
 return theme
 end
 
+_MODULES["ui.hex"] = function()
+-- Hexagon shape builder. Draws a flat-top regular hexagon as a stack of
+-- horizontal rows whose width matches the hex's geometry at that y. With
+-- ~1 row per pixel of height, the diagonal edges look smooth.
+--
+-- Geometry for a flat-top hex inscribed in w x h:
+--   * widest at the vertical middle (width = w)
+--   * narrowest at the top and bottom edges (width = w/2)
+--   * width(y) = w - |y - h/2| * w/h
+-- For a regular hexagon, pass h = w * sqrt(3)/2 (~= 0.866w). Stretched
+-- proportions still draw cleanly but are no longer "regular."
+
+local hex = {}
+
+function hex.build(parent, w, h, color, zIndex)
+    local rows = math.max(8, math.ceil(h))
+    local rowH = h / rows
+
+    local host = Instance.new("Frame")
+    host.Size = UDim2.fromOffset(w, h)
+    host.BackgroundTransparency = 1
+    host.ZIndex = zIndex or 1
+    host.Parent = parent
+
+    for i = 0, rows - 1 do
+        local yCenter = (i + 0.5) * rowH
+        local distFromMid = math.abs(yCenter - h / 2)
+        local rowW = w - distFromMid * w / h
+        if rowW < 1 then rowW = 1 end
+
+        local row = Instance.new("Frame")
+        -- +1 on height so adjacent rows overlap by ~1px, hiding gaps.
+        row.Size = UDim2.fromOffset(rowW, rowH + 1)
+        row.Position = UDim2.fromOffset(w / 2, yCenter)
+        row.AnchorPoint = Vector2.new(0.5, 0.5)
+        row.BackgroundColor3 = color
+        row.BorderSizePixel = 0
+        row.Parent = host
+    end
+
+    return host
+end
+
+-- Convenience: build a hex AND position it at `position` with `anchor`.
+-- Used for placing small hex accents at specific points (container corners etc).
+function hex.placed(parent, w, h, color, position, anchor, zIndex)
+    local host = hex.build(parent, w, h, color, zIndex)
+    host.Position = position
+    host.AnchorPoint = anchor or Vector2.new(0, 0)
+    return host
+end
+
+return hex
+end
+
 _MODULES["ui.components"] = function()
 -- UI primitives: Section, Label, Button, Toggle, Slider, KeybindSetter.
 -- Sharp angular corners — no UICorner anywhere — to match the hex/HUD theme.
@@ -595,12 +650,13 @@ return components
 end
 
 _MODULES["ui.window"] = function()
--- Pantheon root UI. Hosts a ScreenGui that contains a `Containers` parent (for
--- draggable category windows) plus a floating hexagonal open/close button.
+-- Pantheon root UI. Hosts a ScreenGui that contains a `Containers` parent
+-- (for draggable category windows) plus a floating hexagonal open/close button.
 -- Master hotkey (default RightControl) toggles visibility.
 
 local env      = require("core.env")
 local theme    = require("ui.theme")
+local hex      = require("ui.hex")
 local keybinds = require("core.keybinds")
 
 local UIS = game:GetService("UserInputService")
@@ -615,54 +671,18 @@ local s = {
     masterKey = Enum.KeyCode.RightControl,
 }
 
--- Flat-top hex P button. ClipsDescendants on host clips the two rotated
--- diamonds at the top and bottom edges, creating the flat top/bottom of the
--- hex shape. The diamonds' horizontal vertices align with the host width,
--- and the middle rectangle covers the diamonds' inner halves so the silhouette
--- is one continuous hexagon.
+-- Flat-top regular hexagon (46x40, very close to the 2/sqrt(3) ratio).
 local function buildHexButton(sg)
     local host = Instance.new("Frame")
     host.Name = "PantheonOpenButton"
-    host.Size = UDim2.fromOffset(46, 50)
-    host.Position = UDim2.new(0, 16, 1, -66)
+    host.Size = UDim2.fromOffset(46, 40)
+    host.Position = UDim2.new(0, 16, 1, -56)
     host.BackgroundTransparency = 1
-    host.ClipsDescendants = true
     host.ZIndex = 10
     host.Parent = sg
 
-    -- Top half: rotated square centered at y=12.5. Its top vertex extends
-    -- above the host (clipped at y=0 -> flat top). Side vertices at y=12.5
-    -- align with the middle rectangle's top edge.
-    local top = Instance.new("Frame")
-    top.Size = UDim2.fromOffset(33, 33)
-    top.AnchorPoint = Vector2.new(0.5, 0.5)
-    top.Position = UDim2.new(0.5, 0, 0, 12.5)
-    top.Rotation = 45
-    top.BackgroundColor3 = theme.accent
-    top.BorderSizePixel = 0
-    top.ZIndex = 10
-    top.Parent = host
-
-    -- Middle rectangle (y=12.5 to y=37.5)
-    local mid = Instance.new("Frame")
-    mid.Size = UDim2.new(1, 0, 0, 25)
-    mid.Position = UDim2.fromOffset(0, 12.5)
-    mid.BackgroundColor3 = theme.accent
-    mid.BorderSizePixel = 0
-    mid.ZIndex = 11
-    mid.Parent = host
-
-    -- Bottom half: rotated square centered at y=37.5, bottom vertex clipped
-    -- at y=50 -> flat bottom.
-    local bot = Instance.new("Frame")
-    bot.Size = UDim2.fromOffset(33, 33)
-    bot.AnchorPoint = Vector2.new(0.5, 0.5)
-    bot.Position = UDim2.new(0.5, 0, 0, 37.5)
-    bot.Rotation = 45
-    bot.BackgroundColor3 = theme.accent
-    bot.BorderSizePixel = 0
-    bot.ZIndex = 10
-    bot.Parent = host
+    -- The hex itself
+    hex.build(host, 46, 40, theme.accent, 10)
 
     local label = Instance.new("TextLabel")
     label.Size = UDim2.fromScale(1, 1)
@@ -670,7 +690,7 @@ local function buildHexButton(sg)
     label.Text = "P"
     label.TextColor3 = theme.fg
     label.Font = theme.fontBold
-    label.TextSize = 20
+    label.TextSize = 18
     label.ZIndex = 12
     label.Parent = host
 
@@ -768,10 +788,11 @@ end
 
 _MODULES["ui.container"] = function()
 -- Draggable category window. Holds feature rows. Wurst-style — stacks left-to-right
--- by default; user can drag them anywhere. Sharp corners with rotated-square
--- diamond accents at each corner for a hex/HUD look.
+-- by default; user can drag them anywhere.
+-- Real hexagon corner accents (rendered via ui/hex) at each corner of the box.
 
 local theme = require("ui.theme")
+local hex   = require("ui.hex")
 
 local UIS = game:GetService("UserInputService")
 
@@ -780,23 +801,21 @@ Container.__index = Container
 
 local nextIndex = 0
 
-local function cornerDiamond(parent, position, color)
-    local d = Instance.new("Frame")
-    d.Size = UDim2.fromOffset(10, 10)
-    d.Position = position
-    d.AnchorPoint = Vector2.new(0.5, 0.5)
-    d.Rotation = 45
-    d.BackgroundColor3 = color
-    d.BorderSizePixel = 0
-    d.ZIndex = 5
-    d.Parent = parent
+-- 14x12 ≈ regular hex proportions (12/14 ≈ 0.857; ideal is 0.866).
+local CORNER_HEX_W = 14
+local CORNER_HEX_H = 12
+
+local function placeCornerHex(parent, position, color)
+    local h = hex.build(parent, CORNER_HEX_W, CORNER_HEX_H, color, 5)
+    h.AnchorPoint = Vector2.new(0.5, 0.5)
+    h.Position    = position
 end
 
-local function addCornerDiamonds(parent, color)
-    cornerDiamond(parent, UDim2.new(0, 0, 0, 0), color) -- TL
-    cornerDiamond(parent, UDim2.new(1, 0, 0, 0), color) -- TR
-    cornerDiamond(parent, UDim2.new(0, 0, 1, 0), color) -- BL
-    cornerDiamond(parent, UDim2.new(1, 0, 1, 0), color) -- BR
+local function addCornerHexes(parent, color)
+    placeCornerHex(parent, UDim2.new(0, 0, 0, 0), color) -- TL
+    placeCornerHex(parent, UDim2.new(1, 0, 0, 0), color) -- TR
+    placeCornerHex(parent, UDim2.new(0, 0, 1, 0), color) -- BL
+    placeCornerHex(parent, UDim2.new(1, 0, 1, 0), color) -- BR
 end
 
 function Container.new(parent, name)
@@ -844,8 +863,8 @@ function Container.new(parent, name)
     list.SortOrder = Enum.SortOrder.LayoutOrder
     list.Padding = UDim.new(0, 1)
 
-    -- Corner diamonds (added last so they render on top of stroke + header)
-    addCornerDiamonds(root, theme.accent)
+    -- Real hexagon corner accents (drawn last so they sit on top of stroke + header)
+    addCornerHexes(root, theme.accent)
 
     -- Drag on header
     do
