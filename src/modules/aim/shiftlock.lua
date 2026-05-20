@@ -186,54 +186,13 @@ local function killForeignLoops()
     return killed, scanned
 end
 
-local FOREIGN_SCRIPT_PATTERNS = {
-    "shiftlock", "shift_lock", "shift%-lock",
-    "mouselock", "mouse_lock", "mouse%-lock",
-    "lockmouse", "centermouse",
-    "cameralock", "camera_lock",
-    "mouselockcontroller",
-}
-
-local function nameMatchesForeign(lowerName)
-    for _, pat in ipairs(FOREIGN_SCRIPT_PATTERNS) do
-        if lowerName:find(pat) then return true end
-    end
-    return false
-end
-
--- Tracks scripts WE disabled so we can put them back when Pantheon's shiftlock
--- goes off; we don't want to leave the game's shiftlock script disabled forever.
-local disabledScripts = {}
-
-local function disableForeignScripts()
-    local ps = lp():FindFirstChild("PlayerScripts")
-    if not ps then return 0 end
-    local count = 0
-    for _, d in ipairs(ps:GetDescendants()) do
-        if d:IsA("LocalScript") and nameMatchesForeign(d.Name:lower()) then
-            if not d.Disabled then
-                local ok = pcall(function() d.Disabled = true end)
-                if ok then
-                    table.insert(disabledScripts, d)
-                    count = count + 1
-                end
-            end
-        end
-    end
-    return count
-end
-
-local function reEnableForeignScripts()
-    local count = 0
-    for _, d in ipairs(disabledScripts) do
-        if d and d.Parent then
-            local ok = pcall(function() d.Disabled = false end)
-            if ok then count = count + 1 end
-        end
-    end
-    disabledScripts = {}
-    return count
-end
+-- (deliberately no disableForeignScripts / reEnableForeignScripts: the
+-- __newindex hook and the step-pin pass already block the game's writes when
+-- Pantheon is on, and the LocalScript stays running the whole time. When
+-- Pantheon goes off the hook is pass-through and the game's shiftlock works
+-- exactly as if Pantheon were never loaded. This avoids the toggle lag from
+-- walking PlayerScripts:GetDescendants() and the re-enable race that left
+-- the cursor stuck locked after disable.)
 
 -- Install a __newindex hook on UserInputService so we intercept every write to
 -- MouseBehavior. With killForeign on, only writes that match Pantheon's
@@ -337,11 +296,10 @@ end
 local function sweepForeigns(label)
     local g = killForeignGuis()
     local k, s = killForeignLoops()
-    local sc = disableForeignScripts()
-    if g > 0 or k > 0 or sc > 0 then
+    if g > 0 or k > 0 then
         log.info(string.format(
-            "shiftlock [%s]: killed %d GUI(s), %d/%d connection(s), %d script(s)",
-            label, g, k, s, sc
+            "shiftlock [%s]: killed %d GUI(s), %d/%d connection(s)",
+            label, g, k, s
         ))
     else
         log.debug(string.format(
