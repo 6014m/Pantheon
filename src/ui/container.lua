@@ -1,13 +1,17 @@
--- Draggable category container, rendered using the user's uploaded chamfered
--- panel image (rbxassetid://77797049442743). The image is a 64x64 PNG with
--- 24px chamfered corners (transparent), white center, used as a 9-slice via
--- ScaleType.Slice + SliceCenter so the chamfer angle stays clean at any
--- container aspect ratio.
+-- Draggable category container.
 --
--- The header is a hexagonal ImageLabel (height = 2*CHAMFER so the top and
--- bottom chamfers meet in the middle = a 6-sided shape). The body is a
--- chamfered rectangle ImageLabel that grows with feature count. They line
--- up at the seam because both use the same 24px chamfer.
+-- Visual: header bends OUTWARD at the top (chamfered top corners), then
+-- contorts into a square body below. No second inward chamfer at the
+-- header-body seam.
+--
+-- Implementation:
+--   * Header is an ImageLabel using the uploaded chamfered_panel image
+--     (rbxassetid://77797049442743) tinted accent. The image has chamfers on
+--     ALL four corners, so we lay a solid accent-colored strip across the
+--     bottom 24px to hide the bottom chamfer -- net visual is "chamfered
+--     top, flat rectangular bottom."
+--   * Body is just a plain Frame with theme.bg and a 1px UIStroke. Square
+--     corners, full width, grows with the feature stack.
 
 local theme = require("ui.theme")
 
@@ -21,7 +25,7 @@ local nextIndex = 0
 local IMAGE_ID     = "rbxassetid://77797049442743"
 local CHAMFER      = 24
 local SLICE_CENTER = Rect.new(CHAMFER, CHAMFER, 64 - CHAMFER, 64 - CHAMFER)
-local HEADER_H     = CHAMFER * 2   -- = 48; makes the header a clean hexagon
+local HEADER_H     = 48                                  -- 2 * CHAMFER
 
 function Container.new(parent, name)
     local self = setmetatable({}, Container)
@@ -43,7 +47,7 @@ function Container.new(parent, name)
     rootList.FillDirection = Enum.FillDirection.Vertical
     rootList.SortOrder = Enum.SortOrder.LayoutOrder
 
-    -- Header: hexagonal chamfered shape in accent color
+    -- Header: chamfered ImageLabel
     local header = Instance.new("ImageLabel")
     header.Name = "Header"
     header.Size = UDim2.new(1, 0, 0, HEADER_H)
@@ -54,6 +58,18 @@ function Container.new(parent, name)
     header.SliceCenter = SLICE_CENTER
     header.LayoutOrder = 1
     header.Parent = root
+
+    -- Hide the IMAGE's bottom chamfer so the header bottom reads as a flat
+    -- rectangle that feeds directly into the body. Accent-colored strip
+    -- covers the bottom 24px (the chamfered-corner row of the 9-slice).
+    local bottomCover = Instance.new("Frame")
+    bottomCover.Name = "BottomCover"
+    bottomCover.Size = UDim2.new(1, 0, 0, CHAMFER)
+    bottomCover.Position = UDim2.new(0, 0, 1, -CHAMFER)
+    bottomCover.BackgroundColor3 = theme.accent
+    bottomCover.BorderSizePixel = 0
+    bottomCover.ZIndex = 2
+    bottomCover.Parent = header
 
     local headerText = Instance.new("TextLabel")
     headerText.Size = UDim2.fromScale(1, 1)
@@ -73,25 +89,19 @@ function Container.new(parent, name)
     dragHandle.ZIndex = 8
     dragHandle.Parent = header
 
-    -- Body: chamfered rectangle in body color, grows with features
-    local body = Instance.new("ImageLabel")
+    -- Body: plain square panel
+    local body = Instance.new("Frame")
     body.Name = "Body"
     body.Size = UDim2.new(1, 0, 0, 0)
     body.AutomaticSize = Enum.AutomaticSize.Y
-    body.BackgroundTransparency = 1
-    body.Image = IMAGE_ID
-    body.ImageColor3 = theme.bg
-    body.ScaleType = Enum.ScaleType.Slice
-    body.SliceCenter = SLICE_CENTER
+    body.BackgroundColor3 = theme.bg
+    body.BorderSizePixel = 0
     body.LayoutOrder = 2
     body.Parent = root
 
-    -- Inset features so they don't render outside the chamfered region.
-    local bodyPad = Instance.new("UIPadding", body)
-    bodyPad.PaddingTop    = UDim.new(0, CHAMFER + 4)
-    bodyPad.PaddingBottom = UDim.new(0, CHAMFER + 4)
-    bodyPad.PaddingLeft   = UDim.new(0, 8)
-    bodyPad.PaddingRight  = UDim.new(0, 8)
+    local stroke = Instance.new("UIStroke", body)
+    stroke.Color = theme.border
+    stroke.Thickness = 1
 
     local features = Instance.new("Frame")
     features.Name = "Features"
