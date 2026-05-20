@@ -160,16 +160,37 @@ local function nameMatchesForeign(lowerName)
     return false
 end
 
+-- Tracks scripts WE disabled so we can put them back when Pantheon's shiftlock
+-- goes off; we don't want to leave the game's shiftlock script disabled forever.
+local disabledScripts = {}
+
 local function disableForeignScripts()
     local ps = lp():FindFirstChild("PlayerScripts")
     if not ps then return 0 end
     local count = 0
     for _, d in ipairs(ps:GetDescendants()) do
         if d:IsA("LocalScript") and nameMatchesForeign(d.Name:lower()) then
-            local ok = pcall(function() d.Disabled = true end)
+            if not d.Disabled then
+                local ok = pcall(function() d.Disabled = true end)
+                if ok then
+                    table.insert(disabledScripts, d)
+                    count = count + 1
+                end
+            end
+        end
+    end
+    return count
+end
+
+local function reEnableForeignScripts()
+    local count = 0
+    for _, d in ipairs(disabledScripts) do
+        if d and d.Parent then
+            local ok = pcall(function() d.Disabled = false end)
             if ok then count = count + 1 end
         end
     end
+    disabledScripts = {}
     return count
 end
 
@@ -192,7 +213,10 @@ local function installMouseBehaviorHook()
     end
 
     local hookFn = function(self, key, value)
-        if state.killForeign and self == UserInputService then
+        -- killForeign behaviour is gated on Pantheon's shiftlock master toggle.
+        -- When Pantheon shiftlock is OFF, the hook is a pass-through and the
+        -- game's normal shiftlock works again.
+        if state.shiftlock_enabled and state.killForeign and self == UserInputService then
             local block = false
             if key == "MouseBehavior" then
                 local wanted = state.shiftlock_active
@@ -360,7 +384,12 @@ function Shiftlock.setEnabled(v)
         if state.killForeign then sweepForeigns("enable") end
     else
         Shiftlock.forceOff()
-        if state.killForeign then sweepForeigns("disable") end
+        -- Restore everything we touched so the game's normal shiftlock can
+        -- take over: re-enable scripts we disabled and hand DevEnableMouseLock
+        -- back to the game.
+        local n = reEnableForeignScripts()
+        if n > 0 then log.info("shiftlock: re-enabled " .. n .. " script(s) on disable") end
+        pcall(function() lp().DevEnableMouseLock = true end)
     end
 end
 
@@ -374,13 +403,13 @@ local function step()
     -- enabled and currently active.
     local shouldLock = state.shiftlock_enabled and state.shiftlock_active
 
-    -- ===== always-on pin pass (when killForeign is on) =====
-    -- Runs even when Pantheon's shiftlock toggle is OFF, so foreign scripts
-    -- can't keep the cursor locked / cursor hidden / cursor icon swapped /
-    -- character rotation locked after we go inactive. Our BindToRenderStep
-    -- priority is Last (= 2000), so these writes are the final ones before
-    -- the frame renders.
-    if state.killForeign then
+    -- ===== pin pass (only while Pantheon's shiftlock is enabled) =====
+    -- Forces all four shiftlock-related properties to our desired state every
+    -- frame so foreign scripts can't ghost-control them. Gated on
+    -- shiftlock_enabled so that disabling Pantheon's shiftlock hands control
+    -- back to the game's normal shiftlock (otherwise the pin would keep
+    -- writing Default and the game's lock wouldn't work).
+    if state.shiftlock_enabled and state.killForeign then
         local hum = self_state.humanoid
 
         if hum then
