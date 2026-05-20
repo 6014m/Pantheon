@@ -1,28 +1,26 @@
--- Main lock-on driver. Owns the hotkey, the toggle/hold state machine, and the
--- per-frame target-validity loop. Writes to the shared aim state; lockon+ and
--- highlight react.
+-- Main lock-on driver. Hotkey dispatch comes through core.keybinds (handled by
+-- the feature row), so this module only exposes the press/release entry points
+-- and runs the per-frame target-validity loop.
 
 local state     = require("modules.aim.state")
 local targeting = require("modules.aim.targeting")
 local highlight = require("modules.aim.highlight")
 
-local UserInputService = game:GetService("UserInputService")
-local RunService       = game:GetService("RunService")
+local RunService = game:GetService("RunService")
 
 local LockOn = {}
 
-local self_state = {
-    hotkey       = Enum.KeyCode.E,
-    holdMode     = false,
-    runConn      = nil,
-    inputConn    = nil,
-    inputEndConn = nil,
+local s = {
+    holdMode   = false,
+    holdActive = false,
+    runConn    = nil,
 }
 
 local function releaseLock()
     state.setLocked(false)
     state.lockon_held = false
     state.setTarget(nil, nil)
+    s.holdActive = false
     highlight.update(nil, nil)
 end
 
@@ -57,31 +55,26 @@ local function step()
     highlight.update(t, function(exclude) return targeting.getBestTarget(exclude) end)
 end
 
-local function onInputBegan(input, gpe)
-    if gpe then return end
+-- Called by the central keybind dispatcher on key press.
+function LockOn.hotkeyPress()
     if not state.lockon_enabled then return end
-    if input.KeyCode ~= self_state.hotkey then return end
-
-    if self_state.holdMode then
-        engageLock()
+    if s.holdMode then
+        if not state.lockon_locked then engageLock() end
+        s.holdActive = true
     else
         if state.lockon_locked then releaseLock() else engageLock() end
     end
 end
 
-local function onInputEnded(input)
-    if input.KeyCode ~= self_state.hotkey then return end
-    if self_state.holdMode and state.lockon_locked then
+-- Called by the central keybind dispatcher on key release.
+function LockOn.hotkeyRelease()
+    if s.holdMode and s.holdActive and state.lockon_locked then
         releaseLock()
     end
 end
 
-function LockOn.setHotkey(key)
-    self_state.hotkey = key
-end
-
 function LockOn.setHoldMode(v)
-    self_state.holdMode = v and true or false
+    s.holdMode = v and true or false
 end
 
 function LockOn.setEnabled(v)
@@ -90,15 +83,11 @@ function LockOn.setEnabled(v)
 end
 
 function LockOn.init()
-    self_state.inputConn    = UserInputService.InputBegan:Connect(onInputBegan)
-    self_state.inputEndConn = UserInputService.InputEnded:Connect(onInputEnded)
-    self_state.runConn      = RunService.Heartbeat:Connect(step)
+    s.runConn = RunService.Heartbeat:Connect(step)
 end
 
 function LockOn.destroy()
-    if self_state.inputConn    then self_state.inputConn:Disconnect()    end
-    if self_state.inputEndConn then self_state.inputEndConn:Disconnect() end
-    if self_state.runConn      then self_state.runConn:Disconnect()      end
+    if s.runConn then s.runConn:Disconnect() end
 end
 
 return LockOn

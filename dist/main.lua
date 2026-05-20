@@ -176,237 +176,126 @@ end
 return persist
 end
 
+_MODULES["core.keybinds"] = function()
+-- Central keybind dispatcher. Features register (id, key, onPress, onRelease).
+-- One pair of UserInputService listeners routes events to the right callback(s).
+-- Multiple features can share a key — all callbacks fire.
+
+local UserInputService = game:GetService("UserInputService")
+
+local Keybinds = {}
+
+local bindings = {} -- [id] = { key = KeyCode, onPress = fn, onRelease = fn }
+local keyToIds = {} -- [KeyCode] = { id, ... }
+local hooked   = false
+
+local function removeFromKeyTable(id)
+    local b = bindings[id]
+    if not b or not b.key then return end
+    local arr = keyToIds[b.key]
+    if not arr then return end
+    for i, fid in ipairs(arr) do
+        if fid == id then
+            table.remove(arr, i)
+            break
+        end
+    end
+end
+
+function Keybinds.set(id, key, onPress, onRelease)
+    if not id then return end
+    removeFromKeyTable(id)
+    bindings[id] = { key = key, onPress = onPress, onRelease = onRelease }
+    if key and key ~= Enum.KeyCode.Unknown then
+        keyToIds[key] = keyToIds[key] or {}
+        table.insert(keyToIds[key], id)
+    end
+end
+
+function Keybinds.get(id)
+    local b = bindings[id]
+    return b and b.key
+end
+
+function Keybinds.clear(id)
+    removeFromKeyTable(id)
+    bindings[id] = nil
+end
+
+function Keybinds.all()
+    return bindings
+end
+
+function Keybinds.init()
+    if hooked then return end
+    hooked = true
+
+    UserInputService.InputBegan:Connect(function(input, gpe)
+        if gpe then return end
+        if input.KeyCode == Enum.KeyCode.Unknown then return end
+        local ids = keyToIds[input.KeyCode]
+        if not ids then return end
+        for _, id in ipairs(ids) do
+            local b = bindings[id]
+            if b and b.onPress then
+                task.spawn(b.onPress)
+            end
+        end
+    end)
+
+    UserInputService.InputEnded:Connect(function(input)
+        if input.KeyCode == Enum.KeyCode.Unknown then return end
+        local ids = keyToIds[input.KeyCode]
+        if not ids then return end
+        for _, id in ipairs(ids) do
+            local b = bindings[id]
+            if b and b.onRelease then
+                task.spawn(b.onRelease)
+            end
+        end
+    end)
+end
+
+return Keybinds
+end
+
 _MODULES["ui.theme"] = function()
 -- Pantheon visual theme. Adjust here, all components inherit.
 
 local theme = {
-    accent  = Color3.fromRGB(85, 130, 255),
-    bg      = Color3.fromRGB(20, 20, 22),
-    bgAlt   = Color3.fromRGB(28, 28, 32),
-    bgDark  = Color3.fromRGB(15, 15, 17),
-    fg      = Color3.fromRGB(230, 230, 235),
-    fgDim   = Color3.fromRGB(150, 150, 160),
-    border  = Color3.fromRGB(45, 45, 50),
-    success = Color3.fromRGB(95, 200, 130),
-    danger  = Color3.fromRGB(220, 90, 90),
+    accent   = Color3.fromRGB(85, 130, 255),
+    bg       = Color3.fromRGB(20, 20, 22),
+    bgAlt    = Color3.fromRGB(28, 28, 32),
+    bgDark   = Color3.fromRGB(15, 15, 17),
+
+    fg       = Color3.fromRGB(230, 230, 235),
+    fgDim    = Color3.fromRGB(150, 150, 160),
+    border   = Color3.fromRGB(45, 45, 50),
+
+    -- Wurst-style ON/OFF state colors
+    on       = Color3.fromRGB(60, 222, 60),
+    off      = Color3.fromRGB(222, 60, 60),
+    success  = Color3.fromRGB(60, 222, 60),
+    danger   = Color3.fromRGB(222, 60, 60),
 
     font     = Enum.Font.GothamMedium,
     fontBold = Enum.Font.GothamBold,
     fontMono = Enum.Font.Code,
 
-    windowSize    = UDim2.fromOffset(560, 380),
-    sidebarWidth  = 140,
-    rowHeight     = 32,
-    cornerRadius  = UDim.new(0, 6),
-    padding       = 8,
+    -- Sizes
+    containerWidth = 220,
+    containerGap   = 12,
+    featureHeight  = 30,
+    rowHeight      = 30,
+    cornerRadius   = UDim.new(0, 4),
+    padding        = 6,
 }
 
 return theme
 end
 
-_MODULES["ui.window"] = function()
--- Root Pantheon window: draggable, sidebar + content, tab API.
-
-local env   = require("core.env")
-local theme = require("ui.theme")
-
-local UIS = game:GetService("UserInputService")
-
-local window = {}
-
-function window.new(title)
-    local sg = Instance.new("ScreenGui")
-    sg.Name = "PantheonGui"
-    sg.IgnoreGuiInset = true
-    sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    sg.ResetOnSpawn = false
-    sg.Parent = env.guiParent()
-    env.protectGui(sg)
-
-    local root = Instance.new("Frame")
-    root.Size = theme.windowSize
-    root.Position = UDim2.fromScale(0.5, 0.5)
-    root.AnchorPoint = Vector2.new(0.5, 0.5)
-    root.BackgroundColor3 = theme.bg
-    root.BorderSizePixel = 0
-    root.Parent = sg
-    Instance.new("UICorner", root).CornerRadius = theme.cornerRadius
-
-    local stroke = Instance.new("UIStroke", root)
-    stroke.Color = theme.border
-    stroke.Thickness = 1
-
-    -- Header
-    local header = Instance.new("Frame")
-    header.Size = UDim2.new(1, 0, 0, 36)
-    header.BackgroundColor3 = theme.bgAlt
-    header.BorderSizePixel = 0
-    header.Parent = root
-    Instance.new("UICorner", header).CornerRadius = theme.cornerRadius
-
-    local headerMask = Instance.new("Frame")
-    headerMask.Size = UDim2.new(1, 0, 0.5, 0)
-    headerMask.Position = UDim2.new(0, 0, 0.5, 0)
-    headerMask.BackgroundColor3 = theme.bgAlt
-    headerMask.BorderSizePixel = 0
-    headerMask.Parent = header
-
-    local titleLabel = Instance.new("TextLabel")
-    titleLabel.Size = UDim2.new(1, -52, 1, 0)
-    titleLabel.Position = UDim2.fromOffset(12, 0)
-    titleLabel.BackgroundTransparency = 1
-    titleLabel.Text = title or "Pantheon"
-    titleLabel.TextColor3 = theme.fg
-    titleLabel.Font = theme.fontBold
-    titleLabel.TextSize = 14
-    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
-    titleLabel.Parent = header
-
-    local closeBtn = Instance.new("TextButton")
-    closeBtn.Size = UDim2.fromOffset(28, 28)
-    closeBtn.Position = UDim2.new(1, -32, 0, 4)
-    closeBtn.BackgroundColor3 = theme.bgDark
-    closeBtn.BorderSizePixel = 0
-    closeBtn.Text = "X"
-    closeBtn.TextColor3 = theme.fg
-    closeBtn.Font = theme.font
-    closeBtn.TextSize = 13
-    closeBtn.Parent = header
-    Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 4)
-
-    -- Sidebar
-    local sidebar = Instance.new("Frame")
-    sidebar.Size = UDim2.new(0, theme.sidebarWidth, 1, -36)
-    sidebar.Position = UDim2.new(0, 0, 0, 36)
-    sidebar.BackgroundColor3 = theme.bgDark
-    sidebar.BorderSizePixel = 0
-    sidebar.Parent = root
-
-    local sidebarList = Instance.new("UIListLayout", sidebar)
-    sidebarList.FillDirection = Enum.FillDirection.Vertical
-    sidebarList.SortOrder = Enum.SortOrder.LayoutOrder
-    sidebarList.Padding = UDim.new(0, 4)
-    sidebarList.HorizontalAlignment = Enum.HorizontalAlignment.Center
-
-    local sidebarPad = Instance.new("UIPadding", sidebar)
-    sidebarPad.PaddingTop = UDim.new(0, 8)
-
-    -- Content area
-    local content = Instance.new("Frame")
-    content.Size = UDim2.new(1, -theme.sidebarWidth, 1, -36)
-    content.Position = UDim2.new(0, theme.sidebarWidth, 0, 36)
-    content.BackgroundColor3 = theme.bg
-    content.BorderSizePixel = 0
-    content.Parent = root
-
-    -- Drag
-    do
-        local dragging, dragStart, startPos = false, nil, nil
-        header.InputBegan:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.MouseButton1
-               or input.UserInputType == Enum.UserInputType.Touch then
-                dragging  = true
-                dragStart = input.Position
-                startPos  = root.Position
-            end
-        end)
-        UIS.InputChanged:Connect(function(input)
-            if not dragging then return end
-            if input.UserInputType == Enum.UserInputType.MouseMovement
-               or input.UserInputType == Enum.UserInputType.Touch then
-                local delta = input.Position - dragStart
-                root.Position = UDim2.new(
-                    startPos.X.Scale, startPos.X.Offset + delta.X,
-                    startPos.Y.Scale, startPos.Y.Offset + delta.Y
-                )
-            end
-        end)
-        UIS.InputEnded:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.MouseButton1
-               or input.UserInputType == Enum.UserInputType.Touch then
-                dragging = false
-            end
-        end)
-    end
-
-    -- Tab state
-    local tabs = {}
-    local activeTab = nil
-
-    local function selectTab(name)
-        if activeTab == name then return end
-        if activeTab then
-            tabs[activeTab].page.Visible = false
-            tabs[activeTab].button.BackgroundColor3 = theme.bgDark
-            tabs[activeTab].button.TextColor3 = theme.fgDim
-        end
-        activeTab = name
-        tabs[name].page.Visible = true
-        tabs[name].button.BackgroundColor3 = theme.bgAlt
-        tabs[name].button.TextColor3 = theme.fg
-    end
-
-    local self = {
-        ScreenGui = sg,
-        Root      = root,
-        Content   = content,
-    }
-
-    function self:AddTab(name)
-        local btn = Instance.new("TextButton")
-        btn.Size = UDim2.new(1, -16, 0, 28)
-        btn.BackgroundColor3 = theme.bgDark
-        btn.AutoButtonColor = false
-        btn.BorderSizePixel = 0
-        btn.Text = name
-        btn.TextColor3 = theme.fgDim
-        btn.Font = theme.font
-        btn.TextSize = 13
-        btn.Parent = sidebar
-        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
-
-        local page = Instance.new("ScrollingFrame")
-        page.Size = UDim2.new(1, -16, 1, -16)
-        page.Position = UDim2.fromOffset(8, 8)
-        page.BackgroundTransparency = 1
-        page.BorderSizePixel = 0
-        page.ScrollBarThickness = 4
-        page.ScrollBarImageColor3 = theme.fgDim
-        page.CanvasSize = UDim2.fromScale(0, 0)
-        page.AutomaticCanvasSize = Enum.AutomaticSize.Y
-        page.Visible = false
-        page.Parent = content
-
-        local pageList = Instance.new("UIListLayout", page)
-        pageList.SortOrder = Enum.SortOrder.LayoutOrder
-        pageList.Padding = UDim.new(0, 6)
-
-        tabs[name] = { button = btn, page = page }
-        btn.MouseButton1Click:Connect(function() selectTab(name) end)
-
-        if not activeTab then selectTab(name) end
-
-        return page
-    end
-
-    function self:Toggle()
-        root.Visible = not root.Visible
-    end
-
-    function self:Destroy()
-        sg:Destroy()
-    end
-
-    closeBtn.MouseButton1Click:Connect(function() self:Toggle() end)
-
-    return self
-end
-
-return window
-end
-
 _MODULES["ui.components"] = function()
--- UI primitives: Section, Label, Button, Toggle, Slider.
+-- UI primitives: Section, Label, Button, Toggle, Slider, KeybindSetter.
 
 local theme = require("ui.theme")
 
@@ -479,20 +368,20 @@ function components.Toggle(parent, opts)
     label.Text = opts.text or "Toggle"
     label.TextColor3 = theme.fg
     label.Font = theme.font
-    label.TextSize = 13
+    label.TextSize = 12
     label.TextXAlignment = Enum.TextXAlignment.Left
     label.Parent = f
 
     local switch = Instance.new("TextButton")
-    switch.Size = UDim2.fromOffset(36, 20)
-    switch.Position = UDim2.new(1, -46, 0.5, -10)
+    switch.Size = UDim2.fromOffset(36, 18)
+    switch.Position = UDim2.new(1, -44, 0.5, -9)
     switch.AutoButtonColor = false
     switch.Text = ""
     switch.Parent = f
     Instance.new("UICorner", switch).CornerRadius = UDim.new(1, 0)
 
     local knob = Instance.new("Frame")
-    knob.Size = UDim2.fromOffset(16, 16)
+    knob.Size = UDim2.fromOffset(14, 14)
     knob.BackgroundColor3 = theme.fg
     knob.BorderSizePixel = 0
     knob.Parent = switch
@@ -500,7 +389,7 @@ function components.Toggle(parent, opts)
 
     local function apply()
         switch.BackgroundColor3 = state and theme.accent or theme.bgDark
-        knob.Position = state and UDim2.new(1, -18, 0.5, -8) or UDim2.fromOffset(2, 2)
+        knob.Position = state and UDim2.new(1, -16, 0.5, -7) or UDim2.fromOffset(2, 2)
     end
     apply()
 
@@ -530,14 +419,14 @@ function components.Slider(parent, opts)
     local step  = opts.step or 1
     local value = opts.default or min
 
-    local f = baseRow(parent, 46)
+    local f = baseRow(parent, 42)
 
     local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -20, 0, 20)
-    label.Position = UDim2.fromOffset(10, 4)
+    label.Size = UDim2.new(1, -20, 0, 18)
+    label.Position = UDim2.fromOffset(10, 2)
     label.BackgroundTransparency = 1
     label.Font = theme.font
-    label.TextSize = 13
+    label.TextSize = 12
     label.TextColor3 = theme.fg
     label.TextXAlignment = Enum.TextXAlignment.Left
     label.Text = string.format("%s: %s", opts.text or "Slider", tostring(value))
@@ -545,7 +434,7 @@ function components.Slider(parent, opts)
 
     local track = Instance.new("Frame")
     track.Size = UDim2.new(1, -20, 0, 6)
-    track.Position = UDim2.fromOffset(10, 30)
+    track.Position = UDim2.fromOffset(10, 26)
     track.BackgroundColor3 = theme.bgDark
     track.BorderSizePixel = 0
     track.Parent = f
@@ -607,7 +496,533 @@ function components.Slider(parent, opts)
     return api
 end
 
+local function keyDisplayName(k)
+    if not k or k == Enum.KeyCode.Unknown then return "<none>" end
+    return (tostring(k):gsub("Enum.KeyCode.", ""))
+end
+
+function components.KeybindSetter(parent, opts)
+    opts = opts or {}
+    local current = opts.default or Enum.KeyCode.Unknown
+    local listening = false
+
+    local f = baseRow(parent, 28)
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(0.5, -10, 1, 0)
+    label.Position = UDim2.fromOffset(10, 0)
+    label.BackgroundTransparency = 1
+    label.Text = opts.label or "Keybind"
+    label.TextColor3 = theme.fg
+    label.Font = theme.font
+    label.TextSize = 12
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = f
+
+    local btn = Instance.new("TextButton")
+    btn.Position = UDim2.new(0.5, 4, 0.5, -10)
+    btn.Size = UDim2.new(0.5, -14, 0, 20)
+    btn.BackgroundColor3 = theme.bgDark
+    btn.AutoButtonColor = false
+    btn.TextColor3 = theme.fgDim
+    btn.Font = theme.fontMono
+    btn.TextSize = 11
+    btn.Text = keyDisplayName(current)
+    btn.Parent = f
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 3)
+
+    btn.MouseButton1Click:Connect(function()
+        if listening then return end
+        listening = true
+        btn.Text = "<press a key>"
+        btn.BackgroundColor3 = theme.accent
+
+        local conn
+        conn = UIS.InputBegan:Connect(function(input)
+            if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+            if input.KeyCode == Enum.KeyCode.Unknown then return end
+            local k = input.KeyCode
+            if k == Enum.KeyCode.Escape then
+                listening = false
+                btn.Text = keyDisplayName(current)
+                btn.BackgroundColor3 = theme.bgDark
+                conn:Disconnect()
+                return
+            end
+            if k == Enum.KeyCode.Backspace then
+                current = Enum.KeyCode.Unknown
+                listening = false
+                btn.Text = keyDisplayName(current)
+                btn.BackgroundColor3 = theme.bgDark
+                if opts.onChange then opts.onChange(current) end
+                conn:Disconnect()
+                return
+            end
+            current = k
+            listening = false
+            btn.Text = keyDisplayName(current)
+            btn.BackgroundColor3 = theme.bgDark
+            if opts.onChange then opts.onChange(current) end
+            conn:Disconnect()
+        end)
+    end)
+
+    return {
+        get = function() return current end,
+        set = function(k)
+            current = k
+            btn.Text = keyDisplayName(current)
+            if opts.onChange then opts.onChange(current) end
+        end,
+    }
+end
+
 return components
+end
+
+_MODULES["ui.window"] = function()
+-- Pantheon root UI. Hosts a ScreenGui that contains a `Containers` parent (for
+-- draggable category windows) plus a floating "P" open/close button.
+-- Master hotkey (default RightControl) toggles visibility.
+
+local env      = require("core.env")
+local theme    = require("ui.theme")
+local keybinds = require("core.keybinds")
+
+local UIS = game:GetService("UserInputService")
+
+local Window = {}
+
+local s = {
+    screenGui = nil,
+    container = nil,
+    openBtn   = nil,
+    visible   = true,
+    masterKey = Enum.KeyCode.RightControl,
+}
+
+local function buildOpenButton(sg)
+    local btn = Instance.new("TextButton")
+    btn.Name = "PantheonOpenButton"
+    btn.Size = UDim2.fromOffset(40, 40)
+    btn.Position = UDim2.new(0, 16, 1, -56)
+    btn.BackgroundColor3 = theme.accent
+    btn.BorderSizePixel = 0
+    btn.Text = "P"
+    btn.TextColor3 = theme.fg
+    btn.Font = theme.fontBold
+    btn.TextSize = 18
+    btn.AutoButtonColor = false
+    btn.Parent = sg
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(1, 0)
+    Instance.new("UIStroke", btn).Color = theme.border
+
+    -- Draggable + click-to-toggle (click only fires if not dragged)
+    local dragging, dragStart, startPos = false, nil, nil
+    local moved = false
+    btn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+           or input.UserInputType == Enum.UserInputType.Touch then
+            dragging  = true
+            dragStart = input.Position
+            startPos  = btn.Position
+            moved     = false
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+           or input.UserInputType == Enum.UserInputType.Touch then
+            local delta = input.Position - dragStart
+            if delta.Magnitude > 4 then moved = true end
+            btn.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+           or input.UserInputType == Enum.UserInputType.Touch then
+            if dragging and not moved then Window.toggle() end
+            dragging = false
+        end
+    end)
+
+    return btn
+end
+
+function Window.init()
+    if s.screenGui then return end
+
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "PantheonGui"
+    sg.IgnoreGuiInset = true
+    sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    sg.ResetOnSpawn = false
+    sg.Parent = env.guiParent()
+    env.protectGui(sg)
+
+    local containerHost = Instance.new("Frame")
+    containerHost.Name = "Containers"
+    containerHost.Size = UDim2.fromScale(1, 1)
+    containerHost.BackgroundTransparency = 1
+    containerHost.Parent = sg
+
+    s.screenGui = sg
+    s.container = containerHost
+    s.openBtn   = buildOpenButton(sg)
+
+    keybinds.set("ui.master_toggle", s.masterKey, Window.toggle)
+end
+
+function Window.toggle()
+    Window.setVisible(not s.visible)
+end
+
+function Window.setVisible(v)
+    s.visible = v
+    if s.container then s.container.Visible = v end
+end
+
+function Window.isVisible()
+    return s.visible
+end
+
+function Window.parent()
+    return s.container
+end
+
+function Window.setMasterKey(key)
+    s.masterKey = key
+    keybinds.set("ui.master_toggle", key, Window.toggle)
+end
+
+return Window
+end
+
+_MODULES["ui.container"] = function()
+-- Draggable category window. Holds feature rows. Wurst-style layout: stacks
+-- left-to-right by default; user can drag them anywhere.
+
+local theme = require("ui.theme")
+
+local UIS = game:GetService("UserInputService")
+
+local Container = {}
+Container.__index = Container
+
+local nextIndex = 0
+
+function Container.new(parent, name)
+    local self = setmetatable({}, Container)
+
+    local idx = nextIndex
+    nextIndex = nextIndex + 1
+    local x = 16 + idx * (theme.containerWidth + theme.containerGap)
+
+    local root = Instance.new("Frame")
+    root.Name = "Container_" .. name
+    root.Size = UDim2.new(0, theme.containerWidth, 0, 28)
+    root.AutomaticSize = Enum.AutomaticSize.Y
+    root.Position = UDim2.fromOffset(x, 16)
+    root.BackgroundColor3 = theme.bg
+    root.BorderSizePixel = 0
+    root.Parent = parent
+    Instance.new("UICorner", root).CornerRadius = theme.cornerRadius
+
+    local stroke = Instance.new("UIStroke", root)
+    stroke.Color = theme.border
+    stroke.Thickness = 1
+
+    -- Header
+    local header = Instance.new("TextLabel")
+    header.Name = "Header"
+    header.Size = UDim2.new(1, 0, 0, 28)
+    header.BackgroundColor3 = theme.accent
+    header.BorderSizePixel = 0
+    header.Text = name
+    header.TextColor3 = theme.fg
+    header.Font = theme.fontBold
+    header.TextSize = 13
+    header.Parent = root
+    Instance.new("UICorner", header).CornerRadius = theme.cornerRadius
+
+    -- Mask the rounded bottom corners of the header so it tiles flush with the body
+    local headerMask = Instance.new("Frame")
+    headerMask.Size = UDim2.new(1, 0, 0.5, 0)
+    headerMask.Position = UDim2.new(0, 0, 0.5, 0)
+    headerMask.BackgroundColor3 = theme.accent
+    headerMask.BorderSizePixel = 0
+    headerMask.Parent = header
+
+    -- Features stack
+    local features = Instance.new("Frame")
+    features.Name = "Features"
+    features.Position = UDim2.fromOffset(0, 28)
+    features.Size = UDim2.new(1, 0, 0, 0)
+    features.AutomaticSize = Enum.AutomaticSize.Y
+    features.BackgroundTransparency = 1
+    features.Parent = root
+
+    local list = Instance.new("UIListLayout", features)
+    list.SortOrder = Enum.SortOrder.LayoutOrder
+    list.Padding = UDim.new(0, 1)
+
+    -- Drag handler on the header
+    do
+        local dragging, dragStart, startPos = false, nil, nil
+        header.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+               or input.UserInputType == Enum.UserInputType.Touch then
+                dragging  = true
+                dragStart = input.Position
+                startPos  = root.Position
+            end
+        end)
+        UIS.InputChanged:Connect(function(input)
+            if not dragging then return end
+            if input.UserInputType == Enum.UserInputType.MouseMovement
+               or input.UserInputType == Enum.UserInputType.Touch then
+                local delta = input.Position - dragStart
+                root.Position = UDim2.new(
+                    startPos.X.Scale, startPos.X.Offset + delta.X,
+                    startPos.Y.Scale, startPos.Y.Offset + delta.Y
+                )
+            end
+        end)
+        UIS.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+               or input.UserInputType == Enum.UserInputType.Touch then
+                dragging = false
+            end
+        end)
+    end
+
+    self.root     = root
+    self.features = features
+    self.name     = name
+    self._count   = 0
+
+    return self
+end
+
+function Container:add(featureRoot)
+    self._count = self._count + 1
+    featureRoot.LayoutOrder = self._count
+    featureRoot.Parent = self.features
+    return self
+end
+
+return Container
+end
+
+_MODULES["ui.feature"] = function()
+-- Feature row: [name] [ON/OFF indicator] [cog].
+-- Cog click expands an inline settings panel below the row. The panel always
+-- starts with a keybind setter; per-feature options follow.
+--
+-- Declarative API:
+--   feature.declare({
+--     id           = "aim.lockon",            -- stable id for keybind persistence
+--     name         = "Lock-On",
+--     default      = false,                   -- initial on/off
+--     defaultKey   = Enum.KeyCode.E,          -- default keybind (nil = unbound)
+--     onToggle     = function(enabled) end,   -- called on on/off flips
+--     onKey        = function() end,          -- called when hotkey pressed (default: flip toggle)
+--     onKeyRelease = function() end,          -- called when hotkey released
+--     settings     = { { type = "toggle"/"slider"/"button", ... }, ... },
+--   })
+-- Returns { root = Frame, id = ..., setEnabled = fn, getEnabled = fn }
+
+local theme      = require("ui.theme")
+local keybinds   = require("core.keybinds")
+local components = require("ui.components")
+
+local Feature = {}
+
+local nextId = 0
+
+function Feature.declare(def)
+    nextId = nextId + 1
+    local id = def.id or ("feature_" .. nextId)
+
+    local root = Instance.new("Frame")
+    root.Name = "Feature_" .. id
+    root.Size = UDim2.new(1, 0, 0, theme.featureHeight)
+    root.AutomaticSize = Enum.AutomaticSize.Y
+    root.BackgroundTransparency = 1
+
+    -- Row
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, theme.featureHeight)
+    row.BackgroundColor3 = theme.bgAlt
+    row.BorderSizePixel = 0
+    row.Parent = root
+
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Position = UDim2.fromOffset(8, 0)
+    nameLabel.Size = UDim2.new(1, -84, 1, 0)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Text = def.name or "Feature"
+    nameLabel.TextColor3 = theme.fgDim
+    nameLabel.Font = theme.font
+    nameLabel.TextSize = 13
+    nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+    nameLabel.Parent = row
+
+    local indicator = Instance.new("TextButton")
+    indicator.Position = UDim2.new(1, -76, 0.5, -10)
+    indicator.Size = UDim2.fromOffset(40, 20)
+    indicator.BackgroundColor3 = theme.off
+    indicator.AutoButtonColor = false
+    indicator.Text = "OFF"
+    indicator.TextColor3 = theme.fg
+    indicator.Font = theme.fontBold
+    indicator.TextSize = 10
+    indicator.Parent = row
+    Instance.new("UICorner", indicator).CornerRadius = UDim.new(0, 3)
+
+    local cog = Instance.new("TextButton")
+    cog.Position = UDim2.new(1, -28, 0.5, -10)
+    cog.Size = UDim2.fromOffset(20, 20)
+    cog.BackgroundColor3 = theme.bgDark
+    cog.AutoButtonColor = false
+    cog.Text = "\u{2699}"
+    cog.TextColor3 = theme.fgDim
+    cog.Font = theme.font
+    cog.TextSize = 14
+    cog.Parent = row
+    Instance.new("UICorner", cog).CornerRadius = UDim.new(0, 3)
+
+    -- Settings panel
+    local panel = Instance.new("Frame")
+    panel.Position = UDim2.fromOffset(0, theme.featureHeight)
+    panel.Size = UDim2.new(1, 0, 0, 0)
+    panel.AutomaticSize = Enum.AutomaticSize.Y
+    panel.BackgroundColor3 = theme.bgDark
+    panel.BorderSizePixel = 0
+    panel.Visible = false
+    panel.Parent = root
+
+    local panelPad = Instance.new("UIPadding", panel)
+    panelPad.PaddingTop    = UDim.new(0, 4)
+    panelPad.PaddingBottom = UDim.new(0, 4)
+    panelPad.PaddingLeft   = UDim.new(0, 6)
+    panelPad.PaddingRight  = UDim.new(0, 6)
+
+    local panelList = Instance.new("UIListLayout", panel)
+    panelList.Padding   = UDim.new(0, 4)
+    panelList.SortOrder = Enum.SortOrder.LayoutOrder
+
+    -- Toggle state
+    local enabled = def.default == true
+
+    local function applyToggle()
+        indicator.BackgroundColor3 = enabled and theme.on or theme.off
+        indicator.Text = enabled and "ON" or "OFF"
+        nameLabel.TextColor3 = enabled and theme.fg or theme.fgDim
+        if def.onToggle then
+            local ok, err = pcall(def.onToggle, enabled)
+            if not ok then warn("[Pantheon] feature onToggle error:", err) end
+        end
+    end
+
+    local function setEnabled(v)
+        v = v and true or false
+        if enabled ~= v then
+            enabled = v
+            applyToggle()
+        end
+    end
+
+    local function toggleEnabled()
+        setEnabled(not enabled)
+    end
+
+    indicator.MouseButton1Click:Connect(toggleEnabled)
+
+    -- Cog: expand/collapse
+    local panelOpen = false
+    cog.MouseButton1Click:Connect(function()
+        panelOpen = not panelOpen
+        panel.Visible = panelOpen
+        cog.BackgroundColor3 = panelOpen and theme.accent or theme.bgDark
+    end)
+
+    -- Keybind dispatch
+    local function onPress()
+        if def.onKey then
+            local ok, err = pcall(def.onKey)
+            if not ok then warn("[Pantheon] feature onKey error:", err) end
+        else
+            toggleEnabled()
+        end
+    end
+
+    local function onRelease()
+        if def.onKeyRelease then
+            local ok, err = pcall(def.onKeyRelease)
+            if not ok then warn("[Pantheon] feature onKeyRelease error:", err) end
+        end
+    end
+
+    if def.defaultKey then
+        keybinds.set(id, def.defaultKey, onPress, onRelease)
+    end
+
+    -- Settings panel: keybind setter first
+    components.KeybindSetter(panel, {
+        label    = "Keybind",
+        default  = def.defaultKey,
+        onChange = function(newKey)
+            keybinds.set(id, newKey, onPress, onRelease)
+        end,
+    })
+
+    if def.settings and #def.settings > 0 then
+        local sep = Instance.new("Frame")
+        sep.Size = UDim2.new(1, 0, 0, 1)
+        sep.BackgroundColor3 = theme.border
+        sep.BorderSizePixel = 0
+        sep.Parent = panel
+
+        for _, opt in ipairs(def.settings) do
+            if opt.type == "toggle" then
+                components.Toggle(panel, {
+                    text     = opt.name,
+                    default  = opt.default,
+                    onChange = opt.onChange,
+                })
+            elseif opt.type == "slider" then
+                components.Slider(panel, {
+                    text     = opt.name,
+                    min      = opt.min,
+                    max      = opt.max,
+                    step     = opt.step,
+                    default  = opt.default,
+                    onChange = opt.onChange,
+                })
+            elseif opt.type == "button" then
+                components.Button(panel, {
+                    text    = opt.name,
+                    onClick = opt.onClick,
+                })
+            end
+        end
+    end
+
+    applyToggle()
+
+    return {
+        root       = root,
+        id         = id,
+        setEnabled = setEnabled,
+        getEnabled = function() return enabled end,
+    }
+end
+
+return Feature
 end
 
 _MODULES["ui.notify"] = function()
@@ -1378,31 +1793,29 @@ return LockOnPlus
 end
 
 _MODULES["modules.aim.lockon"] = function()
--- Main lock-on driver. Owns the hotkey, the toggle/hold state machine, and the
--- per-frame target-validity loop. Writes to the shared aim state; lockon+ and
--- highlight react.
+-- Main lock-on driver. Hotkey dispatch comes through core.keybinds (handled by
+-- the feature row), so this module only exposes the press/release entry points
+-- and runs the per-frame target-validity loop.
 
 local state     = require("modules.aim.state")
 local targeting = require("modules.aim.targeting")
 local highlight = require("modules.aim.highlight")
 
-local UserInputService = game:GetService("UserInputService")
-local RunService       = game:GetService("RunService")
+local RunService = game:GetService("RunService")
 
 local LockOn = {}
 
-local self_state = {
-    hotkey       = Enum.KeyCode.E,
-    holdMode     = false,
-    runConn      = nil,
-    inputConn    = nil,
-    inputEndConn = nil,
+local s = {
+    holdMode   = false,
+    holdActive = false,
+    runConn    = nil,
 }
 
 local function releaseLock()
     state.setLocked(false)
     state.lockon_held = false
     state.setTarget(nil, nil)
+    s.holdActive = false
     highlight.update(nil, nil)
 end
 
@@ -1437,31 +1850,26 @@ local function step()
     highlight.update(t, function(exclude) return targeting.getBestTarget(exclude) end)
 end
 
-local function onInputBegan(input, gpe)
-    if gpe then return end
+-- Called by the central keybind dispatcher on key press.
+function LockOn.hotkeyPress()
     if not state.lockon_enabled then return end
-    if input.KeyCode ~= self_state.hotkey then return end
-
-    if self_state.holdMode then
-        engageLock()
+    if s.holdMode then
+        if not state.lockon_locked then engageLock() end
+        s.holdActive = true
     else
         if state.lockon_locked then releaseLock() else engageLock() end
     end
 end
 
-local function onInputEnded(input)
-    if input.KeyCode ~= self_state.hotkey then return end
-    if self_state.holdMode and state.lockon_locked then
+-- Called by the central keybind dispatcher on key release.
+function LockOn.hotkeyRelease()
+    if s.holdMode and s.holdActive and state.lockon_locked then
         releaseLock()
     end
 end
 
-function LockOn.setHotkey(key)
-    self_state.hotkey = key
-end
-
 function LockOn.setHoldMode(v)
-    self_state.holdMode = v and true or false
+    s.holdMode = v and true or false
 end
 
 function LockOn.setEnabled(v)
@@ -1470,26 +1878,24 @@ function LockOn.setEnabled(v)
 end
 
 function LockOn.init()
-    self_state.inputConn    = UserInputService.InputBegan:Connect(onInputBegan)
-    self_state.inputEndConn = UserInputService.InputEnded:Connect(onInputEnded)
-    self_state.runConn      = RunService.Heartbeat:Connect(step)
+    s.runConn = RunService.Heartbeat:Connect(step)
 end
 
 function LockOn.destroy()
-    if self_state.inputConn    then self_state.inputConn:Disconnect()    end
-    if self_state.inputEndConn then self_state.inputEndConn:Disconnect() end
-    if self_state.runConn      then self_state.runConn:Disconnect()      end
+    if s.runConn then s.runConn:Disconnect() end
 end
 
 return LockOn
 end
 
 _MODULES["modules.aim.init"] = function()
--- Aim Assist wiring: brings up targeting / lockon / lockon+ / highlight / shiftlock
--- and registers the UI tab.
+-- Aim Assist: declarative feature definitions. Implementations live in their
+-- own files; this file wires them into the Wurst-style UI via feature.declare.
 
+local window      = require("ui.window")
+local container   = require("ui.container")
+local feature     = require("ui.feature")
 local state       = require("modules.aim.state")
-local components  = require("ui.components")
 local highlight   = require("modules.aim.highlight")
 local shiftlock   = require("modules.aim.shiftlock")
 local lockon_plus = require("modules.aim.lockon_plus")
@@ -1498,101 +1904,85 @@ local log         = require("core.log")
 
 local module = {}
 
-function module.register(window)
-    -- Boot sub-systems
+function module.register()
+    -- Boot the implementations
     highlight.init()
     shiftlock.init()
     lockon_plus.init()
     lockon.init()
-
-    -- Shiftlock yields rotation to LockOn+ while LockOn+ is driving
     shiftlock.setExternalSkipRotation(lockon_plus.isActive)
 
-    local tab = window:AddTab("Aim Assist")
+    -- Build the Aim Assist container
+    local cat = container.new(window.parent(), "Aim Assist")
 
-    -- Shiftlock ------------------------------------------------------------
-    components.Section(tab, "Shiftlock")
-    components.Toggle(tab, {
-        text     = "Custom Shiftlock",
-        default  = false,
-        onChange = function(v) shiftlock.setEnabled(v) end,
-    })
-    components.Toggle(tab, {
-        text     = "Kill foreign shiftlock GUIs on enable",
-        default  = true,
-        onChange = function(v) state.killForeign = v end,
-    })
-    components.Button(tab, {
-        text    = "Toggle Shiftlock Now",
-        onClick = function() shiftlock.toggle() end,
-    })
+    -- Custom Shiftlock --------------------------------------------------------
+    cat:add(feature.declare({
+        id         = "aim.shiftlock",
+        name       = "Custom Shiftlock",
+        default    = false,
+        defaultKey = Enum.KeyCode.LeftShift,
+        onToggle   = function(v) shiftlock.setEnabled(v) end,
+        onKey      = function()
+            if not state.shiftlock_enabled then
+                shiftlock.setEnabled(true)
+            end
+            shiftlock.toggle()
+        end,
+        settings = {
+            { type = "toggle", name = "Kill foreign shiftlock GUIs", default = true,
+              onChange = function(v) state.killForeign = v end },
+        },
+    }).root)
 
-    -- Lock-on --------------------------------------------------------------
-    components.Section(tab, "Lock-On")
-    components.Toggle(tab, {
-        text     = "Enable Lock-On (hotkey E)",
-        default  = false,
-        onChange = function(v) lockon.setEnabled(v) end,
-    })
-    components.Toggle(tab, {
-        text     = "Hold mode (vs toggle)",
-        default  = false,
-        onChange = function(v) lockon.setHoldMode(v) end,
-    })
-    components.Toggle(tab, {
-        text     = "Realistic FOV (60 deg)",
-        default  = false,
-        onChange = function(v) state.realisticEnabled = v end,
-    })
-    components.Toggle(tab, {
-        text     = "Skip dead / shielded",
-        default  = true,
-        onChange = function(v) state.checkHealthEnabled = v end,
-    })
-    components.Toggle(tab, {
-        text     = "Require visibility (raycast)",
-        default  = false,
-        onChange = function(v) state.visibilityCheckEnabled = v end,
-    })
-    components.Slider(tab, {
-        text     = "Range limit (0 = infinite)",
-        min      = 0,
-        max      = 500,
-        default  = 0,
-        step     = 5,
-        onChange = function(v) state.rangeLimit = v end,
-    })
+    -- Lock-On -----------------------------------------------------------------
+    cat:add(feature.declare({
+        id           = "aim.lockon",
+        name         = "Lock-On",
+        default      = false,
+        defaultKey   = Enum.KeyCode.E,
+        onToggle     = function(v) lockon.setEnabled(v) end,
+        onKey        = function() lockon.hotkeyPress()   end,
+        onKeyRelease = function() lockon.hotkeyRelease() end,
+        settings = {
+            { type = "toggle", name = "Hold mode (vs toggle)", default = false,
+              onChange = function(v) lockon.setHoldMode(v) end },
+            { type = "toggle", name = "Realistic FOV (60 deg)", default = false,
+              onChange = function(v) state.realisticEnabled = v end },
+            { type = "toggle", name = "Skip dead / shielded", default = true,
+              onChange = function(v) state.checkHealthEnabled = v end },
+            { type = "toggle", name = "Require visibility (raycast)", default = false,
+              onChange = function(v) state.visibilityCheckEnabled = v end },
+            { type = "slider", name = "Range (0 = inf)",
+              min = 0, max = 500, step = 5, default = 0,
+              onChange = function(v) state.rangeLimit = v end },
+        },
+    }).root)
 
-    -- Highlight ------------------------------------------------------------
-    components.Section(tab, "Highlight")
-    components.Toggle(tab, {
-        text     = "Highlight target (red)",
+    -- Highlight ---------------------------------------------------------------
+    cat:add(feature.declare({
+        id       = "aim.highlight",
+        name     = "Highlight",
         default  = true,
-        onChange = function(v) highlight.setEnabled(v) end,
-    })
-    components.Toggle(tab, {
-        text     = "Highlight next-best (yellow)",
-        default  = false,
-        onChange = function(v) highlight.setSecondEnabled(v) end,
-    })
-    components.Toggle(tab, {
-        text     = "Self-fade",
-        default  = false,
-        onChange = function(v) highlight.setSelfFade(v) end,
-    })
+        onToggle = function(v) highlight.setEnabled(v) end,
+        settings = {
+            { type = "toggle", name = "Highlight next-best (yellow)", default = false,
+              onChange = function(v) highlight.setSecondEnabled(v) end },
+            { type = "toggle", name = "Self-fade", default = false,
+              onChange = function(v) highlight.setSelfFade(v) end },
+        },
+    }).root)
 
-    -- Lock-on+ -------------------------------------------------------------
-    components.Section(tab, "Lock-On+")
-    components.Toggle(tab, {
-        text     = "Enable Lock-On+ (rotate body to target)",
+    -- Lock-On+ ----------------------------------------------------------------
+    cat:add(feature.declare({
+        id       = "aim.lockon_plus",
+        name     = "Lock-On+",
         default  = false,
-        onChange = function(v) state.lockonPlusEnabled = v end,
-    })
-    components.Toggle(tab, {
-        text     = "Battlegrounds-safe (suppress on ragdoll)",
-        default  = true,
-        onChange = function(v) state.bgSafeEnabled = v end,
-    })
+        onToggle = function(v) state.lockonPlusEnabled = v end,
+        settings = {
+            { type = "toggle", name = "Battlegrounds-safe", default = true,
+              onChange = function(v) state.bgSafeEnabled = v end },
+        },
+    }).root)
 
     log.info("Aim Assist registered")
 end
@@ -1601,37 +1991,39 @@ return module
 end
 
 _MODULES["init"] = function()
--- Pantheon entry point. Wires the runtime together and registers modules.
+-- Pantheon entry point. Boots keybinds + window, registers modules.
 
 local log      = require("core.log")
 local env      = require("core.env")
+local keybinds = require("core.keybinds")
 local window   = require("ui.window")
 local notify   = require("ui.notify")
 local registry = require("games.registry")
 
 log.info("booting on executor:", env.executor)
 
-local w = window.new("Pantheon")
+keybinds.init()
+window.init()
 
 -- Universal modules
 do
     local aim = require("modules.aim.init")
-    aim.register(w)
+    aim.register()
 end
 
 -- Per-game module (if registered for this PlaceId)
 local gameMod = registry.current()
 if gameMod and gameMod.register then
     log.info("game module found for PlaceId", game.PlaceId)
-    local ok, err = pcall(gameMod.register, w)
+    local ok, err = pcall(gameMod.register)
     if not ok then log.err("game module register failed:", err) end
 else
     log.info("no game module for PlaceId", game.PlaceId)
 end
 
-notify.success("Pantheon loaded.")
+notify.success("Pantheon loaded. Press RightCtrl to toggle UI.")
 
-return w
+return true
 end
 
 

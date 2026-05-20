@@ -1,8 +1,10 @@
--- Aim Assist wiring: brings up targeting / lockon / lockon+ / highlight / shiftlock
--- and registers the UI tab.
+-- Aim Assist: declarative feature definitions. Implementations live in their
+-- own files; this file wires them into the Wurst-style UI via feature.declare.
 
+local window      = require("ui.window")
+local container   = require("ui.container")
+local feature     = require("ui.feature")
 local state       = require("modules.aim.state")
-local components  = require("ui.components")
 local highlight   = require("modules.aim.highlight")
 local shiftlock   = require("modules.aim.shiftlock")
 local lockon_plus = require("modules.aim.lockon_plus")
@@ -11,101 +13,85 @@ local log         = require("core.log")
 
 local module = {}
 
-function module.register(window)
-    -- Boot sub-systems
+function module.register()
+    -- Boot the implementations
     highlight.init()
     shiftlock.init()
     lockon_plus.init()
     lockon.init()
-
-    -- Shiftlock yields rotation to LockOn+ while LockOn+ is driving
     shiftlock.setExternalSkipRotation(lockon_plus.isActive)
 
-    local tab = window:AddTab("Aim Assist")
+    -- Build the Aim Assist container
+    local cat = container.new(window.parent(), "Aim Assist")
 
-    -- Shiftlock ------------------------------------------------------------
-    components.Section(tab, "Shiftlock")
-    components.Toggle(tab, {
-        text     = "Custom Shiftlock",
-        default  = false,
-        onChange = function(v) shiftlock.setEnabled(v) end,
-    })
-    components.Toggle(tab, {
-        text     = "Kill foreign shiftlock GUIs on enable",
-        default  = true,
-        onChange = function(v) state.killForeign = v end,
-    })
-    components.Button(tab, {
-        text    = "Toggle Shiftlock Now",
-        onClick = function() shiftlock.toggle() end,
-    })
+    -- Custom Shiftlock --------------------------------------------------------
+    cat:add(feature.declare({
+        id         = "aim.shiftlock",
+        name       = "Custom Shiftlock",
+        default    = false,
+        defaultKey = Enum.KeyCode.LeftShift,
+        onToggle   = function(v) shiftlock.setEnabled(v) end,
+        onKey      = function()
+            if not state.shiftlock_enabled then
+                shiftlock.setEnabled(true)
+            end
+            shiftlock.toggle()
+        end,
+        settings = {
+            { type = "toggle", name = "Kill foreign shiftlock GUIs", default = true,
+              onChange = function(v) state.killForeign = v end },
+        },
+    }).root)
 
-    -- Lock-on --------------------------------------------------------------
-    components.Section(tab, "Lock-On")
-    components.Toggle(tab, {
-        text     = "Enable Lock-On (hotkey E)",
-        default  = false,
-        onChange = function(v) lockon.setEnabled(v) end,
-    })
-    components.Toggle(tab, {
-        text     = "Hold mode (vs toggle)",
-        default  = false,
-        onChange = function(v) lockon.setHoldMode(v) end,
-    })
-    components.Toggle(tab, {
-        text     = "Realistic FOV (60 deg)",
-        default  = false,
-        onChange = function(v) state.realisticEnabled = v end,
-    })
-    components.Toggle(tab, {
-        text     = "Skip dead / shielded",
-        default  = true,
-        onChange = function(v) state.checkHealthEnabled = v end,
-    })
-    components.Toggle(tab, {
-        text     = "Require visibility (raycast)",
-        default  = false,
-        onChange = function(v) state.visibilityCheckEnabled = v end,
-    })
-    components.Slider(tab, {
-        text     = "Range limit (0 = infinite)",
-        min      = 0,
-        max      = 500,
-        default  = 0,
-        step     = 5,
-        onChange = function(v) state.rangeLimit = v end,
-    })
+    -- Lock-On -----------------------------------------------------------------
+    cat:add(feature.declare({
+        id           = "aim.lockon",
+        name         = "Lock-On",
+        default      = false,
+        defaultKey   = Enum.KeyCode.E,
+        onToggle     = function(v) lockon.setEnabled(v) end,
+        onKey        = function() lockon.hotkeyPress()   end,
+        onKeyRelease = function() lockon.hotkeyRelease() end,
+        settings = {
+            { type = "toggle", name = "Hold mode (vs toggle)", default = false,
+              onChange = function(v) lockon.setHoldMode(v) end },
+            { type = "toggle", name = "Realistic FOV (60 deg)", default = false,
+              onChange = function(v) state.realisticEnabled = v end },
+            { type = "toggle", name = "Skip dead / shielded", default = true,
+              onChange = function(v) state.checkHealthEnabled = v end },
+            { type = "toggle", name = "Require visibility (raycast)", default = false,
+              onChange = function(v) state.visibilityCheckEnabled = v end },
+            { type = "slider", name = "Range (0 = inf)",
+              min = 0, max = 500, step = 5, default = 0,
+              onChange = function(v) state.rangeLimit = v end },
+        },
+    }).root)
 
-    -- Highlight ------------------------------------------------------------
-    components.Section(tab, "Highlight")
-    components.Toggle(tab, {
-        text     = "Highlight target (red)",
+    -- Highlight ---------------------------------------------------------------
+    cat:add(feature.declare({
+        id       = "aim.highlight",
+        name     = "Highlight",
         default  = true,
-        onChange = function(v) highlight.setEnabled(v) end,
-    })
-    components.Toggle(tab, {
-        text     = "Highlight next-best (yellow)",
-        default  = false,
-        onChange = function(v) highlight.setSecondEnabled(v) end,
-    })
-    components.Toggle(tab, {
-        text     = "Self-fade",
-        default  = false,
-        onChange = function(v) highlight.setSelfFade(v) end,
-    })
+        onToggle = function(v) highlight.setEnabled(v) end,
+        settings = {
+            { type = "toggle", name = "Highlight next-best (yellow)", default = false,
+              onChange = function(v) highlight.setSecondEnabled(v) end },
+            { type = "toggle", name = "Self-fade", default = false,
+              onChange = function(v) highlight.setSelfFade(v) end },
+        },
+    }).root)
 
-    -- Lock-on+ -------------------------------------------------------------
-    components.Section(tab, "Lock-On+")
-    components.Toggle(tab, {
-        text     = "Enable Lock-On+ (rotate body to target)",
+    -- Lock-On+ ----------------------------------------------------------------
+    cat:add(feature.declare({
+        id       = "aim.lockon_plus",
+        name     = "Lock-On+",
         default  = false,
-        onChange = function(v) state.lockonPlusEnabled = v end,
-    })
-    components.Toggle(tab, {
-        text     = "Battlegrounds-safe (suppress on ragdoll)",
-        default  = true,
-        onChange = function(v) state.bgSafeEnabled = v end,
-    })
+        onToggle = function(v) state.lockonPlusEnabled = v end,
+        settings = {
+            { type = "toggle", name = "Battlegrounds-safe", default = true,
+              onChange = function(v) state.bgSafeEnabled = v end },
+        },
+    }).root)
 
     log.info("Aim Assist registered")
 end

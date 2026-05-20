@@ -1,4 +1,4 @@
--- UI primitives: Section, Label, Button, Toggle, Slider.
+-- UI primitives: Section, Label, Button, Toggle, Slider, KeybindSetter.
 
 local theme = require("ui.theme")
 
@@ -71,20 +71,20 @@ function components.Toggle(parent, opts)
     label.Text = opts.text or "Toggle"
     label.TextColor3 = theme.fg
     label.Font = theme.font
-    label.TextSize = 13
+    label.TextSize = 12
     label.TextXAlignment = Enum.TextXAlignment.Left
     label.Parent = f
 
     local switch = Instance.new("TextButton")
-    switch.Size = UDim2.fromOffset(36, 20)
-    switch.Position = UDim2.new(1, -46, 0.5, -10)
+    switch.Size = UDim2.fromOffset(36, 18)
+    switch.Position = UDim2.new(1, -44, 0.5, -9)
     switch.AutoButtonColor = false
     switch.Text = ""
     switch.Parent = f
     Instance.new("UICorner", switch).CornerRadius = UDim.new(1, 0)
 
     local knob = Instance.new("Frame")
-    knob.Size = UDim2.fromOffset(16, 16)
+    knob.Size = UDim2.fromOffset(14, 14)
     knob.BackgroundColor3 = theme.fg
     knob.BorderSizePixel = 0
     knob.Parent = switch
@@ -92,7 +92,7 @@ function components.Toggle(parent, opts)
 
     local function apply()
         switch.BackgroundColor3 = state and theme.accent or theme.bgDark
-        knob.Position = state and UDim2.new(1, -18, 0.5, -8) or UDim2.fromOffset(2, 2)
+        knob.Position = state and UDim2.new(1, -16, 0.5, -7) or UDim2.fromOffset(2, 2)
     end
     apply()
 
@@ -122,14 +122,14 @@ function components.Slider(parent, opts)
     local step  = opts.step or 1
     local value = opts.default or min
 
-    local f = baseRow(parent, 46)
+    local f = baseRow(parent, 42)
 
     local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -20, 0, 20)
-    label.Position = UDim2.fromOffset(10, 4)
+    label.Size = UDim2.new(1, -20, 0, 18)
+    label.Position = UDim2.fromOffset(10, 2)
     label.BackgroundTransparency = 1
     label.Font = theme.font
-    label.TextSize = 13
+    label.TextSize = 12
     label.TextColor3 = theme.fg
     label.TextXAlignment = Enum.TextXAlignment.Left
     label.Text = string.format("%s: %s", opts.text or "Slider", tostring(value))
@@ -137,7 +137,7 @@ function components.Slider(parent, opts)
 
     local track = Instance.new("Frame")
     track.Size = UDim2.new(1, -20, 0, 6)
-    track.Position = UDim2.fromOffset(10, 30)
+    track.Position = UDim2.fromOffset(10, 26)
     track.BackgroundColor3 = theme.bgDark
     track.BorderSizePixel = 0
     track.Parent = f
@@ -197,6 +197,87 @@ function components.Slider(parent, opts)
         if opts.onChange then opts.onChange(v) end
     end
     return api
+end
+
+local function keyDisplayName(k)
+    if not k or k == Enum.KeyCode.Unknown then return "<none>" end
+    return (tostring(k):gsub("Enum.KeyCode.", ""))
+end
+
+function components.KeybindSetter(parent, opts)
+    opts = opts or {}
+    local current = opts.default or Enum.KeyCode.Unknown
+    local listening = false
+
+    local f = baseRow(parent, 28)
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(0.5, -10, 1, 0)
+    label.Position = UDim2.fromOffset(10, 0)
+    label.BackgroundTransparency = 1
+    label.Text = opts.label or "Keybind"
+    label.TextColor3 = theme.fg
+    label.Font = theme.font
+    label.TextSize = 12
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = f
+
+    local btn = Instance.new("TextButton")
+    btn.Position = UDim2.new(0.5, 4, 0.5, -10)
+    btn.Size = UDim2.new(0.5, -14, 0, 20)
+    btn.BackgroundColor3 = theme.bgDark
+    btn.AutoButtonColor = false
+    btn.TextColor3 = theme.fgDim
+    btn.Font = theme.fontMono
+    btn.TextSize = 11
+    btn.Text = keyDisplayName(current)
+    btn.Parent = f
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 3)
+
+    btn.MouseButton1Click:Connect(function()
+        if listening then return end
+        listening = true
+        btn.Text = "<press a key>"
+        btn.BackgroundColor3 = theme.accent
+
+        local conn
+        conn = UIS.InputBegan:Connect(function(input)
+            if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+            if input.KeyCode == Enum.KeyCode.Unknown then return end
+            local k = input.KeyCode
+            if k == Enum.KeyCode.Escape then
+                listening = false
+                btn.Text = keyDisplayName(current)
+                btn.BackgroundColor3 = theme.bgDark
+                conn:Disconnect()
+                return
+            end
+            if k == Enum.KeyCode.Backspace then
+                current = Enum.KeyCode.Unknown
+                listening = false
+                btn.Text = keyDisplayName(current)
+                btn.BackgroundColor3 = theme.bgDark
+                if opts.onChange then opts.onChange(current) end
+                conn:Disconnect()
+                return
+            end
+            current = k
+            listening = false
+            btn.Text = keyDisplayName(current)
+            btn.BackgroundColor3 = theme.bgDark
+            if opts.onChange then opts.onChange(current) end
+            conn:Disconnect()
+        end)
+    end)
+
+    return {
+        get = function() return current end,
+        set = function(k)
+            current = k
+            btn.Text = keyDisplayName(current)
+            if opts.onChange then opts.onChange(current) end
+        end,
+    }
 end
 
 return components
