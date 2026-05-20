@@ -37,6 +37,32 @@ function hex.build(parent, w, h, color, zIndex)
         row.Parent = host
     end
 
+    -- Anti-aliased diagonal overlay. Roblox does NOT anti-alias axis-aligned
+    -- frame edges (the row-stack diagonals look stairsteppy) but it DOES
+    -- anti-alias rotated frame edges. Laying a rotated rectangle directly on
+    -- top of each diagonal smooths the visible stairsteps for free.
+    local sideX = w / 4                              -- horizontal offset of the diagonal start from center
+    local diagY = h / 2                              -- vertical center
+    local hyp   = math.sqrt(sideX * sideX + diagY * diagY)
+    local ang   = math.deg(math.atan2(diagY, sideX))
+
+    local function diag(midX, midY, rot)
+        local f = Instance.new("Frame")
+        f.Size = UDim2.fromOffset(hyp + 4, 4)
+        f.AnchorPoint = Vector2.new(0.5, 0.5)
+        f.Position = UDim2.fromOffset(midX, midY)
+        f.Rotation = rot
+        f.BackgroundColor3 = color
+        f.BorderSizePixel = 0
+        f.ZIndex = (zIndex or 1) + 1
+        f.Parent = host
+    end
+    -- Upper-left, upper-right, lower-left, lower-right diagonals of the hex.
+    diag(sideX / 2,        h / 4,         -ang)
+    diag(w - sideX / 2,    h / 4,          ang)
+    diag(sideX / 2,        h - h / 4,      ang)
+    diag(w - sideX / 2,    h - h / 4,     -ang)
+
     return host
 end
 
