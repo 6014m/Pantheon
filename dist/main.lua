@@ -346,6 +346,16 @@ function hex.placed(parent, w, h, color, position, anchor, zIndex)
     return host
 end
 
+-- Recolor every row of an existing hex (built by hex.build). Used for
+-- elements that need to flip color on a state change (ON/OFF indicators etc).
+function hex.setColor(hexHost, color)
+    for _, child in ipairs(hexHost:GetChildren()) do
+        if child:IsA("Frame") then
+            child.BackgroundColor3 = color
+        end
+    end
+end
+
 return hex
 end
 
@@ -787,9 +797,18 @@ return Window
 end
 
 _MODULES["ui.container"] = function()
--- Draggable category window. Holds feature rows. Wurst-style — stacks left-to-right
--- by default; user can drag them anywhere.
--- Real hexagon corner accents (rendered via ui/hex) at each corner of the box.
+-- Draggable category window. Wurst-style stack-left-to-right default; user can
+-- drag them anywhere via the hex tab on top.
+--
+-- Visual layout:
+--    /-----------\         <- hex tab (drag handle, accent-colored)
+--   /   Category  \
+--  /---------------\
+--  |               |       <- body (theme.bg, holds features)
+--  |  feature row  |
+--  |  feature row  |
+--  |               |
+--  *---------------*       <- hex corner accents at bottom
 
 local theme = require("ui.theme")
 local hex   = require("ui.hex")
@@ -801,9 +820,7 @@ Container.__index = Container
 
 local nextIndex = 0
 
--- 14x12 ≈ regular hex proportions (12/14 ≈ 0.857; ideal is 0.866).
-local CORNER_HEX_W = 14
-local CORNER_HEX_H = 12
+local CORNER_HEX_W, CORNER_HEX_H = 14, 12
 
 local function placeCornerHex(parent, position, color)
     local h = hex.build(parent, CORNER_HEX_W, CORNER_HEX_H, color, 5)
@@ -811,11 +828,10 @@ local function placeCornerHex(parent, position, color)
     h.Position    = position
 end
 
-local function addCornerHexes(parent, color)
-    placeCornerHex(parent, UDim2.new(0, 0, 0, 0), color) -- TL
-    placeCornerHex(parent, UDim2.new(1, 0, 0, 0), color) -- TR
-    placeCornerHex(parent, UDim2.new(0, 0, 1, 0), color) -- BL
-    placeCornerHex(parent, UDim2.new(1, 0, 1, 0), color) -- BR
+local function addBottomCornerHexes(parent, color)
+    -- Top corners are visually replaced by the hex tab on the parent root.
+    placeCornerHex(parent, UDim2.new(0, 0, 1, 0), color)
+    placeCornerHex(parent, UDim2.new(1, 0, 1, 0), color)
 end
 
 function Container.new(parent, name)
@@ -825,51 +841,82 @@ function Container.new(parent, name)
     nextIndex = nextIndex + 1
     local x = 16 + idx * (theme.containerWidth + theme.containerGap)
 
+    local TAB_W, TAB_H = 130, 32
+    local TAB_OVERLAP = 6  -- tab dips into body for visual continuity
+
     local root = Instance.new("Frame")
     root.Name = "Container_" .. name
-    root.Size = UDim2.new(0, theme.containerWidth, 0, 28)
+    root.Size = UDim2.new(0, theme.containerWidth, 0, TAB_H)
     root.AutomaticSize = Enum.AutomaticSize.Y
     root.Position = UDim2.fromOffset(x, 16)
-    root.BackgroundColor3 = theme.bg
-    root.BorderSizePixel = 0
+    root.BackgroundTransparency = 1
     root.Parent = parent
 
-    local stroke = Instance.new("UIStroke", root)
+    -- Body (rectangular, holds features + bottom corner hexes)
+    local body = Instance.new("Frame")
+    body.Name = "Body"
+    body.Size = UDim2.new(1, 0, 0, 0)
+    body.AutomaticSize = Enum.AutomaticSize.Y
+    body.Position = UDim2.fromOffset(0, TAB_H - TAB_OVERLAP)
+    body.BackgroundColor3 = theme.bg
+    body.BorderSizePixel = 0
+    body.ZIndex = 1
+    body.Parent = root
+
+    local stroke = Instance.new("UIStroke", body)
     stroke.Color = theme.border
     stroke.Thickness = 1
 
-    -- Header
-    local header = Instance.new("TextLabel")
-    header.Name = "Header"
-    header.Size = UDim2.new(1, 0, 0, 28)
-    header.BackgroundColor3 = theme.accent
-    header.BorderSizePixel = 0
-    header.Text = name
-    header.TextColor3 = theme.fg
-    header.Font = theme.fontBold
-    header.TextSize = 13
-    header.Parent = root
-
-    -- Features stack
+    -- Features stack (starts below the tab overlap so content isn't hidden)
     local features = Instance.new("Frame")
     features.Name = "Features"
-    features.Position = UDim2.fromOffset(0, 28)
     features.Size = UDim2.new(1, 0, 0, 0)
     features.AutomaticSize = Enum.AutomaticSize.Y
+    features.Position = UDim2.fromOffset(0, TAB_OVERLAP + 2)
     features.BackgroundTransparency = 1
-    features.Parent = root
+    features.ZIndex = 2
+    features.Parent = body
 
     local list = Instance.new("UIListLayout", features)
     list.SortOrder = Enum.SortOrder.LayoutOrder
     list.Padding = UDim.new(0, 1)
 
-    -- Real hexagon corner accents (drawn last so they sit on top of stroke + header)
-    addCornerHexes(root, theme.accent)
+    addBottomCornerHexes(body, theme.accent)
 
-    -- Drag on header
+    -- Hex tab (header) on top, centered, ZIndex above body
+    local tab = Instance.new("Frame")
+    tab.Name = "Tab"
+    tab.Size = UDim2.fromOffset(TAB_W, TAB_H)
+    tab.Position = UDim2.new(0.5, 0, 0, 0)
+    tab.AnchorPoint = Vector2.new(0.5, 0)
+    tab.BackgroundTransparency = 1
+    tab.ZIndex = 5
+    tab.Parent = root
+
+    hex.build(tab, TAB_W, TAB_H, theme.accent, 5)
+
+    local tabText = Instance.new("TextLabel")
+    tabText.Size = UDim2.fromScale(1, 1)
+    tabText.BackgroundTransparency = 1
+    tabText.Text = name
+    tabText.TextColor3 = theme.fg
+    tabText.Font = theme.fontBold
+    tabText.TextSize = 13
+    tabText.ZIndex = 7
+    tabText.Parent = tab
+
+    -- Drag handle (transparent click area covering the tab)
+    local dragHandle = Instance.new("TextButton")
+    dragHandle.Size = UDim2.fromScale(1, 1)
+    dragHandle.BackgroundTransparency = 1
+    dragHandle.Text = ""
+    dragHandle.AutoButtonColor = false
+    dragHandle.ZIndex = 8
+    dragHandle.Parent = tab
+
     do
         local dragging, dragStart, startPos = false, nil, nil
-        header.InputBegan:Connect(function(input)
+        dragHandle.InputBegan:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1
                or input.UserInputType == Enum.UserInputType.Touch then
                 dragging  = true
@@ -915,14 +962,13 @@ return Container
 end
 
 _MODULES["ui.feature"] = function()
--- Feature row: [name] [ON/OFF indicator] [i info] [cog].
+-- Feature row: [name] [hex ON/OFF indicator] [hex info] [hex cog].
 -- Cog click expands an inline settings panel below the row.
 -- "i" click expands a description label below the row (separate from settings).
--- Sharp angular corners throughout.
---
--- Settings types: toggle, slider, button, section.
+-- All three buttons are real hex shapes (built via ui/hex).
 
 local theme      = require("ui.theme")
+local hex        = require("ui.hex")
 local keybinds   = require("core.keybinds")
 local components = require("ui.components")
 
@@ -930,13 +976,43 @@ local Feature = {}
 
 local nextId = 0
 
+-- Helper: a hex-shaped button. Returns (host frame, hex frame, label, button).
+-- The host is what you Position/parent; the hex frame is for hex.setColor;
+-- the button is what you :Connect MouseButton1Click on; the label holds text.
+local function hexButton(parent, w, h, color, text, font, textSize)
+    local host = Instance.new("Frame")
+    host.Size = UDim2.fromOffset(w, h)
+    host.BackgroundTransparency = 1
+    host.Parent = parent
+
+    local hexFrame = hex.build(host, w, h, color, 2)
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.fromScale(1, 1)
+    label.BackgroundTransparency = 1
+    label.Text = text or ""
+    label.TextColor3 = theme.fg
+    label.Font = font or theme.font
+    label.TextSize = textSize or 12
+    label.ZIndex = 5
+    label.Parent = host
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.fromScale(1, 1)
+    btn.BackgroundTransparency = 1
+    btn.Text = ""
+    btn.AutoButtonColor = false
+    btn.ZIndex = 6
+    btn.Parent = host
+
+    return host, hexFrame, label, btn
+end
+
 function Feature.declare(def)
     nextId = nextId + 1
     local id = def.id or ("feature_" .. nextId)
     local hasDesc = def.description and #def.description > 0
 
-    -- Root uses UIListLayout so row / description / settings panel stack
-    -- vertically and only contribute height when Visible = true.
     local root = Instance.new("Frame")
     root.Name = "Feature_" .. id
     root.Size = UDim2.new(1, 0, 0, 0)
@@ -954,10 +1030,9 @@ function Feature.declare(def)
     row.LayoutOrder = 1
     row.Parent = root
 
-    -- Reserve right-side space: indicator(40) + i(20) + cog(20) + gaps = ~108
     local nameLabel = Instance.new("TextLabel")
     nameLabel.Position = UDim2.fromOffset(8, 0)
-    nameLabel.Size = UDim2.new(1, hasDesc and -108 or -84, 1, 0)
+    nameLabel.Size = UDim2.new(1, hasDesc and -112 or -84, 1, 0)
     nameLabel.BackgroundTransparency = 1
     nameLabel.Text = def.name or "Feature"
     nameLabel.TextColor3 = theme.fgDim
@@ -966,41 +1041,26 @@ function Feature.declare(def)
     nameLabel.TextXAlignment = Enum.TextXAlignment.Left
     nameLabel.Parent = row
 
-    local indicator = Instance.new("TextButton")
-    indicator.Position = UDim2.new(1, hasDesc and -100 or -76, 0.5, -10)
-    indicator.Size = UDim2.fromOffset(40, 20)
-    indicator.BackgroundColor3 = theme.off
-    indicator.AutoButtonColor = false
-    indicator.Text = "OFF"
-    indicator.TextColor3 = theme.fg
-    indicator.Font = theme.fontBold
-    indicator.TextSize = 10
-    indicator.Parent = row
+    -- Hex ON/OFF indicator (40 x 22)
+    local indicatorHost, indicatorHex, indicatorLabel, indicatorBtn =
+        hexButton(row, 40, 22, theme.off, "OFF", theme.fontBold, 10)
+    indicatorHost.Position = UDim2.new(1, hasDesc and -104 or -76, 0.5, 0)
+    indicatorHost.AnchorPoint = Vector2.new(0, 0.5)
 
-    local info -- info "i" button, only if a description was provided
+    -- Hex info "i" button (22 x 18), only if description was provided
+    local infoHost, infoHex, infoBtn
     if hasDesc then
-        info = Instance.new("TextButton")
-        info.Position = UDim2.new(1, -52, 0.5, -10)
-        info.Size = UDim2.fromOffset(20, 20)
-        info.BackgroundColor3 = theme.bgDark
-        info.AutoButtonColor = false
-        info.Text = "i"
-        info.TextColor3 = theme.fgDim
-        info.Font = theme.fontBold
-        info.TextSize = 12
-        info.Parent = row
+        local h, hx, _, b = hexButton(row, 22, 18, theme.bgDark, "i", theme.fontBold, 12)
+        h.Position = UDim2.new(1, -54, 0.5, 0)
+        h.AnchorPoint = Vector2.new(0, 0.5)
+        infoHost, infoHex, infoBtn = h, hx, b
     end
 
-    local cog = Instance.new("TextButton")
-    cog.Position = UDim2.new(1, -28, 0.5, -10)
-    cog.Size = UDim2.fromOffset(20, 20)
-    cog.BackgroundColor3 = theme.bgDark
-    cog.AutoButtonColor = false
-    cog.Text = "\u{2699}"
-    cog.TextColor3 = theme.fgDim
-    cog.Font = theme.font
-    cog.TextSize = 14
-    cog.Parent = row
+    -- Hex cog button (22 x 18)
+    local cogHost, cogHex, _, cogBtn =
+        hexButton(row, 22, 18, theme.bgDark, "\u{2699}", theme.font, 14)
+    cogHost.Position = UDim2.new(1, -28, 0.5, 0)
+    cogHost.AnchorPoint = Vector2.new(0, 0.5)
 
     -- Description label (hidden until "i" clicked)
     local desc
@@ -1052,8 +1112,8 @@ function Feature.declare(def)
     local enabled = def.default == true
 
     local function applyToggle()
-        indicator.BackgroundColor3 = enabled and theme.on or theme.off
-        indicator.Text = enabled and "ON" or "OFF"
+        hex.setColor(indicatorHex, enabled and theme.on or theme.off)
+        indicatorLabel.Text = enabled and "ON" or "OFF"
         nameLabel.TextColor3 = enabled and theme.fg or theme.fgDim
         if def.onToggle then
             local ok, err = pcall(def.onToggle, enabled)
@@ -1069,27 +1129,25 @@ function Feature.declare(def)
         end
     end
 
-    local function toggleEnabled()
-        setEnabled(not enabled)
-    end
+    local function toggleEnabled() setEnabled(not enabled) end
 
-    indicator.MouseButton1Click:Connect(toggleEnabled)
+    indicatorBtn.MouseButton1Click:Connect(toggleEnabled)
 
     -- Cog: toggle settings panel
     local panelOpen = false
-    cog.MouseButton1Click:Connect(function()
+    cogBtn.MouseButton1Click:Connect(function()
         panelOpen = not panelOpen
         panel.Visible = panelOpen
-        cog.BackgroundColor3 = panelOpen and theme.accent or theme.bgDark
+        hex.setColor(cogHex, panelOpen and theme.accent or theme.bgDark)
     end)
 
     -- Info: toggle description label
-    if info then
+    if infoBtn then
         local descOpen = false
-        info.MouseButton1Click:Connect(function()
+        infoBtn.MouseButton1Click:Connect(function()
             descOpen = not descOpen
             desc.Visible = descOpen
-            info.BackgroundColor3 = descOpen and theme.accent or theme.bgDark
+            hex.setColor(infoHex, descOpen and theme.accent or theme.bgDark)
         end)
     end
 
@@ -1102,7 +1160,6 @@ function Feature.declare(def)
             toggleEnabled()
         end
     end
-
     local function onRelease()
         if def.onKeyRelease then
             local ok, err = pcall(def.onKeyRelease)
@@ -1114,7 +1171,7 @@ function Feature.declare(def)
         keybinds.set(id, def.defaultKey, onPress, onRelease)
     end
 
-    -- Settings panel content: keybind setter first
+    -- Settings panel: keybind setter first
     components.KeybindSetter(panel, {
         label    = "Keybind",
         default  = def.defaultKey,
@@ -1142,9 +1199,7 @@ function Feature.declare(def)
             elseif opt.type == "slider" then
                 components.Slider(panel, {
                     text     = opt.name,
-                    min      = opt.min,
-                    max      = opt.max,
-                    step     = opt.step,
+                    min      = opt.min, max = opt.max, step = opt.step,
                     default  = opt.default,
                     onChange = opt.onChange,
                 })
@@ -1554,21 +1609,18 @@ return Highlight
 end
 
 _MODULES["modules.aim.shiftlock"] = function()
--- Custom shiftlock. Ports ShiftLockModule with three improvements:
---   1. BindToRenderStep at Camera+100 (deterministic timing vs RenderStepped
---      competitors).
---   2. On enable AND on disable, sweeps PlayerGui for ScreenGuis matching
---      known foreign shiftlock GUI names and Destroys them.
---   3. On enable AND on disable, uses getconnections + getupvalues to find
---      foreign RenderStepped/Heartbeat connections that look like a shiftlock
---      loop (upvalue table has both `shiftLocked` and `humanoid`/`character`)
---      and Disconnects them. This is what actually frees the mouse when
---      another script's shiftlock is still running — without it, killing the
---      GUI doesn't stop the foreign loop, and that loop keeps re-locking the
---      mouse every frame.
---
--- The externalSkipRotation gate from the legacy module is preserved so LockOn+
--- can still take over rotation cleanly without two CFrame writes per frame.
+-- Custom shiftlock. Replaces Roblox's built-in and any competing custom
+-- shiftlock loops. Three layers of foreign-killer:
+--   1. PlayerGui sweep: destroy ScreenGuis with known foreign names.
+--   2. Connection sweep: walk RenderStepped/Heartbeat/Stepped and disconnect
+--      any callback whose bytecode constants include both "MouseBehavior" AND
+--      "LockCenter" — every shiftlock loop has to reference those literals to
+--      actually do anything. Backup heuristic looks at upvalue tables for a
+--      shiftLocked-flag + Humanoid-ref pattern.
+--   3. PlayerScripts sweep: disable LocalScripts whose name contains
+--      "shiftlock".
+-- Runs on boot, enable, disable, and respawn so foreign code that reconnects
+-- doesn't quietly take back over.
 
 local state = require("modules.aim.state")
 local log   = require("core.log")
@@ -1582,8 +1634,6 @@ local Shiftlock = {}
 local RENDER_BIND = "PantheonShiftlock"
 local GUI_NAME    = "PantheonShiftLockVGui"
 
--- ScreenGui names commonly used by other custom shiftlock scripts. Doesn't
--- include our own GUI_NAME so the sweep never touches us.
 local FOREIGN_GUI_NAMES = {
     "ShiftLockVGui", "ShiftLockIcon", "ShiftLockHud", "ShiftLockButton",
     "CustomShiftLock", "ShiftLockGui", "ShiftlockGui",
@@ -1608,6 +1658,64 @@ local function disableGameShiftLock()
     pcall(function() lp().DevEnableMouseLock = false end)
 end
 
+-- ---------- foreign killer helpers --------------------------------------
+
+local function getConnectionFunction(conn)
+    for _, key in ipairs({ "Function", "Func", "func" }) do
+        local ok, fn = pcall(function() return conn[key] end)
+        if ok and type(fn) == "function" then return fn end
+    end
+    return nil
+end
+
+local function getConstants(fn)
+    local f = (getconstants) or (debug and debug.getconstants)
+    if not f then return nil end
+    local ok, c = pcall(f, fn)
+    if not ok then return nil end
+    return c
+end
+
+local function getUpvalues(fn)
+    local f = (getupvalues) or (debug and debug.getupvalues)
+    if not f then return nil end
+    local ok, c = pcall(f, fn)
+    if not ok then return nil end
+    return c
+end
+
+-- Strong signature: function code contains both literals.
+local function functionLooksLikeShiftlock(fn)
+    local consts = getConstants(fn)
+    if not consts then return false end
+    local hasMB, hasLC = false, false
+    for _, c in pairs(consts) do
+        if type(c) == "string" then
+            if c == "MouseBehavior" then hasMB = true end
+            if c == "LockCenter"    then hasLC = true end
+        end
+    end
+    return hasMB and hasLC
+end
+
+-- Backup signature: upvalue table looks like a ShiftLockModule self-state.
+local function upvaluesLookLikeShiftlock(fn)
+    local ups = getUpvalues(fn)
+    if not ups then return false end
+    for _, up in pairs(ups) do
+        if type(up) == "table" then
+            local hasFlag = (up.shiftLocked ~= nil) or (up.shiftlock_locked ~= nil)
+                         or (up.locked ~= nil) or (up.isLocked ~= nil)
+            local hasInstRef = (typeof(up.humanoid)  == "Instance")
+                            or (typeof(up.character) == "Instance")
+                            or (typeof(up.root)      == "Instance")
+                            or (typeof(up.hrp)       == "Instance")
+            if hasFlag and hasInstRef then return true end
+        end
+    end
+    return false
+end
+
 local function killForeignGuis()
     local pg = lp():FindFirstChildOfClass("PlayerGui")
     if not pg then return 0 end
@@ -1626,53 +1734,59 @@ local function killForeignGuis()
     return count
 end
 
--- Walk RenderStepped + Heartbeat connections looking for ones whose upvalues
--- contain a table that looks like a shiftlock state object (has a `shiftLocked`
--- field AND a `humanoid` or `character` instance reference). Our own code uses
--- BindToRenderStep + Heartbeat with state.lua's flat state table (no humanoid
--- field), so this heuristic does not catch us.
 local function killForeignLoops()
-    if not getconnections then return 0 end
-    local getU = rawget(getfenv(), "getupvalues") or (debug and debug.getupvalues)
-    if not getU then return 0 end
-
-    local function looksLikeShiftlockState(t)
-        if type(t) ~= "table" then return false end
-        local hasFlag    = (t.shiftLocked ~= nil) or (t.shiftlock_locked ~= nil)
-        local hasInstRef = (typeof(t.humanoid) == "Instance")
-                         or (typeof(t.character) == "Instance")
-                         or (typeof(t.root) == "Instance")
-        return hasFlag and hasInstRef
-    end
-
-    local function shouldKill(conn)
-        local ok, fn = pcall(function() return conn.Function end)
-        if not ok or type(fn) ~= "function" then
-            ok, fn = pcall(function() return conn.Func end)
-            if not ok or type(fn) ~= "function" then return false end
-        end
-        local ok2, ups = pcall(getU, fn)
-        if not ok2 or type(ups) ~= "table" then return false end
-        for _, up in pairs(ups) do
-            if looksLikeShiftlockState(up) then return true end
-        end
-        return false
-    end
-
-    local count = 0
-    for _, signal in ipairs({ RunService.RenderStepped, RunService.Heartbeat }) do
+    if not getconnections then return 0, 0 end
+    local killed, scanned = 0, 0
+    for _, signal in ipairs({ RunService.RenderStepped, RunService.Heartbeat, RunService.Stepped }) do
         local ok, conns = pcall(getconnections, signal)
         if ok and type(conns) == "table" then
             for _, conn in pairs(conns) do
-                if shouldKill(conn) then
+                scanned = scanned + 1
+                local fn = getConnectionFunction(conn)
+                if fn and (functionLooksLikeShiftlock(fn) or upvaluesLookLikeShiftlock(fn)) then
                     local dok = pcall(function() conn:Disconnect() end)
-                    if dok then count = count + 1 end
+                    if dok then killed = killed + 1 end
                 end
+            end
+        end
+    end
+    return killed, scanned
+end
+
+local function disableForeignScripts()
+    local ps = lp():FindFirstChild("PlayerScripts")
+    if not ps then return 0 end
+    local count = 0
+    for _, d in ipairs(ps:GetDescendants()) do
+        if d:IsA("LocalScript") then
+            local n = d.Name:lower()
+            if n:find("shiftlock") or n:find("shift_lock") then
+                local ok = pcall(function() d.Disabled = true end)
+                if ok then count = count + 1 end
             end
         end
     end
     return count
 end
+
+local function sweepForeigns(label)
+    local g = killForeignGuis()
+    local k, s = killForeignLoops()
+    local sc = disableForeignScripts()
+    if g > 0 or k > 0 or sc > 0 then
+        log.info(string.format(
+            "shiftlock [%s]: killed %d GUI(s), %d/%d connection(s), %d script(s)",
+            label, g, k, s, sc
+        ))
+    else
+        log.debug(string.format(
+            "shiftlock [%s]: scanned %d connection(s), nothing matched",
+            label, s
+        ))
+    end
+end
+
+-- ---------- gui ----------------------------------------------------------
 
 local function buildGui()
     if self_state.gui and self_state.gui.Parent then return end
@@ -1742,29 +1856,16 @@ function Shiftlock.toggle()
     end
 end
 
-local function reportKills(g, l, suffix)
-    if g > 0 or l > 0 then
-        log.info("shiftlock:", g, "GUI(s) +", l, "loop(s) killed " .. suffix)
-    end
-end
-
 function Shiftlock.setEnabled(v)
     v = v and true or false
     if state.shiftlock_enabled == v then return end
     state.shiftlock_enabled = v
     if v then
         disableGameShiftLock()
-        if state.killForeign then
-            reportKills(killForeignGuis(), killForeignLoops(), "(enable)")
-        end
+        if state.killForeign then sweepForeigns("enable") end
     else
         Shiftlock.forceOff()
-        -- Kill foreigns here too — otherwise a competing loop keeps holding
-        -- MouseBehavior=LockCenter every frame after we release, so the user
-        -- sees "the shiftlock didn't actually turn off."
-        if state.killForeign then
-            reportKills(killForeignGuis(), killForeignLoops(), "(disable)")
-        end
+        if state.killForeign then sweepForeigns("disable") end
     end
 end
 
@@ -1793,7 +1894,6 @@ local function step()
         UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
     end
 
-    -- Yield rotation to LockOn+ when it's actively rotating to a target
     if self_state.externalSkipRotation and self_state.externalSkipRotation() then
         return
     end
@@ -1816,12 +1916,8 @@ function Shiftlock.init()
     self_state.charConn = lp().CharacterAdded:Connect(function(c)
         updateCharRefs(c)
         Shiftlock.forceOff()
-        -- On respawn, foreign scripts may reconnect their loop against the new
-        -- humanoid. Re-sweep so they don't quietly take over.
         if state.shiftlock_enabled and state.killForeign then
-            task.defer(function()
-                reportKills(killForeignGuis(), killForeignLoops(), "(respawn)")
-            end)
+            task.defer(function() sweepForeigns("respawn") end)
         end
     end)
 
@@ -1834,14 +1930,10 @@ function Shiftlock.init()
         self_state.bound = true
     end
 
-    -- Boot-time sweep. Foreign shiftlocks left over from another loaded script
-    -- are what makes Pantheon "look enabled by default" (their loop locks the
-    -- mouse regardless of our toggle). Wipe them on init so the user starts
-    -- with a clean slate, not just on enable.
+    -- Boot-time sweep so leftover foreign shiftlocks from previous script
+    -- loads don't make ours "look enabled by default."
     if state.killForeign then
-        task.defer(function()
-            reportKills(killForeignGuis(), killForeignLoops(), "(boot)")
-        end)
+        task.defer(function() sweepForeigns("boot") end)
     end
 end
 

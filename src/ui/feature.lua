@@ -1,11 +1,10 @@
--- Feature row: [name] [ON/OFF indicator] [i info] [cog].
+-- Feature row: [name] [hex ON/OFF indicator] [hex info] [hex cog].
 -- Cog click expands an inline settings panel below the row.
 -- "i" click expands a description label below the row (separate from settings).
--- Sharp angular corners throughout.
---
--- Settings types: toggle, slider, button, section.
+-- All three buttons are real hex shapes (built via ui/hex).
 
 local theme      = require("ui.theme")
+local hex        = require("ui.hex")
 local keybinds   = require("core.keybinds")
 local components = require("ui.components")
 
@@ -13,13 +12,43 @@ local Feature = {}
 
 local nextId = 0
 
+-- Helper: a hex-shaped button. Returns (host frame, hex frame, label, button).
+-- The host is what you Position/parent; the hex frame is for hex.setColor;
+-- the button is what you :Connect MouseButton1Click on; the label holds text.
+local function hexButton(parent, w, h, color, text, font, textSize)
+    local host = Instance.new("Frame")
+    host.Size = UDim2.fromOffset(w, h)
+    host.BackgroundTransparency = 1
+    host.Parent = parent
+
+    local hexFrame = hex.build(host, w, h, color, 2)
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.fromScale(1, 1)
+    label.BackgroundTransparency = 1
+    label.Text = text or ""
+    label.TextColor3 = theme.fg
+    label.Font = font or theme.font
+    label.TextSize = textSize or 12
+    label.ZIndex = 5
+    label.Parent = host
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.fromScale(1, 1)
+    btn.BackgroundTransparency = 1
+    btn.Text = ""
+    btn.AutoButtonColor = false
+    btn.ZIndex = 6
+    btn.Parent = host
+
+    return host, hexFrame, label, btn
+end
+
 function Feature.declare(def)
     nextId = nextId + 1
     local id = def.id or ("feature_" .. nextId)
     local hasDesc = def.description and #def.description > 0
 
-    -- Root uses UIListLayout so row / description / settings panel stack
-    -- vertically and only contribute height when Visible = true.
     local root = Instance.new("Frame")
     root.Name = "Feature_" .. id
     root.Size = UDim2.new(1, 0, 0, 0)
@@ -37,10 +66,9 @@ function Feature.declare(def)
     row.LayoutOrder = 1
     row.Parent = root
 
-    -- Reserve right-side space: indicator(40) + i(20) + cog(20) + gaps = ~108
     local nameLabel = Instance.new("TextLabel")
     nameLabel.Position = UDim2.fromOffset(8, 0)
-    nameLabel.Size = UDim2.new(1, hasDesc and -108 or -84, 1, 0)
+    nameLabel.Size = UDim2.new(1, hasDesc and -112 or -84, 1, 0)
     nameLabel.BackgroundTransparency = 1
     nameLabel.Text = def.name or "Feature"
     nameLabel.TextColor3 = theme.fgDim
@@ -49,41 +77,26 @@ function Feature.declare(def)
     nameLabel.TextXAlignment = Enum.TextXAlignment.Left
     nameLabel.Parent = row
 
-    local indicator = Instance.new("TextButton")
-    indicator.Position = UDim2.new(1, hasDesc and -100 or -76, 0.5, -10)
-    indicator.Size = UDim2.fromOffset(40, 20)
-    indicator.BackgroundColor3 = theme.off
-    indicator.AutoButtonColor = false
-    indicator.Text = "OFF"
-    indicator.TextColor3 = theme.fg
-    indicator.Font = theme.fontBold
-    indicator.TextSize = 10
-    indicator.Parent = row
+    -- Hex ON/OFF indicator (40 x 22)
+    local indicatorHost, indicatorHex, indicatorLabel, indicatorBtn =
+        hexButton(row, 40, 22, theme.off, "OFF", theme.fontBold, 10)
+    indicatorHost.Position = UDim2.new(1, hasDesc and -104 or -76, 0.5, 0)
+    indicatorHost.AnchorPoint = Vector2.new(0, 0.5)
 
-    local info -- info "i" button, only if a description was provided
+    -- Hex info "i" button (22 x 18), only if description was provided
+    local infoHost, infoHex, infoBtn
     if hasDesc then
-        info = Instance.new("TextButton")
-        info.Position = UDim2.new(1, -52, 0.5, -10)
-        info.Size = UDim2.fromOffset(20, 20)
-        info.BackgroundColor3 = theme.bgDark
-        info.AutoButtonColor = false
-        info.Text = "i"
-        info.TextColor3 = theme.fgDim
-        info.Font = theme.fontBold
-        info.TextSize = 12
-        info.Parent = row
+        local h, hx, _, b = hexButton(row, 22, 18, theme.bgDark, "i", theme.fontBold, 12)
+        h.Position = UDim2.new(1, -54, 0.5, 0)
+        h.AnchorPoint = Vector2.new(0, 0.5)
+        infoHost, infoHex, infoBtn = h, hx, b
     end
 
-    local cog = Instance.new("TextButton")
-    cog.Position = UDim2.new(1, -28, 0.5, -10)
-    cog.Size = UDim2.fromOffset(20, 20)
-    cog.BackgroundColor3 = theme.bgDark
-    cog.AutoButtonColor = false
-    cog.Text = "\u{2699}"
-    cog.TextColor3 = theme.fgDim
-    cog.Font = theme.font
-    cog.TextSize = 14
-    cog.Parent = row
+    -- Hex cog button (22 x 18)
+    local cogHost, cogHex, _, cogBtn =
+        hexButton(row, 22, 18, theme.bgDark, "\u{2699}", theme.font, 14)
+    cogHost.Position = UDim2.new(1, -28, 0.5, 0)
+    cogHost.AnchorPoint = Vector2.new(0, 0.5)
 
     -- Description label (hidden until "i" clicked)
     local desc
@@ -135,8 +148,8 @@ function Feature.declare(def)
     local enabled = def.default == true
 
     local function applyToggle()
-        indicator.BackgroundColor3 = enabled and theme.on or theme.off
-        indicator.Text = enabled and "ON" or "OFF"
+        hex.setColor(indicatorHex, enabled and theme.on or theme.off)
+        indicatorLabel.Text = enabled and "ON" or "OFF"
         nameLabel.TextColor3 = enabled and theme.fg or theme.fgDim
         if def.onToggle then
             local ok, err = pcall(def.onToggle, enabled)
@@ -152,27 +165,25 @@ function Feature.declare(def)
         end
     end
 
-    local function toggleEnabled()
-        setEnabled(not enabled)
-    end
+    local function toggleEnabled() setEnabled(not enabled) end
 
-    indicator.MouseButton1Click:Connect(toggleEnabled)
+    indicatorBtn.MouseButton1Click:Connect(toggleEnabled)
 
     -- Cog: toggle settings panel
     local panelOpen = false
-    cog.MouseButton1Click:Connect(function()
+    cogBtn.MouseButton1Click:Connect(function()
         panelOpen = not panelOpen
         panel.Visible = panelOpen
-        cog.BackgroundColor3 = panelOpen and theme.accent or theme.bgDark
+        hex.setColor(cogHex, panelOpen and theme.accent or theme.bgDark)
     end)
 
     -- Info: toggle description label
-    if info then
+    if infoBtn then
         local descOpen = false
-        info.MouseButton1Click:Connect(function()
+        infoBtn.MouseButton1Click:Connect(function()
             descOpen = not descOpen
             desc.Visible = descOpen
-            info.BackgroundColor3 = descOpen and theme.accent or theme.bgDark
+            hex.setColor(infoHex, descOpen and theme.accent or theme.bgDark)
         end)
     end
 
@@ -185,7 +196,6 @@ function Feature.declare(def)
             toggleEnabled()
         end
     end
-
     local function onRelease()
         if def.onKeyRelease then
             local ok, err = pcall(def.onKeyRelease)
@@ -197,7 +207,7 @@ function Feature.declare(def)
         keybinds.set(id, def.defaultKey, onPress, onRelease)
     end
 
-    -- Settings panel content: keybind setter first
+    -- Settings panel: keybind setter first
     components.KeybindSetter(panel, {
         label    = "Keybind",
         default  = def.defaultKey,
@@ -225,9 +235,7 @@ function Feature.declare(def)
             elseif opt.type == "slider" then
                 components.Slider(panel, {
                     text     = opt.name,
-                    min      = opt.min,
-                    max      = opt.max,
-                    step     = opt.step,
+                    min      = opt.min, max = opt.max, step = opt.step,
                     default  = opt.default,
                     onChange = opt.onChange,
                 })

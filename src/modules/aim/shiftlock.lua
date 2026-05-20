@@ -1,18 +1,15 @@
--- Custom shiftlock. Ports ShiftLockModule with three improvements:
---   1. BindToRenderStep at Camera+100 (deterministic timing vs RenderStepped
---      competitors).
---   2. On enable AND on disable, sweeps PlayerGui for ScreenGuis matching
---      known foreign shiftlock GUI names and Destroys them.
---   3. On enable AND on disable, uses getconnections + getupvalues to find
---      foreign RenderStepped/Heartbeat connections that look like a shiftlock
---      loop (upvalue table has both `shiftLocked` and `humanoid`/`character`)
---      and Disconnects them. This is what actually frees the mouse when
---      another script's shiftlock is still running — without it, killing the
---      GUI doesn't stop the foreign loop, and that loop keeps re-locking the
---      mouse every frame.
---
--- The externalSkipRotation gate from the legacy module is preserved so LockOn+
--- can still take over rotation cleanly without two CFrame writes per frame.
+-- Custom shiftlock. Replaces Roblox's built-in and any competing custom
+-- shiftlock loops. Three layers of foreign-killer:
+--   1. PlayerGui sweep: destroy ScreenGuis with known foreign names.
+--   2. Connection sweep: walk RenderStepped/Heartbeat/Stepped and disconnect
+--      any callback whose bytecode constants include both "MouseBehavior" AND
+--      "LockCenter" — every shiftlock loop has to reference those literals to
+--      actually do anything. Backup heuristic looks at upvalue tables for a
+--      shiftLocked-flag + Humanoid-ref pattern.
+--   3. PlayerScripts sweep: disable LocalScripts whose name contains
+--      "shiftlock".
+-- Runs on boot, enable, disable, and respawn so foreign code that reconnects
+-- doesn't quietly take back over.
 
 local state = require("modules.aim.state")
 local log   = require("core.log")
@@ -26,8 +23,6 @@ local Shiftlock = {}
 local RENDER_BIND = "PantheonShiftlock"
 local GUI_NAME    = "PantheonShiftLockVGui"
 
--- ScreenGui names commonly used by other custom shiftlock scripts. Doesn't
--- include our own GUI_NAME so the sweep never touches us.
 local FOREIGN_GUI_NAMES = {
     "ShiftLockVGui", "ShiftLockIcon", "ShiftLockHud", "ShiftLockButton",
     "CustomShiftLock", "ShiftLockGui", "ShiftlockGui",
@@ -52,6 +47,64 @@ local function disableGameShiftLock()
     pcall(function() lp().DevEnableMouseLock = false end)
 end
 
+-- ---------- foreign killer helpers --------------------------------------
+
+local function getConnectionFunction(conn)
+    for _, key in ipairs({ "Function", "Func", "func" }) do
+        local ok, fn = pcall(function() return conn[key] end)
+        if ok and type(fn) == "function" then return fn end
+    end
+    return nil
+end
+
+local function getConstants(fn)
+    local f = (getconstants) or (debug and debug.getconstants)
+    if not f then return nil end
+    local ok, c = pcall(f, fn)
+    if not ok then return nil end
+    return c
+end
+
+local function getUpvalues(fn)
+    local f = (getupvalues) or (debug and debug.getupvalues)
+    if not f then return nil end
+    local ok, c = pcall(f, fn)
+    if not ok then return nil end
+    return c
+end
+
+-- Strong signature: function code contains both literals.
+local function functionLooksLikeShiftlock(fn)
+    local consts = getConstants(fn)
+    if not consts then return false end
+    local hasMB, hasLC = false, false
+    for _, c in pairs(consts) do
+        if type(c) == "string" then
+            if c == "MouseBehavior" then hasMB = true end
+            if c == "LockCenter"    then hasLC = true end
+        end
+    end
+    return hasMB and hasLC
+end
+
+-- Backup signature: upvalue table looks like a ShiftLockModule self-state.
+local function upvaluesLookLikeShiftlock(fn)
+    local ups = getUpvalues(fn)
+    if not ups then return false end
+    for _, up in pairs(ups) do
+        if type(up) == "table" then
+            local hasFlag = (up.shiftLocked ~= nil) or (up.shiftlock_locked ~= nil)
+                         or (up.locked ~= nil) or (up.isLocked ~= nil)
+            local hasInstRef = (typeof(up.humanoid)  == "Instance")
+                            or (typeof(up.character) == "Instance")
+                            or (typeof(up.root)      == "Instance")
+                            or (typeof(up.hrp)       == "Instance")
+            if hasFlag and hasInstRef then return true end
+        end
+    end
+    return false
+end
+
 local function killForeignGuis()
     local pg = lp():FindFirstChildOfClass("PlayerGui")
     if not pg then return 0 end
@@ -70,53 +123,59 @@ local function killForeignGuis()
     return count
 end
 
--- Walk RenderStepped + Heartbeat connections looking for ones whose upvalues
--- contain a table that looks like a shiftlock state object (has a `shiftLocked`
--- field AND a `humanoid` or `character` instance reference). Our own code uses
--- BindToRenderStep + Heartbeat with state.lua's flat state table (no humanoid
--- field), so this heuristic does not catch us.
 local function killForeignLoops()
-    if not getconnections then return 0 end
-    local getU = rawget(getfenv(), "getupvalues") or (debug and debug.getupvalues)
-    if not getU then return 0 end
-
-    local function looksLikeShiftlockState(t)
-        if type(t) ~= "table" then return false end
-        local hasFlag    = (t.shiftLocked ~= nil) or (t.shiftlock_locked ~= nil)
-        local hasInstRef = (typeof(t.humanoid) == "Instance")
-                         or (typeof(t.character) == "Instance")
-                         or (typeof(t.root) == "Instance")
-        return hasFlag and hasInstRef
-    end
-
-    local function shouldKill(conn)
-        local ok, fn = pcall(function() return conn.Function end)
-        if not ok or type(fn) ~= "function" then
-            ok, fn = pcall(function() return conn.Func end)
-            if not ok or type(fn) ~= "function" then return false end
-        end
-        local ok2, ups = pcall(getU, fn)
-        if not ok2 or type(ups) ~= "table" then return false end
-        for _, up in pairs(ups) do
-            if looksLikeShiftlockState(up) then return true end
-        end
-        return false
-    end
-
-    local count = 0
-    for _, signal in ipairs({ RunService.RenderStepped, RunService.Heartbeat }) do
+    if not getconnections then return 0, 0 end
+    local killed, scanned = 0, 0
+    for _, signal in ipairs({ RunService.RenderStepped, RunService.Heartbeat, RunService.Stepped }) do
         local ok, conns = pcall(getconnections, signal)
         if ok and type(conns) == "table" then
             for _, conn in pairs(conns) do
-                if shouldKill(conn) then
+                scanned = scanned + 1
+                local fn = getConnectionFunction(conn)
+                if fn and (functionLooksLikeShiftlock(fn) or upvaluesLookLikeShiftlock(fn)) then
                     local dok = pcall(function() conn:Disconnect() end)
-                    if dok then count = count + 1 end
+                    if dok then killed = killed + 1 end
                 end
+            end
+        end
+    end
+    return killed, scanned
+end
+
+local function disableForeignScripts()
+    local ps = lp():FindFirstChild("PlayerScripts")
+    if not ps then return 0 end
+    local count = 0
+    for _, d in ipairs(ps:GetDescendants()) do
+        if d:IsA("LocalScript") then
+            local n = d.Name:lower()
+            if n:find("shiftlock") or n:find("shift_lock") then
+                local ok = pcall(function() d.Disabled = true end)
+                if ok then count = count + 1 end
             end
         end
     end
     return count
 end
+
+local function sweepForeigns(label)
+    local g = killForeignGuis()
+    local k, s = killForeignLoops()
+    local sc = disableForeignScripts()
+    if g > 0 or k > 0 or sc > 0 then
+        log.info(string.format(
+            "shiftlock [%s]: killed %d GUI(s), %d/%d connection(s), %d script(s)",
+            label, g, k, s, sc
+        ))
+    else
+        log.debug(string.format(
+            "shiftlock [%s]: scanned %d connection(s), nothing matched",
+            label, s
+        ))
+    end
+end
+
+-- ---------- gui ----------------------------------------------------------
 
 local function buildGui()
     if self_state.gui and self_state.gui.Parent then return end
@@ -186,29 +245,16 @@ function Shiftlock.toggle()
     end
 end
 
-local function reportKills(g, l, suffix)
-    if g > 0 or l > 0 then
-        log.info("shiftlock:", g, "GUI(s) +", l, "loop(s) killed " .. suffix)
-    end
-end
-
 function Shiftlock.setEnabled(v)
     v = v and true or false
     if state.shiftlock_enabled == v then return end
     state.shiftlock_enabled = v
     if v then
         disableGameShiftLock()
-        if state.killForeign then
-            reportKills(killForeignGuis(), killForeignLoops(), "(enable)")
-        end
+        if state.killForeign then sweepForeigns("enable") end
     else
         Shiftlock.forceOff()
-        -- Kill foreigns here too — otherwise a competing loop keeps holding
-        -- MouseBehavior=LockCenter every frame after we release, so the user
-        -- sees "the shiftlock didn't actually turn off."
-        if state.killForeign then
-            reportKills(killForeignGuis(), killForeignLoops(), "(disable)")
-        end
+        if state.killForeign then sweepForeigns("disable") end
     end
 end
 
@@ -237,7 +283,6 @@ local function step()
         UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
     end
 
-    -- Yield rotation to LockOn+ when it's actively rotating to a target
     if self_state.externalSkipRotation and self_state.externalSkipRotation() then
         return
     end
@@ -260,12 +305,8 @@ function Shiftlock.init()
     self_state.charConn = lp().CharacterAdded:Connect(function(c)
         updateCharRefs(c)
         Shiftlock.forceOff()
-        -- On respawn, foreign scripts may reconnect their loop against the new
-        -- humanoid. Re-sweep so they don't quietly take over.
         if state.shiftlock_enabled and state.killForeign then
-            task.defer(function()
-                reportKills(killForeignGuis(), killForeignLoops(), "(respawn)")
-            end)
+            task.defer(function() sweepForeigns("respawn") end)
         end
     end)
 
@@ -278,14 +319,10 @@ function Shiftlock.init()
         self_state.bound = true
     end
 
-    -- Boot-time sweep. Foreign shiftlocks left over from another loaded script
-    -- are what makes Pantheon "look enabled by default" (their loop locks the
-    -- mouse regardless of our toggle). Wipe them on init so the user starts
-    -- with a clean slate, not just on enable.
+    -- Boot-time sweep so leftover foreign shiftlocks from previous script
+    -- loads don't make ours "look enabled by default."
     if state.killForeign then
-        task.defer(function()
-            reportKills(killForeignGuis(), killForeignLoops(), "(boot)")
-        end)
+        task.defer(function() sweepForeigns("boot") end)
     end
 end
 

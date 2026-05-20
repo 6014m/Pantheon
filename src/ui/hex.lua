@@ -49,4 +49,14 @@ function hex.placed(parent, w, h, color, position, anchor, zIndex)
     return host
 end
 
+-- Recolor every row of an existing hex (built by hex.build). Used for
+-- elements that need to flip color on a state change (ON/OFF indicators etc).
+function hex.setColor(hexHost, color)
+    for _, child in ipairs(hexHost:GetChildren()) do
+        if child:IsA("Frame") then
+            child.BackgroundColor3 = color
+        end
+    end
+end
+
 return hex

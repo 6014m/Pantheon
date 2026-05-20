@@ -1,6 +1,15 @@
--- Draggable category window. Holds feature rows. Wurst-style — stacks left-to-right
--- by default; user can drag them anywhere.
--- Real hexagon corner accents (rendered via ui/hex) at each corner of the box.
+-- Draggable category window. Wurst-style stack-left-to-right default; user can
+-- drag them anywhere via the hex tab on top.
+--
+-- Visual layout:
+--    /-----------\         <- hex tab (drag handle, accent-colored)
+--   /   Category  \
+--  /---------------\
+--  |               |       <- body (theme.bg, holds features)
+--  |  feature row  |
+--  |  feature row  |
+--  |               |
+--  *---------------*       <- hex corner accents at bottom
 
 local theme = require("ui.theme")
 local hex   = require("ui.hex")
@@ -12,9 +21,7 @@ Container.__index = Container
 
 local nextIndex = 0
 
--- 14x12 ≈ regular hex proportions (12/14 ≈ 0.857; ideal is 0.866).
-local CORNER_HEX_W = 14
-local CORNER_HEX_H = 12
+local CORNER_HEX_W, CORNER_HEX_H = 14, 12
 
 local function placeCornerHex(parent, position, color)
     local h = hex.build(parent, CORNER_HEX_W, CORNER_HEX_H, color, 5)
@@ -22,11 +29,10 @@ local function placeCornerHex(parent, position, color)
     h.Position    = position
 end
 
-local function addCornerHexes(parent, color)
-    placeCornerHex(parent, UDim2.new(0, 0, 0, 0), color) -- TL
-    placeCornerHex(parent, UDim2.new(1, 0, 0, 0), color) -- TR
-    placeCornerHex(parent, UDim2.new(0, 0, 1, 0), color) -- BL
-    placeCornerHex(parent, UDim2.new(1, 0, 1, 0), color) -- BR
+local function addBottomCornerHexes(parent, color)
+    -- Top corners are visually replaced by the hex tab on the parent root.
+    placeCornerHex(parent, UDim2.new(0, 0, 1, 0), color)
+    placeCornerHex(parent, UDim2.new(1, 0, 1, 0), color)
 end
 
 function Container.new(parent, name)
@@ -36,51 +42,82 @@ function Container.new(parent, name)
     nextIndex = nextIndex + 1
     local x = 16 + idx * (theme.containerWidth + theme.containerGap)
 
+    local TAB_W, TAB_H = 130, 32
+    local TAB_OVERLAP = 6  -- tab dips into body for visual continuity
+
     local root = Instance.new("Frame")
     root.Name = "Container_" .. name
-    root.Size = UDim2.new(0, theme.containerWidth, 0, 28)
+    root.Size = UDim2.new(0, theme.containerWidth, 0, TAB_H)
     root.AutomaticSize = Enum.AutomaticSize.Y
     root.Position = UDim2.fromOffset(x, 16)
-    root.BackgroundColor3 = theme.bg
-    root.BorderSizePixel = 0
+    root.BackgroundTransparency = 1
     root.Parent = parent
 
-    local stroke = Instance.new("UIStroke", root)
+    -- Body (rectangular, holds features + bottom corner hexes)
+    local body = Instance.new("Frame")
+    body.Name = "Body"
+    body.Size = UDim2.new(1, 0, 0, 0)
+    body.AutomaticSize = Enum.AutomaticSize.Y
+    body.Position = UDim2.fromOffset(0, TAB_H - TAB_OVERLAP)
+    body.BackgroundColor3 = theme.bg
+    body.BorderSizePixel = 0
+    body.ZIndex = 1
+    body.Parent = root
+
+    local stroke = Instance.new("UIStroke", body)
     stroke.Color = theme.border
     stroke.Thickness = 1
 
-    -- Header
-    local header = Instance.new("TextLabel")
-    header.Name = "Header"
-    header.Size = UDim2.new(1, 0, 0, 28)
-    header.BackgroundColor3 = theme.accent
-    header.BorderSizePixel = 0
-    header.Text = name
-    header.TextColor3 = theme.fg
-    header.Font = theme.fontBold
-    header.TextSize = 13
-    header.Parent = root
-
-    -- Features stack
+    -- Features stack (starts below the tab overlap so content isn't hidden)
     local features = Instance.new("Frame")
     features.Name = "Features"
-    features.Position = UDim2.fromOffset(0, 28)
     features.Size = UDim2.new(1, 0, 0, 0)
     features.AutomaticSize = Enum.AutomaticSize.Y
+    features.Position = UDim2.fromOffset(0, TAB_OVERLAP + 2)
     features.BackgroundTransparency = 1
-    features.Parent = root
+    features.ZIndex = 2
+    features.Parent = body
 
     local list = Instance.new("UIListLayout", features)
     list.SortOrder = Enum.SortOrder.LayoutOrder
     list.Padding = UDim.new(0, 1)
 
-    -- Real hexagon corner accents (drawn last so they sit on top of stroke + header)
-    addCornerHexes(root, theme.accent)
+    addBottomCornerHexes(body, theme.accent)
 
-    -- Drag on header
+    -- Hex tab (header) on top, centered, ZIndex above body
+    local tab = Instance.new("Frame")
+    tab.Name = "Tab"
+    tab.Size = UDim2.fromOffset(TAB_W, TAB_H)
+    tab.Position = UDim2.new(0.5, 0, 0, 0)
+    tab.AnchorPoint = Vector2.new(0.5, 0)
+    tab.BackgroundTransparency = 1
+    tab.ZIndex = 5
+    tab.Parent = root
+
+    hex.build(tab, TAB_W, TAB_H, theme.accent, 5)
+
+    local tabText = Instance.new("TextLabel")
+    tabText.Size = UDim2.fromScale(1, 1)
+    tabText.BackgroundTransparency = 1
+    tabText.Text = name
+    tabText.TextColor3 = theme.fg
+    tabText.Font = theme.fontBold
+    tabText.TextSize = 13
+    tabText.ZIndex = 7
+    tabText.Parent = tab
+
+    -- Drag handle (transparent click area covering the tab)
+    local dragHandle = Instance.new("TextButton")
+    dragHandle.Size = UDim2.fromScale(1, 1)
+    dragHandle.BackgroundTransparency = 1
+    dragHandle.Text = ""
+    dragHandle.AutoButtonColor = false
+    dragHandle.ZIndex = 8
+    dragHandle.Parent = tab
+
     do
         local dragging, dragStart, startPos = false, nil, nil
-        header.InputBegan:Connect(function(input)
+        dragHandle.InputBegan:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1
                or input.UserInputType == Enum.UserInputType.Touch then
                 dragging  = true
