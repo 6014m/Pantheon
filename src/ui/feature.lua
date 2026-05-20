@@ -2,6 +2,14 @@
 -- Cog click expands an inline settings panel below the row.
 -- "i" click expands a description label below the row (separate from settings).
 -- All three buttons are real hex shapes (built via ui/hex).
+--
+-- Dependency cascading:
+-- Each feature.declare({ ... }) can take a `dependencies = { "id", ... }`
+-- list. When the feature is enabled, every dependency is auto-enabled first.
+-- When the feature is disabled, every other feature that lists it as a
+-- dependency is auto-disabled too (so e.g. turning off Target Select turns
+-- off Lock-On / Highlight / Swap Target instead of leaving them stuck "on"
+-- with no target source).
 
 local theme      = require("ui.theme")
 local hex        = require("ui.hex")
@@ -10,11 +18,10 @@ local components = require("ui.components")
 
 local Feature = {}
 
-local nextId = 0
+local nextId     = 0
+local registry   = {} -- [id] = { setEnabled, getEnabled }
+local dependents = {} -- [depId] = { dependentId, ... }
 
--- Helper: a hex-shaped button. Returns (host frame, hex frame, label, button).
--- The host is what you Position/parent; the hex frame is for hex.setColor;
--- the button is what you :Connect MouseButton1Click on; the label holds text.
 local function hexButton(parent, w, h, color, text, font, textSize)
     local host = Instance.new("Frame")
     host.Size = UDim2.fromOffset(w, h)
@@ -49,6 +56,14 @@ function Feature.declare(def)
     local id = def.id or ("feature_" .. nextId)
     local hasDesc = def.description and #def.description > 0
 
+    -- Register reverse-dep edges so the disable cascade works.
+    if def.dependencies then
+        for _, depId in ipairs(def.dependencies) do
+            dependents[depId] = dependents[depId] or {}
+            table.insert(dependents[depId], id)
+        end
+    end
+
     local root = Instance.new("Frame")
     root.Name = "Feature_" .. id
     root.Size = UDim2.new(1, 0, 0, 0)
@@ -58,7 +73,6 @@ function Feature.declare(def)
     local rootList = Instance.new("UIListLayout", root)
     rootList.SortOrder = Enum.SortOrder.LayoutOrder
 
-    -- Row
     local row = Instance.new("Frame")
     row.Size = UDim2.new(1, 0, 0, theme.featureHeight)
     row.BackgroundColor3 = theme.bgAlt
@@ -77,28 +91,26 @@ function Feature.declare(def)
     nameLabel.TextXAlignment = Enum.TextXAlignment.Left
     nameLabel.Parent = row
 
-    -- Hex ON/OFF indicator (40 x 22)
     local indicatorHost, indicatorHex, indicatorLabel, indicatorBtn =
         hexButton(row, 40, 22, theme.off, "OFF", theme.fontBold, 10)
     indicatorHost.Position = UDim2.new(1, hasDesc and -104 or -76, 0.5, 0)
     indicatorHost.AnchorPoint = Vector2.new(0, 0.5)
 
-    -- Hex info "i" button (22 x 18), only if description was provided
-    local infoHost, infoHex, infoBtn
+    local infoHex, infoBtn
     if hasDesc then
-        local h, hx, _, b = hexButton(row, 22, 18, theme.bgDark, "i", theme.fontBold, 12)
-        h.Position = UDim2.new(1, -54, 0.5, 0)
-        h.AnchorPoint = Vector2.new(0, 0.5)
-        infoHost, infoHex, infoBtn = h, hx, b
+        local _, hx, _, b = hexButton(row, 22, 18, theme.bgDark, "i", theme.fontBold, 12)
+        local infoHost = b.Parent
+        infoHost.Position = UDim2.new(1, -54, 0.5, 0)
+        infoHost.AnchorPoint = Vector2.new(0, 0.5)
+        infoHex, infoBtn = hx, b
     end
 
-    -- Hex cog button (22 x 18)
-    local cogHost, cogHex, _, cogBtn =
+    local _, cogHex, _, cogBtn =
         hexButton(row, 22, 18, theme.bgDark, "\u{2699}", theme.font, 14)
+    local cogHost = cogBtn.Parent
     cogHost.Position = UDim2.new(1, -28, 0.5, 0)
     cogHost.AnchorPoint = Vector2.new(0, 0.5)
 
-    -- Description label (hidden until "i" clicked)
     local desc
     if hasDesc then
         desc = Instance.new("TextLabel")
@@ -124,7 +136,6 @@ function Feature.declare(def)
         pad.PaddingRight  = UDim.new(0, 8)
     end
 
-    -- Settings panel (hidden until cog clicked)
     local panel = Instance.new("Frame")
     panel.Size = UDim2.new(1, 0, 0, 0)
     panel.AutomaticSize = Enum.AutomaticSize.Y
@@ -144,7 +155,6 @@ function Feature.declare(def)
     panelList.Padding   = UDim.new(0, 4)
     panelList.SortOrder = Enum.SortOrder.LayoutOrder
 
-    -- Toggle state
     local enabled = def.default == true
 
     local function applyToggle()
@@ -159,9 +169,29 @@ function Feature.declare(def)
 
     local function setEnabled(v)
         v = v and true or false
-        if enabled ~= v then
-            enabled = v
-            applyToggle()
+        if enabled == v then return end
+
+        -- Enable cascade: turn on every dependency before turning on us.
+        if v and def.dependencies then
+            for _, depId in ipairs(def.dependencies) do
+                local dep = registry[depId]
+                if dep and not dep.getEnabled() then
+                    dep.setEnabled(true)
+                end
+            end
+        end
+
+        enabled = v
+        applyToggle()
+
+        -- Disable cascade: anyone who lists us as a dependency goes off too.
+        if not v and dependents[id] then
+            for _, depId in ipairs(dependents[id]) do
+                local dep = registry[depId]
+                if dep and dep.getEnabled() then
+                    dep.setEnabled(false)
+                end
+            end
         end
     end
 
@@ -169,7 +199,6 @@ function Feature.declare(def)
 
     indicatorBtn.MouseButton1Click:Connect(toggleEnabled)
 
-    -- Cog: toggle settings panel
     local panelOpen = false
     cogBtn.MouseButton1Click:Connect(function()
         panelOpen = not panelOpen
@@ -177,7 +206,6 @@ function Feature.declare(def)
         hex.setColor(cogHex, panelOpen and theme.accent or theme.bgDark)
     end)
 
-    -- Info: toggle description label
     if infoBtn then
         local descOpen = false
         infoBtn.MouseButton1Click:Connect(function()
@@ -187,7 +215,6 @@ function Feature.declare(def)
         end)
     end
 
-    -- Keybind dispatch
     local function onPress()
         if def.onKey then
             local ok, err = pcall(def.onKey)
@@ -207,7 +234,6 @@ function Feature.declare(def)
         keybinds.set(id, def.defaultKey, onPress, onRelease)
     end
 
-    -- Settings panel: keybind setter first
     components.KeybindSetter(panel, {
         label    = "Keybind",
         default  = def.defaultKey,
@@ -260,6 +286,12 @@ function Feature.declare(def)
             end
         end
     end
+
+    registry[id] = {
+        setEnabled = setEnabled,
+        getEnabled = function() return enabled end,
+        def        = def,
+    }
 
     applyToggle()
 

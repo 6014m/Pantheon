@@ -73,12 +73,14 @@ function module.register()
 
     -- Lock-On: aim-assist applicator. Master toggle plus sub-toggles for
     -- Camera Lock and Rotation Lock so the user can mix-and-match.
+    -- Depends on Target Select (needs a target to lock onto).
     combat:add(feature.declare({
-        id          = "aim.lockon",
-        name        = "Lock-On",
-        description = "Applies aim assist to the target picked by Target Select. Sub-toggles let you mix the type: Camera Lock forces the camera to look at the target, Rotation Lock (its own keybind) spins your body to face them. Resistance gives you a free-aim deadzone before the camera pull kicks in.",
-        default     = false,
-        onToggle    = function(v) lockon.setEnabled(v) end,
+        id           = "aim.lockon",
+        name         = "Lock-On",
+        description  = "Applies aim assist to the target picked by Target Select. Sub-toggles let you mix the type: Camera Lock forces the camera to look at the target, Rotation Lock (its own keybind) spins your body to face them. Resistance gives you a free-aim deadzone before the camera pull kicks in.",
+        default      = false,
+        dependencies = { "aim.target_select" },
+        onToggle     = function(v) lockon.setEnabled(v) end,
         settings = {
             { type = "section", name = "Types" },
             { type = "toggle", name = "Camera Lock", default = true,
@@ -108,24 +110,28 @@ function module.register()
     }).root)
 
     -- Swap Target: cycles to the next-best target while Target Select is engaged.
+    -- Depends on Target Select (nothing to swap from without a current target).
     combat:add(feature.declare({
-        id          = "aim.swap_target",
-        name        = "Swap Target",
-        description = "While Target Select has a target, press this key to cycle to the next-best target.",
-        default     = true,
-        defaultKey  = Enum.KeyCode.C,
-        onToggle    = function(v) state.swap_enabled = v end,
-        onKey       = function() targetSelect.swapTarget() end,
+        id           = "aim.swap_target",
+        name         = "Swap Target",
+        description  = "While Target Select has a target, press this key to cycle to the next-best target.",
+        default      = true,
+        defaultKey   = Enum.KeyCode.C,
+        dependencies = { "aim.target_select" },
+        onToggle     = function(v) state.swap_enabled = v end,
+        onKey        = function() targetSelect.swapTarget() end,
     }).root)
 
     -- 3. Visuals --------------------------------------------------------------
+    -- Highlight depends on Target Select (renders nothing without a target).
     local vis = container.new(parent, "Visuals")
     vis:add(feature.declare({
-        id          = "aim.highlight",
-        name        = "Highlight",
-        description = "Outlines whichever target Target Select picks: red on the active target, optional yellow on the next-best. Self-fade drops your own character's opacity so you don't get blocked by your own back.",
-        default     = true,
-        onToggle    = function(v) highlight.setEnabled(v) end,
+        id           = "aim.highlight",
+        name         = "Highlight",
+        description  = "Outlines whichever target Target Select picks: red on the active target, optional yellow on the next-best. Self-fade drops your own character's opacity so you don't get blocked by your own back.",
+        default      = true,
+        dependencies = { "aim.target_select" },
+        onToggle     = function(v) highlight.setEnabled(v) end,
         settings = {
             { type = "toggle", name = "Highlight next-best (yellow)", default = false,
               onChange = function(v) highlight.setSecondEnabled(v) end },

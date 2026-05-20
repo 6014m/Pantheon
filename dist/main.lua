@@ -797,21 +797,24 @@ return Window
 end
 
 _MODULES["ui.container"] = function()
--- Draggable category window. Wurst-style stack-left-to-right default; user can
--- drag them anywhere via the hex tab on top.
+-- Draggable category container. Real chamfered (60-degree) corners at all four
+-- corners — the container outline itself is hex-angled, not a rectangle with
+-- hex decorations stuck on.
 --
--- Visual layout:
---    /-----------\         <- hex tab (drag handle, accent-colored)
---   /   Category  \
---  /---------------\
---  |               |       <- body (theme.bg, holds features)
---  |  feature row  |
---  |  feature row  |
---  |               |
---  *---------------*       <- hex corner accents at bottom
+-- Layout (vertical stack via UIListLayout):
+--    /=========\        <- top chamfered region (accent, header)
+--   /           \
+--  |---HEADER---|       <- flat header section (accent)
+--  |            |       <- body (theme.bg)
+--  |  features  |
+--  |            |
+--   \          /        <- bottom chamfered region (theme.bg)
+--    \========/
+--
+-- The chamfer is built from `CHAMFER_Y` 1-pixel-tall horizontal strips whose
+-- width tapers along a 60-degree slope (chamferX = chamferY / sqrt(3)).
 
 local theme = require("ui.theme")
-local hex   = require("ui.hex")
 
 local UIS = game:GetService("UserInputService")
 
@@ -820,18 +823,26 @@ Container.__index = Container
 
 local nextIndex = 0
 
-local CORNER_HEX_W, CORNER_HEX_H = 14, 12
+local W           = nil  -- set per-instance from theme.containerWidth
+local CHAMFER_Y   = 16
+local CHAMFER_X   = 9    -- 16 / sqrt(3) rounded; gives a 60-degree slope
+local HEADER_FLAT = 16   -- height of the flat (non-chamfered) part of the header
 
-local function placeCornerHex(parent, position, color)
-    local h = hex.build(parent, CORNER_HEX_W, CORNER_HEX_H, color, 5)
-    h.AnchorPoint = Vector2.new(0.5, 0.5)
-    h.Position    = position
-end
-
-local function addBottomCornerHexes(parent, color)
-    -- Top corners are visually replaced by the hex tab on the parent root.
-    placeCornerHex(parent, UDim2.new(0, 0, 1, 0), color)
-    placeCornerHex(parent, UDim2.new(1, 0, 1, 0), color)
+local function buildChamferRegion(parent, totalW, chamferY, chamferX, color, mirror)
+    -- mirror=false : narrow at top, full width at bottom (top of container)
+    -- mirror=true  : full width at top, narrow at bottom (bottom of container)
+    for y = 0, chamferY - 1 do
+        local pct = (y + 0.5) / chamferY   -- 0..1 down the chamfer region
+        if mirror then pct = 1 - pct end
+        local stripW = math.floor(totalW - 2 * chamferX * (1 - pct) + 0.5)
+        local strip = Instance.new("Frame")
+        strip.Size = UDim2.fromOffset(stripW, 2)  -- 2px tall = 1px overlap with neighbour
+        strip.Position = UDim2.fromOffset(totalW * 0.5, y)
+        strip.AnchorPoint = Vector2.new(0.5, 0)
+        strip.BackgroundColor3 = color
+        strip.BorderSizePixel = 0
+        strip.Parent = parent
+    end
 end
 
 function Container.new(parent, name)
@@ -839,81 +850,95 @@ function Container.new(parent, name)
 
     local idx = nextIndex
     nextIndex = nextIndex + 1
-    local x = 16 + idx * (theme.containerWidth + theme.containerGap)
+    local containerW = theme.containerWidth
+    local x = 16 + idx * (containerW + theme.containerGap)
 
-    local TAB_W, TAB_H = 130, 32
-    local TAB_OVERLAP = 6  -- tab dips into body for visual continuity
+    local HEADER_H = CHAMFER_Y + HEADER_FLAT
+    local BOTTOM_H = CHAMFER_Y
 
     local root = Instance.new("Frame")
     root.Name = "Container_" .. name
-    root.Size = UDim2.new(0, theme.containerWidth, 0, TAB_H)
+    root.Size = UDim2.new(0, containerW, 0, HEADER_H + BOTTOM_H)
     root.AutomaticSize = Enum.AutomaticSize.Y
     root.Position = UDim2.fromOffset(x, 16)
     root.BackgroundTransparency = 1
     root.Parent = parent
 
-    -- Body (rectangular, holds features + bottom corner hexes)
-    local body = Instance.new("Frame")
-    body.Name = "Body"
-    body.Size = UDim2.new(1, 0, 0, 0)
-    body.AutomaticSize = Enum.AutomaticSize.Y
-    body.Position = UDim2.fromOffset(0, TAB_H - TAB_OVERLAP)
-    body.BackgroundColor3 = theme.bg
-    body.BorderSizePixel = 0
-    body.ZIndex = 1
-    body.Parent = root
+    local rootList = Instance.new("UIListLayout", root)
+    rootList.FillDirection = Enum.FillDirection.Vertical
+    rootList.SortOrder = Enum.SortOrder.LayoutOrder
 
-    local stroke = Instance.new("UIStroke", body)
-    stroke.Color = theme.border
-    stroke.Thickness = 1
+    -- ============= TOP: chamfered header (accent) =============
+    local header = Instance.new("Frame")
+    header.Name = "Header"
+    header.Size = UDim2.new(1, 0, 0, HEADER_H)
+    header.BackgroundTransparency = 1
+    header.LayoutOrder = 1
+    header.Parent = root
 
-    -- Features stack (starts below the tab overlap so content isn't hidden)
-    local features = Instance.new("Frame")
-    features.Name = "Features"
-    features.Size = UDim2.new(1, 0, 0, 0)
-    features.AutomaticSize = Enum.AutomaticSize.Y
-    features.Position = UDim2.fromOffset(0, TAB_OVERLAP + 2)
-    features.BackgroundTransparency = 1
-    features.ZIndex = 2
-    features.Parent = body
+    -- Chamfered strip stack (y=0 narrow -> y=CHAMFER_Y full width)
+    buildChamferRegion(header, containerW, CHAMFER_Y, CHAMFER_X, theme.accent, false)
 
-    local list = Instance.new("UIListLayout", features)
-    list.SortOrder = Enum.SortOrder.LayoutOrder
-    list.Padding = UDim.new(0, 1)
+    -- Flat part of the header that sits just under the chamfer
+    local headerFlat = Instance.new("Frame")
+    headerFlat.Size = UDim2.new(1, 0, 0, HEADER_FLAT)
+    headerFlat.Position = UDim2.fromOffset(0, CHAMFER_Y)
+    headerFlat.BackgroundColor3 = theme.accent
+    headerFlat.BorderSizePixel = 0
+    headerFlat.Parent = header
 
-    addBottomCornerHexes(body, theme.accent)
+    -- Category text (centered over the whole header)
+    local headerText = Instance.new("TextLabel")
+    headerText.Size = UDim2.fromScale(1, 1)
+    headerText.BackgroundTransparency = 1
+    headerText.Text = name
+    headerText.TextColor3 = theme.fg
+    headerText.Font = theme.fontBold
+    headerText.TextSize = 13
+    headerText.ZIndex = 5
+    headerText.Parent = header
 
-    -- Hex tab (header) on top, centered, ZIndex above body
-    local tab = Instance.new("Frame")
-    tab.Name = "Tab"
-    tab.Size = UDim2.fromOffset(TAB_W, TAB_H)
-    tab.Position = UDim2.new(0.5, 0, 0, 0)
-    tab.AnchorPoint = Vector2.new(0.5, 0)
-    tab.BackgroundTransparency = 1
-    tab.ZIndex = 5
-    tab.Parent = root
-
-    hex.build(tab, TAB_W, TAB_H, theme.accent, 5)
-
-    local tabText = Instance.new("TextLabel")
-    tabText.Size = UDim2.fromScale(1, 1)
-    tabText.BackgroundTransparency = 1
-    tabText.Text = name
-    tabText.TextColor3 = theme.fg
-    tabText.Font = theme.fontBold
-    tabText.TextSize = 13
-    tabText.ZIndex = 7
-    tabText.Parent = tab
-
-    -- Drag handle (transparent click area covering the tab)
+    -- Drag handle (entire header is the drag target)
     local dragHandle = Instance.new("TextButton")
     dragHandle.Size = UDim2.fromScale(1, 1)
     dragHandle.BackgroundTransparency = 1
     dragHandle.Text = ""
     dragHandle.AutoButtonColor = false
     dragHandle.ZIndex = 8
-    dragHandle.Parent = tab
+    dragHandle.Parent = header
 
+    -- ============= MIDDLE: body (dark, holds features) =============
+    local body = Instance.new("Frame")
+    body.Name = "Body"
+    body.Size = UDim2.new(1, 0, 0, 0)
+    body.AutomaticSize = Enum.AutomaticSize.Y
+    body.BackgroundColor3 = theme.bg
+    body.BorderSizePixel = 0
+    body.LayoutOrder = 2
+    body.Parent = root
+
+    local features = Instance.new("Frame")
+    features.Name = "Features"
+    features.Size = UDim2.new(1, 0, 0, 0)
+    features.AutomaticSize = Enum.AutomaticSize.Y
+    features.BackgroundTransparency = 1
+    features.Parent = body
+
+    local featuresList = Instance.new("UIListLayout", features)
+    featuresList.SortOrder = Enum.SortOrder.LayoutOrder
+    featuresList.Padding = UDim.new(0, 1)
+
+    -- ============= BOTTOM: chamfered region (dark, mirror of top) =============
+    local bottom = Instance.new("Frame")
+    bottom.Name = "Bottom"
+    bottom.Size = UDim2.new(1, 0, 0, BOTTOM_H)
+    bottom.BackgroundTransparency = 1
+    bottom.LayoutOrder = 3
+    bottom.Parent = root
+
+    buildChamferRegion(bottom, containerW, CHAMFER_Y, CHAMFER_X, theme.bg, true)
+
+    -- Drag
     do
         local dragging, dragStart, startPos = false, nil, nil
         dragHandle.InputBegan:Connect(function(input)
@@ -966,6 +991,14 @@ _MODULES["ui.feature"] = function()
 -- Cog click expands an inline settings panel below the row.
 -- "i" click expands a description label below the row (separate from settings).
 -- All three buttons are real hex shapes (built via ui/hex).
+--
+-- Dependency cascading:
+-- Each feature.declare({ ... }) can take a `dependencies = { "id", ... }`
+-- list. When the feature is enabled, every dependency is auto-enabled first.
+-- When the feature is disabled, every other feature that lists it as a
+-- dependency is auto-disabled too (so e.g. turning off Target Select turns
+-- off Lock-On / Highlight / Swap Target instead of leaving them stuck "on"
+-- with no target source).
 
 local theme      = require("ui.theme")
 local hex        = require("ui.hex")
@@ -974,11 +1007,10 @@ local components = require("ui.components")
 
 local Feature = {}
 
-local nextId = 0
+local nextId     = 0
+local registry   = {} -- [id] = { setEnabled, getEnabled }
+local dependents = {} -- [depId] = { dependentId, ... }
 
--- Helper: a hex-shaped button. Returns (host frame, hex frame, label, button).
--- The host is what you Position/parent; the hex frame is for hex.setColor;
--- the button is what you :Connect MouseButton1Click on; the label holds text.
 local function hexButton(parent, w, h, color, text, font, textSize)
     local host = Instance.new("Frame")
     host.Size = UDim2.fromOffset(w, h)
@@ -1013,6 +1045,14 @@ function Feature.declare(def)
     local id = def.id or ("feature_" .. nextId)
     local hasDesc = def.description and #def.description > 0
 
+    -- Register reverse-dep edges so the disable cascade works.
+    if def.dependencies then
+        for _, depId in ipairs(def.dependencies) do
+            dependents[depId] = dependents[depId] or {}
+            table.insert(dependents[depId], id)
+        end
+    end
+
     local root = Instance.new("Frame")
     root.Name = "Feature_" .. id
     root.Size = UDim2.new(1, 0, 0, 0)
@@ -1022,7 +1062,6 @@ function Feature.declare(def)
     local rootList = Instance.new("UIListLayout", root)
     rootList.SortOrder = Enum.SortOrder.LayoutOrder
 
-    -- Row
     local row = Instance.new("Frame")
     row.Size = UDim2.new(1, 0, 0, theme.featureHeight)
     row.BackgroundColor3 = theme.bgAlt
@@ -1041,28 +1080,26 @@ function Feature.declare(def)
     nameLabel.TextXAlignment = Enum.TextXAlignment.Left
     nameLabel.Parent = row
 
-    -- Hex ON/OFF indicator (40 x 22)
     local indicatorHost, indicatorHex, indicatorLabel, indicatorBtn =
         hexButton(row, 40, 22, theme.off, "OFF", theme.fontBold, 10)
     indicatorHost.Position = UDim2.new(1, hasDesc and -104 or -76, 0.5, 0)
     indicatorHost.AnchorPoint = Vector2.new(0, 0.5)
 
-    -- Hex info "i" button (22 x 18), only if description was provided
-    local infoHost, infoHex, infoBtn
+    local infoHex, infoBtn
     if hasDesc then
-        local h, hx, _, b = hexButton(row, 22, 18, theme.bgDark, "i", theme.fontBold, 12)
-        h.Position = UDim2.new(1, -54, 0.5, 0)
-        h.AnchorPoint = Vector2.new(0, 0.5)
-        infoHost, infoHex, infoBtn = h, hx, b
+        local _, hx, _, b = hexButton(row, 22, 18, theme.bgDark, "i", theme.fontBold, 12)
+        local infoHost = b.Parent
+        infoHost.Position = UDim2.new(1, -54, 0.5, 0)
+        infoHost.AnchorPoint = Vector2.new(0, 0.5)
+        infoHex, infoBtn = hx, b
     end
 
-    -- Hex cog button (22 x 18)
-    local cogHost, cogHex, _, cogBtn =
+    local _, cogHex, _, cogBtn =
         hexButton(row, 22, 18, theme.bgDark, "\u{2699}", theme.font, 14)
+    local cogHost = cogBtn.Parent
     cogHost.Position = UDim2.new(1, -28, 0.5, 0)
     cogHost.AnchorPoint = Vector2.new(0, 0.5)
 
-    -- Description label (hidden until "i" clicked)
     local desc
     if hasDesc then
         desc = Instance.new("TextLabel")
@@ -1088,7 +1125,6 @@ function Feature.declare(def)
         pad.PaddingRight  = UDim.new(0, 8)
     end
 
-    -- Settings panel (hidden until cog clicked)
     local panel = Instance.new("Frame")
     panel.Size = UDim2.new(1, 0, 0, 0)
     panel.AutomaticSize = Enum.AutomaticSize.Y
@@ -1108,7 +1144,6 @@ function Feature.declare(def)
     panelList.Padding   = UDim.new(0, 4)
     panelList.SortOrder = Enum.SortOrder.LayoutOrder
 
-    -- Toggle state
     local enabled = def.default == true
 
     local function applyToggle()
@@ -1123,9 +1158,29 @@ function Feature.declare(def)
 
     local function setEnabled(v)
         v = v and true or false
-        if enabled ~= v then
-            enabled = v
-            applyToggle()
+        if enabled == v then return end
+
+        -- Enable cascade: turn on every dependency before turning on us.
+        if v and def.dependencies then
+            for _, depId in ipairs(def.dependencies) do
+                local dep = registry[depId]
+                if dep and not dep.getEnabled() then
+                    dep.setEnabled(true)
+                end
+            end
+        end
+
+        enabled = v
+        applyToggle()
+
+        -- Disable cascade: anyone who lists us as a dependency goes off too.
+        if not v and dependents[id] then
+            for _, depId in ipairs(dependents[id]) do
+                local dep = registry[depId]
+                if dep and dep.getEnabled() then
+                    dep.setEnabled(false)
+                end
+            end
         end
     end
 
@@ -1133,7 +1188,6 @@ function Feature.declare(def)
 
     indicatorBtn.MouseButton1Click:Connect(toggleEnabled)
 
-    -- Cog: toggle settings panel
     local panelOpen = false
     cogBtn.MouseButton1Click:Connect(function()
         panelOpen = not panelOpen
@@ -1141,7 +1195,6 @@ function Feature.declare(def)
         hex.setColor(cogHex, panelOpen and theme.accent or theme.bgDark)
     end)
 
-    -- Info: toggle description label
     if infoBtn then
         local descOpen = false
         infoBtn.MouseButton1Click:Connect(function()
@@ -1151,7 +1204,6 @@ function Feature.declare(def)
         end)
     end
 
-    -- Keybind dispatch
     local function onPress()
         if def.onKey then
             local ok, err = pcall(def.onKey)
@@ -1171,7 +1223,6 @@ function Feature.declare(def)
         keybinds.set(id, def.defaultKey, onPress, onRelease)
     end
 
-    -- Settings panel: keybind setter first
     components.KeybindSetter(panel, {
         label    = "Keybind",
         default  = def.defaultKey,
@@ -1224,6 +1275,12 @@ function Feature.declare(def)
             end
         end
     end
+
+    registry[id] = {
+        setEnabled = setEnabled,
+        getEnabled = function() return enabled end,
+        def        = def,
+    }
 
     applyToggle()
 
@@ -2417,12 +2474,14 @@ function module.register()
 
     -- Lock-On: aim-assist applicator. Master toggle plus sub-toggles for
     -- Camera Lock and Rotation Lock so the user can mix-and-match.
+    -- Depends on Target Select (needs a target to lock onto).
     combat:add(feature.declare({
-        id          = "aim.lockon",
-        name        = "Lock-On",
-        description = "Applies aim assist to the target picked by Target Select. Sub-toggles let you mix the type: Camera Lock forces the camera to look at the target, Rotation Lock (its own keybind) spins your body to face them. Resistance gives you a free-aim deadzone before the camera pull kicks in.",
-        default     = false,
-        onToggle    = function(v) lockon.setEnabled(v) end,
+        id           = "aim.lockon",
+        name         = "Lock-On",
+        description  = "Applies aim assist to the target picked by Target Select. Sub-toggles let you mix the type: Camera Lock forces the camera to look at the target, Rotation Lock (its own keybind) spins your body to face them. Resistance gives you a free-aim deadzone before the camera pull kicks in.",
+        default      = false,
+        dependencies = { "aim.target_select" },
+        onToggle     = function(v) lockon.setEnabled(v) end,
         settings = {
             { type = "section", name = "Types" },
             { type = "toggle", name = "Camera Lock", default = true,
@@ -2452,24 +2511,28 @@ function module.register()
     }).root)
 
     -- Swap Target: cycles to the next-best target while Target Select is engaged.
+    -- Depends on Target Select (nothing to swap from without a current target).
     combat:add(feature.declare({
-        id          = "aim.swap_target",
-        name        = "Swap Target",
-        description = "While Target Select has a target, press this key to cycle to the next-best target.",
-        default     = true,
-        defaultKey  = Enum.KeyCode.C,
-        onToggle    = function(v) state.swap_enabled = v end,
-        onKey       = function() targetSelect.swapTarget() end,
+        id           = "aim.swap_target",
+        name         = "Swap Target",
+        description  = "While Target Select has a target, press this key to cycle to the next-best target.",
+        default      = true,
+        defaultKey   = Enum.KeyCode.C,
+        dependencies = { "aim.target_select" },
+        onToggle     = function(v) state.swap_enabled = v end,
+        onKey        = function() targetSelect.swapTarget() end,
     }).root)
 
     -- 3. Visuals --------------------------------------------------------------
+    -- Highlight depends on Target Select (renders nothing without a target).
     local vis = container.new(parent, "Visuals")
     vis:add(feature.declare({
-        id          = "aim.highlight",
-        name        = "Highlight",
-        description = "Outlines whichever target Target Select picks: red on the active target, optional yellow on the next-best. Self-fade drops your own character's opacity so you don't get blocked by your own back.",
-        default     = true,
-        onToggle    = function(v) highlight.setEnabled(v) end,
+        id           = "aim.highlight",
+        name         = "Highlight",
+        description  = "Outlines whichever target Target Select picks: red on the active target, optional yellow on the next-best. Self-fade drops your own character's opacity so you don't get blocked by your own back.",
+        default      = true,
+        dependencies = { "aim.target_select" },
+        onToggle     = function(v) highlight.setEnabled(v) end,
         settings = {
             { type = "toggle", name = "Highlight next-best (yellow)", default = false,
               onChange = function(v) highlight.setSecondEnabled(v) end },
