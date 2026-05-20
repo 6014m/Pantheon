@@ -145,17 +145,29 @@ local function killForeignLoops()
     return killed, scanned
 end
 
+local FOREIGN_SCRIPT_PATTERNS = {
+    "shiftlock", "shift_lock", "shift%-lock",
+    "mouselock", "mouse_lock", "mouse%-lock",
+    "lockmouse", "centermouse",
+    "cameralock", "camera_lock",
+    "mouselockcontroller",
+}
+
+local function nameMatchesForeign(lowerName)
+    for _, pat in ipairs(FOREIGN_SCRIPT_PATTERNS) do
+        if lowerName:find(pat) then return true end
+    end
+    return false
+end
+
 local function disableForeignScripts()
     local ps = lp():FindFirstChild("PlayerScripts")
     if not ps then return 0 end
     local count = 0
     for _, d in ipairs(ps:GetDescendants()) do
-        if d:IsA("LocalScript") then
-            local n = d.Name:lower()
-            if n:find("shiftlock") or n:find("shift_lock") then
-                local ok = pcall(function() d.Disabled = true end)
-                if ok then count = count + 1 end
-            end
+        if d:IsA("LocalScript") and nameMatchesForeign(d.Name:lower()) then
+            local ok = pcall(function() d.Disabled = true end)
+            if ok then count = count + 1 end
         end
     end
     return count
@@ -167,16 +179,17 @@ end
 -- This is what actually beats foreign shiftlocks that win via BindToRenderStep
 -- at higher priority than us, or that run on Heartbeat, or that use any other
 -- path - they can't write the property at all.
+--
+-- Persists `realOriginal` across re-installs so if a foreign script also hooks
+-- __newindex and we re-install on top of theirs, we still pass through to the
+-- real engine setter at the end of the chain (not theirs).
+local realOriginal = nil
+
 local function installMouseBehaviorHook()
-    if self_state.hookInstalled then return end
     if type(hookmetamethod) ~= "function" then
         log.debug("shiftlock: hookmetamethod unavailable; relying on connection sweep")
-        return
+        return false
     end
-
-    -- Forward-declared upvalue. Hook may fire before assignment in pathological
-    -- cases; the nil check inside the hook handles that safely.
-    local originalNewindex = nil
 
     local hookFn = function(self, key, value)
         if state.killForeign
@@ -199,19 +212,45 @@ local function installMouseBehaviorHook()
                 return
             end
         end
-        if originalNewindex then
-            return originalNewindex(self, key, value)
+        if realOriginal then
+            return realOriginal(self, key, value)
         end
     end
 
-    local ok, original = pcall(hookmetamethod, UserInputService, "__newindex", hookFn)
-    if ok and original then
-        originalNewindex = original
-        self_state.hookInstalled = true
-        log.info("shiftlock: MouseBehavior hook installed (foreign writes will be blocked)")
-    else
-        log.warn("shiftlock: hookmetamethod failed:", tostring(original))
+    local ok, returned = pcall(hookmetamethod, UserInputService, "__newindex", hookFn)
+    if not ok or not returned then
+        if not self_state.hookInstalled then
+            log.warn("shiftlock: hookmetamethod failed:", tostring(returned))
+        end
+        return false
     end
+
+    -- First successful install: returned IS the real engine setter. Save it.
+    -- Subsequent re-installs: returned is our PREVIOUS hook (or a foreign
+    -- script's hook that has chained on top of us). Discard it so the chain
+    -- stays at depth-1 and we always pass through to the real original.
+    if not realOriginal then realOriginal = returned end
+
+    if not self_state.hookInstalled then
+        log.info("shiftlock: MouseBehavior hook installed (foreign writes will be blocked)")
+    end
+    self_state.hookInstalled = true
+    return true
+end
+
+-- Periodically re-install the hook. If a game's own script hooks __newindex
+-- AFTER us, their hook wraps ours and a foreign value might leak through.
+-- Re-installing every second puts our hook back on top of theirs.
+local function spawnHookGuard()
+    if self_state.hookGuardStarted then return end
+    self_state.hookGuardStarted = true
+    task.spawn(function()
+        while task.wait(1) do
+            if state.killForeign then
+                installMouseBehaviorHook()
+            end
+        end
+    end)
 end
 
 local function sweepForeigns(label)
@@ -322,7 +361,17 @@ local function step()
     if not state.shiftlock_enabled then return end
 
     local hum = self_state.humanoid
-    if hum then hum.CameraOffset = Vector3.new(0, 0, 0) end
+    if hum then
+        hum.CameraOffset = Vector3.new(0, 0, 0)
+        -- Force AutoRotate every frame. Some game shiftlocks don't touch
+        -- MouseBehavior at all - they lock by toggling Humanoid.AutoRotate
+        -- and writing root.CFrame from a render-step loop. Pinning AutoRotate
+        -- here catches that path even when the hook doesn't see anything.
+        local wantedAR = not state.shiftlock_active
+        if hum.AutoRotate ~= wantedAR then
+            hum.AutoRotate = wantedAR
+        end
+    end
 
     if not state.shiftlock_active or not self_state.root or not hum then return end
     if hum.PlatformStand or hum.Health <= 0 then return end
@@ -382,6 +431,7 @@ function Shiftlock.init()
     -- Property-level hook: blocks foreign writes outright instead of
     -- racing them in the render pipeline.
     installMouseBehaviorHook()
+    spawnHookGuard()
 
     -- Boot-time sweep so leftover foreign shiftlocks from previous script
     -- loads don't make ours "look enabled by default."
