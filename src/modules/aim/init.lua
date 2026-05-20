@@ -1,5 +1,6 @@
--- Aim Assist: declarative feature definitions. Implementations live in their
--- own files; this file wires them into the Wurst-style UI via feature.declare.
+-- Aim Assist: declarative feature definitions across three categories.
+-- Implementations live in their own files; this file wires them in and
+-- registers them as features in the Movement / Combat / Visuals containers.
 
 local window      = require("ui.window")
 local container   = require("ui.container")
@@ -21,17 +22,18 @@ function module.register()
     lockon.init()
     shiftlock.setExternalSkipRotation(lockon_plus.isActive)
 
-    -- Build the Aim Assist container
-    local cat = container.new(window.parent(), "Aim Assist")
+    local parent = window.parent()
 
-    -- Custom Shiftlock --------------------------------------------------------
-    cat:add(feature.declare({
-        id         = "aim.shiftlock",
-        name       = "Custom Shiftlock",
-        default    = false,
-        defaultKey = Enum.KeyCode.LeftShift,
-        onToggle   = function(v) shiftlock.setEnabled(v) end,
-        onKey      = function()
+    -- 1. Movement -------------------------------------------------------------
+    local move = container.new(parent, "Movement")
+    move:add(feature.declare({
+        id          = "aim.shiftlock",
+        name        = "Custom Shiftlock",
+        description = "Locks your mouse to the center of the screen and rotates your character to face the camera. Replaces Roblox's built-in shift-lock and also kills competing shift-lock GUIs from other scripts on enable.",
+        default     = false,
+        defaultKey  = Enum.KeyCode.LeftShift,
+        onToggle    = function(v) shiftlock.setEnabled(v) end,
+        onKey       = function()
             if not state.shiftlock_enabled then
                 shiftlock.setEnabled(true)
             end
@@ -43,16 +45,23 @@ function module.register()
         },
     }).root)
 
-    -- Lock-On -----------------------------------------------------------------
-    cat:add(feature.declare({
+    -- 2. Combat ---------------------------------------------------------------
+    -- Lock-On owns its modifiers (Lock-On+ and Resistance) as nested sections
+    -- inside its settings panel, since neither does anything without an active
+    -- lock-on target.
+    local combat = container.new(parent, "Combat")
+    combat:add(feature.declare({
         id           = "aim.lockon",
         name         = "Lock-On",
+        description  = "Picks the nearest valid target (with optional FOV / health / visibility filters) and forces your camera toward them while held. Lock-On+ rotates your body to match. Resistance gives you a free-aim deadzone around the target before the pull kicks in.",
         default      = false,
         defaultKey   = Enum.KeyCode.X,
         onToggle     = function(v) lockon.setEnabled(v) end,
         onKey        = function() lockon.hotkeyPress()   end,
         onKeyRelease = function() lockon.hotkeyRelease() end,
         settings = {
+            -- Targeting
+            { type = "section", name = "Targeting" },
             { type = "toggle", name = "Hold mode (vs toggle)", default = false,
               onChange = function(v) lockon.setHoldMode(v) end },
             { type = "toggle", name = "Realistic FOV (60 deg)", default = false,
@@ -64,30 +73,18 @@ function module.register()
             { type = "slider", name = "Range (0 = inf)",
               min = 0, max = 500, step = 5, default = 0,
               onChange = function(v) state.rangeLimit = v end },
-        },
-    }).root)
 
-    -- Swap Target -------------------------------------------------------------
-    cat:add(feature.declare({
-        id         = "aim.swap_target",
-        name       = "Swap Target",
-        default    = true,
-        defaultKey = Enum.KeyCode.C,
-        onToggle   = function(v) state.swap_enabled = v end,
-        onKey      = function() lockon.swapTarget() end,
-    }).root)
+            -- Lock-On+
+            { type = "section", name = "Lock-On+" },
+            { type = "toggle", name = "Enable", default = false,
+              onChange = function(v) state.lockonPlusEnabled = v end },
+            { type = "toggle", name = "Battlegrounds-safe", default = true,
+              onChange = function(v) state.bgSafeEnabled = v end },
 
-    -- Resistance --------------------------------------------------------------
-    -- Modifier on the Lock-On camera force. Off = camera snaps to target every
-    -- frame (rigid lock). On = camera is left alone within `threshold` degrees
-    -- of the target (free aim), and lerps back to the target at `strength`
-    -- per frame once the player has drifted past the threshold.
-    cat:add(feature.declare({
-        id       = "aim.resistance",
-        name     = "Resistance",
-        default  = false,
-        onToggle = function(v) state.resistance_enabled = v end,
-        settings = {
+            -- Resistance
+            { type = "section", name = "Resistance" },
+            { type = "toggle", name = "Enable", default = false,
+              onChange = function(v) state.resistance_enabled = v end },
             { type = "slider", name = "Threshold (deg)",
               min = 0, max = 30, step = 1, default = 5,
               onChange = function(v) state.resistance_threshold = v end },
@@ -96,13 +93,24 @@ function module.register()
               onChange = function(v) state.resistance_strength = v end },
         },
     }).root)
+    combat:add(feature.declare({
+        id          = "aim.swap_target",
+        name        = "Swap Target",
+        description = "While Lock-On is engaged, press this key to cycle to the next-best target.",
+        default     = true,
+        defaultKey  = Enum.KeyCode.C,
+        onToggle    = function(v) state.swap_enabled = v end,
+        onKey       = function() lockon.swapTarget() end,
+    }).root)
 
-    -- Highlight ---------------------------------------------------------------
-    cat:add(feature.declare({
-        id       = "aim.highlight",
-        name     = "Highlight",
-        default  = true,
-        onToggle = function(v) highlight.setEnabled(v) end,
+    -- 3. Visuals --------------------------------------------------------------
+    local vis = container.new(parent, "Visuals")
+    vis:add(feature.declare({
+        id          = "aim.highlight",
+        name        = "Highlight",
+        description = "Outlines your current target in red. Optional yellow outline on the next-best target, plus a self-fade option that drops your own character's opacity so it doesn't block your view.",
+        default     = true,
+        onToggle    = function(v) highlight.setEnabled(v) end,
         settings = {
             { type = "toggle", name = "Highlight next-best (yellow)", default = false,
               onChange = function(v) highlight.setSecondEnabled(v) end },
@@ -111,19 +119,7 @@ function module.register()
         },
     }).root)
 
-    -- Lock-On+ ----------------------------------------------------------------
-    cat:add(feature.declare({
-        id       = "aim.lockon_plus",
-        name     = "Lock-On+",
-        default  = false,
-        onToggle = function(v) state.lockonPlusEnabled = v end,
-        settings = {
-            { type = "toggle", name = "Battlegrounds-safe", default = true,
-              onChange = function(v) state.bgSafeEnabled = v end },
-        },
-    }).root)
-
-    log.info("Aim Assist registered")
+    log.info("Aim Assist registered (Movement / Combat / Visuals)")
 end
 
 return module

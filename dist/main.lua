@@ -287,7 +287,7 @@ local theme = {
     containerGap   = 12,
     featureHeight  = 30,
     rowHeight      = 30,
-    cornerRadius   = UDim.new(0, 4),
+    cornerRadius   = UDim.new(0, 0),
     padding        = 6,
 }
 
@@ -296,6 +296,7 @@ end
 
 _MODULES["ui.components"] = function()
 -- UI primitives: Section, Label, Button, Toggle, Slider, KeybindSetter.
+-- Sharp angular corners — no UICorner anywhere — to match the hex/HUD theme.
 
 local theme = require("ui.theme")
 
@@ -309,7 +310,6 @@ local function baseRow(parent, height)
     f.BackgroundColor3 = theme.bgAlt
     f.BorderSizePixel = 0
     f.Parent = parent
-    Instance.new("UICorner", f).CornerRadius = UDim.new(0, 4)
     return f
 end
 
@@ -318,7 +318,7 @@ function components.Section(parent, text)
     f.Size = UDim2.new(1, 0, 0, 22)
     f.BackgroundTransparency = 1
     f.Text = string.upper(text or "")
-    f.TextColor3 = theme.fgDim
+    f.TextColor3 = theme.accent
     f.Font = theme.fontBold
     f.TextSize = 11
     f.TextXAlignment = Enum.TextXAlignment.Left
@@ -378,14 +378,12 @@ function components.Toggle(parent, opts)
     switch.AutoButtonColor = false
     switch.Text = ""
     switch.Parent = f
-    Instance.new("UICorner", switch).CornerRadius = UDim.new(1, 0)
 
     local knob = Instance.new("Frame")
     knob.Size = UDim2.fromOffset(14, 14)
     knob.BackgroundColor3 = theme.fg
     knob.BorderSizePixel = 0
     knob.Parent = switch
-    Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
 
     local function apply()
         switch.BackgroundColor3 = state and theme.accent or theme.bgDark
@@ -438,14 +436,12 @@ function components.Slider(parent, opts)
     track.BackgroundColor3 = theme.bgDark
     track.BorderSizePixel = 0
     track.Parent = f
-    Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
 
     local fill = Instance.new("Frame")
     fill.BackgroundColor3 = theme.accent
     fill.BorderSizePixel = 0
     fill.Size = UDim2.new((value - min) / (max - min), 0, 1, 0)
     fill.Parent = track
-    Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
 
     local dragging = false
 
@@ -519,9 +515,10 @@ function components.KeybindSetter(parent, opts)
     label.TextXAlignment = Enum.TextXAlignment.Left
     label.Parent = f
 
+    -- Setter button (click to enter listen mode, then press any key to bind)
     local btn = Instance.new("TextButton")
     btn.Position = UDim2.new(0.5, 4, 0.5, -10)
-    btn.Size = UDim2.new(0.5, -14, 0, 20)
+    btn.Size = UDim2.new(0.5, -38, 0, 20)
     btn.BackgroundColor3 = theme.bgDark
     btn.AutoButtonColor = false
     btn.TextColor3 = theme.fgDim
@@ -529,7 +526,18 @@ function components.KeybindSetter(parent, opts)
     btn.TextSize = 11
     btn.Text = keyDisplayName(current)
     btn.Parent = f
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 3)
+
+    -- Unbind button: clears the keybind in one click
+    local unbind = Instance.new("TextButton")
+    unbind.Position = UDim2.new(1, -22, 0.5, -10)
+    unbind.Size = UDim2.fromOffset(20, 20)
+    unbind.BackgroundColor3 = theme.danger
+    unbind.AutoButtonColor = false
+    unbind.Text = "X"
+    unbind.TextColor3 = theme.fg
+    unbind.Font = theme.fontBold
+    unbind.TextSize = 10
+    unbind.Parent = f
 
     btn.MouseButton1Click:Connect(function()
         if listening then return end
@@ -567,6 +575,12 @@ function components.KeybindSetter(parent, opts)
         end)
     end)
 
+    unbind.MouseButton1Click:Connect(function()
+        current = Enum.KeyCode.Unknown
+        btn.Text = keyDisplayName(current)
+        if opts.onChange then opts.onChange(current) end
+    end)
+
     return {
         get = function() return current end,
         set = function(k)
@@ -582,7 +596,7 @@ end
 
 _MODULES["ui.window"] = function()
 -- Pantheon root UI. Hosts a ScreenGui that contains a `Containers` parent (for
--- draggable category windows) plus a floating "P" open/close button.
+-- draggable category windows) plus a floating hexagonal open/close button.
 -- Master hotkey (default RightControl) toggles visibility.
 
 local env      = require("core.env")
@@ -601,23 +615,65 @@ local s = {
     masterKey = Enum.KeyCode.RightControl,
 }
 
-local function buildOpenButton(sg)
-    local btn = Instance.new("TextButton")
-    btn.Name = "PantheonOpenButton"
-    btn.Size = UDim2.fromOffset(40, 40)
-    btn.Position = UDim2.new(0, 16, 1, -56)
-    btn.BackgroundColor3 = theme.accent
-    btn.BorderSizePixel = 0
-    btn.Text = "P"
-    btn.TextColor3 = theme.fg
-    btn.Font = theme.fontBold
-    btn.TextSize = 18
-    btn.AutoButtonColor = false
-    btn.Parent = sg
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(1, 0)
-    Instance.new("UIStroke", btn).Color = theme.border
+local function buildHexButton(sg)
+    local host = Instance.new("Frame")
+    host.Name = "PantheonOpenButton"
+    host.Size = UDim2.fromOffset(46, 50)
+    host.Position = UDim2.new(0, 16, 1, -66)
+    host.BackgroundTransparency = 1
+    host.ZIndex = 10
+    host.Parent = sg
 
-    -- Draggable + click-to-toggle (click only fires if not dragged)
+    -- 3-frame hex shape: top point + middle rectangle + bottom point.
+    -- The rotated squares are anchored so their outer tips sit at the host edges,
+    -- and the middle rectangle covers the diamonds' inner halves.
+    local top = Instance.new("Frame")
+    top.Size = UDim2.fromOffset(35, 35)
+    top.AnchorPoint = Vector2.new(0.5, 0)
+    top.Position = UDim2.new(0.5, 0, 0, 0)
+    top.Rotation = 45
+    top.BackgroundColor3 = theme.accent
+    top.BorderSizePixel = 0
+    top.ZIndex = 10
+    top.Parent = host
+
+    local mid = Instance.new("Frame")
+    mid.Size = UDim2.new(1, 0, 0, 26)
+    mid.Position = UDim2.fromOffset(0, 12)
+    mid.BackgroundColor3 = theme.accent
+    mid.BorderSizePixel = 0
+    mid.ZIndex = 11
+    mid.Parent = host
+
+    local bot = Instance.new("Frame")
+    bot.Size = UDim2.fromOffset(35, 35)
+    bot.AnchorPoint = Vector2.new(0.5, 1)
+    bot.Position = UDim2.new(0.5, 0, 1, 0)
+    bot.Rotation = 45
+    bot.BackgroundColor3 = theme.accent
+    bot.BorderSizePixel = 0
+    bot.ZIndex = 10
+    bot.Parent = host
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.fromScale(1, 1)
+    label.BackgroundTransparency = 1
+    label.Text = "P"
+    label.TextColor3 = theme.fg
+    label.Font = theme.fontBold
+    label.TextSize = 20
+    label.ZIndex = 12
+    label.Parent = host
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.fromScale(1, 1)
+    btn.BackgroundTransparency = 1
+    btn.Text = ""
+    btn.AutoButtonColor = false
+    btn.ZIndex = 13
+    btn.Parent = host
+
+    -- Drag + click-to-toggle (click only fires if not dragged)
     local dragging, dragStart, startPos = false, nil, nil
     local moved = false
     btn.InputBegan:Connect(function(input)
@@ -625,7 +681,7 @@ local function buildOpenButton(sg)
            or input.UserInputType == Enum.UserInputType.Touch then
             dragging  = true
             dragStart = input.Position
-            startPos  = btn.Position
+            startPos  = host.Position
             moved     = false
         end
     end)
@@ -635,7 +691,7 @@ local function buildOpenButton(sg)
            or input.UserInputType == Enum.UserInputType.Touch then
             local delta = input.Position - dragStart
             if delta.Magnitude > 4 then moved = true end
-            btn.Position = UDim2.new(
+            host.Position = UDim2.new(
                 startPos.X.Scale, startPos.X.Offset + delta.X,
                 startPos.Y.Scale, startPos.Y.Offset + delta.Y
             )
@@ -649,7 +705,7 @@ local function buildOpenButton(sg)
         end
     end)
 
-    return btn
+    return host
 end
 
 function Window.init()
@@ -671,7 +727,7 @@ function Window.init()
 
     s.screenGui = sg
     s.container = containerHost
-    s.openBtn   = buildOpenButton(sg)
+    s.openBtn   = buildHexButton(sg)
 
     keybinds.set("ui.master_toggle", s.masterKey, Window.toggle)
 end
@@ -702,8 +758,9 @@ return Window
 end
 
 _MODULES["ui.container"] = function()
--- Draggable category window. Holds feature rows. Wurst-style layout: stacks
--- left-to-right by default; user can drag them anywhere.
+-- Draggable category window. Holds feature rows. Wurst-style — stacks left-to-right
+-- by default; user can drag them anywhere. Sharp angular corners + L-bracket accents
+-- at each corner for a HUD/sci-fi look.
 
 local theme = require("ui.theme")
 
@@ -713,6 +770,30 @@ local Container = {}
 Container.__index = Container
 
 local nextIndex = 0
+
+local function bracketPiece(parent, size, position, anchor, color)
+    local f = Instance.new("Frame")
+    f.Size = size
+    f.Position = position
+    f.AnchorPoint = anchor
+    f.BackgroundColor3 = color
+    f.BorderSizePixel = 0
+    f.ZIndex = 5
+    f.Parent = parent
+end
+
+local function addBracket(parent, position, anchor, color)
+    local SIZE, THICK = 8, 2
+    bracketPiece(parent, UDim2.fromOffset(SIZE, THICK), position, anchor, color)
+    bracketPiece(parent, UDim2.fromOffset(THICK, SIZE), position, anchor, color)
+end
+
+local function addCornerBrackets(parent, color)
+    addBracket(parent, UDim2.new(0, 0, 0, 0), Vector2.new(0, 0), color)
+    addBracket(parent, UDim2.new(1, 0, 0, 0), Vector2.new(1, 0), color)
+    addBracket(parent, UDim2.new(0, 0, 1, 0), Vector2.new(0, 1), color)
+    addBracket(parent, UDim2.new(1, 0, 1, 0), Vector2.new(1, 1), color)
+end
 
 function Container.new(parent, name)
     local self = setmetatable({}, Container)
@@ -729,7 +810,6 @@ function Container.new(parent, name)
     root.BackgroundColor3 = theme.bg
     root.BorderSizePixel = 0
     root.Parent = parent
-    Instance.new("UICorner", root).CornerRadius = theme.cornerRadius
 
     local stroke = Instance.new("UIStroke", root)
     stroke.Color = theme.border
@@ -746,15 +826,6 @@ function Container.new(parent, name)
     header.Font = theme.fontBold
     header.TextSize = 13
     header.Parent = root
-    Instance.new("UICorner", header).CornerRadius = theme.cornerRadius
-
-    -- Mask the rounded bottom corners of the header so it tiles flush with the body
-    local headerMask = Instance.new("Frame")
-    headerMask.Size = UDim2.new(1, 0, 0.5, 0)
-    headerMask.Position = UDim2.new(0, 0, 0.5, 0)
-    headerMask.BackgroundColor3 = theme.accent
-    headerMask.BorderSizePixel = 0
-    headerMask.Parent = header
 
     -- Features stack
     local features = Instance.new("Frame")
@@ -769,15 +840,18 @@ function Container.new(parent, name)
     list.SortOrder = Enum.SortOrder.LayoutOrder
     list.Padding = UDim.new(0, 1)
 
-    -- Drag handler on the header
+    -- Corner brackets (drawn last so they sit on top of header + stroke)
+    addCornerBrackets(root, theme.accent)
+
+    -- Drag on header
     do
         local dragging, dragStart, startPos = false, nil, nil
         header.InputBegan:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1
                or input.UserInputType == Enum.UserInputType.Touch then
-                dragging  = true
+                dragging = true
                 dragStart = input.Position
-                startPos  = root.Position
+                startPos = root.Position
             end
         end)
         UIS.InputChanged:Connect(function(input)
@@ -818,22 +892,12 @@ return Container
 end
 
 _MODULES["ui.feature"] = function()
--- Feature row: [name] [ON/OFF indicator] [cog].
--- Cog click expands an inline settings panel below the row. The panel always
--- starts with a keybind setter; per-feature options follow.
+-- Feature row: [name] [ON/OFF indicator] [i info] [cog].
+-- Cog click expands an inline settings panel below the row.
+-- "i" click expands a description label below the row (separate from settings).
+-- Sharp angular corners throughout.
 --
--- Declarative API:
---   feature.declare({
---     id           = "aim.lockon",            -- stable id for keybind persistence
---     name         = "Lock-On",
---     default      = false,                   -- initial on/off
---     defaultKey   = Enum.KeyCode.E,          -- default keybind (nil = unbound)
---     onToggle     = function(enabled) end,   -- called on on/off flips
---     onKey        = function() end,          -- called when hotkey pressed (default: flip toggle)
---     onKeyRelease = function() end,          -- called when hotkey released
---     settings     = { { type = "toggle"/"slider"/"button", ... }, ... },
---   })
--- Returns { root = Frame, id = ..., setEnabled = fn, getEnabled = fn }
+-- Settings types: toggle, slider, button, section.
 
 local theme      = require("ui.theme")
 local keybinds   = require("core.keybinds")
@@ -846,23 +910,31 @@ local nextId = 0
 function Feature.declare(def)
     nextId = nextId + 1
     local id = def.id or ("feature_" .. nextId)
+    local hasDesc = def.description and #def.description > 0
 
+    -- Root uses UIListLayout so row / description / settings panel stack
+    -- vertically and only contribute height when Visible = true.
     local root = Instance.new("Frame")
     root.Name = "Feature_" .. id
-    root.Size = UDim2.new(1, 0, 0, theme.featureHeight)
+    root.Size = UDim2.new(1, 0, 0, 0)
     root.AutomaticSize = Enum.AutomaticSize.Y
     root.BackgroundTransparency = 1
+
+    local rootList = Instance.new("UIListLayout", root)
+    rootList.SortOrder = Enum.SortOrder.LayoutOrder
 
     -- Row
     local row = Instance.new("Frame")
     row.Size = UDim2.new(1, 0, 0, theme.featureHeight)
     row.BackgroundColor3 = theme.bgAlt
     row.BorderSizePixel = 0
+    row.LayoutOrder = 1
     row.Parent = root
 
+    -- Reserve right-side space: indicator(40) + i(20) + cog(20) + gaps = ~108
     local nameLabel = Instance.new("TextLabel")
     nameLabel.Position = UDim2.fromOffset(8, 0)
-    nameLabel.Size = UDim2.new(1, -84, 1, 0)
+    nameLabel.Size = UDim2.new(1, hasDesc and -108 or -84, 1, 0)
     nameLabel.BackgroundTransparency = 1
     nameLabel.Text = def.name or "Feature"
     nameLabel.TextColor3 = theme.fgDim
@@ -872,7 +944,7 @@ function Feature.declare(def)
     nameLabel.Parent = row
 
     local indicator = Instance.new("TextButton")
-    indicator.Position = UDim2.new(1, -76, 0.5, -10)
+    indicator.Position = UDim2.new(1, hasDesc and -100 or -76, 0.5, -10)
     indicator.Size = UDim2.fromOffset(40, 20)
     indicator.BackgroundColor3 = theme.off
     indicator.AutoButtonColor = false
@@ -881,7 +953,20 @@ function Feature.declare(def)
     indicator.Font = theme.fontBold
     indicator.TextSize = 10
     indicator.Parent = row
-    Instance.new("UICorner", indicator).CornerRadius = UDim.new(0, 3)
+
+    local info -- info "i" button, only if a description was provided
+    if hasDesc then
+        info = Instance.new("TextButton")
+        info.Position = UDim2.new(1, -52, 0.5, -10)
+        info.Size = UDim2.fromOffset(20, 20)
+        info.BackgroundColor3 = theme.bgDark
+        info.AutoButtonColor = false
+        info.Text = "i"
+        info.TextColor3 = theme.fgDim
+        info.Font = theme.fontBold
+        info.TextSize = 12
+        info.Parent = row
+    end
 
     local cog = Instance.new("TextButton")
     cog.Position = UDim2.new(1, -28, 0.5, -10)
@@ -893,16 +978,41 @@ function Feature.declare(def)
     cog.Font = theme.font
     cog.TextSize = 14
     cog.Parent = row
-    Instance.new("UICorner", cog).CornerRadius = UDim.new(0, 3)
 
-    -- Settings panel
+    -- Description label (hidden until "i" clicked)
+    local desc
+    if hasDesc then
+        desc = Instance.new("TextLabel")
+        desc.Size = UDim2.new(1, 0, 0, 0)
+        desc.AutomaticSize = Enum.AutomaticSize.Y
+        desc.BackgroundColor3 = theme.bgDark
+        desc.BorderSizePixel = 0
+        desc.Text = def.description
+        desc.TextColor3 = theme.fgDim
+        desc.Font = theme.font
+        desc.TextSize = 11
+        desc.TextWrapped = true
+        desc.TextXAlignment = Enum.TextXAlignment.Left
+        desc.TextYAlignment = Enum.TextYAlignment.Top
+        desc.Visible = false
+        desc.LayoutOrder = 2
+        desc.Parent = root
+
+        local pad = Instance.new("UIPadding", desc)
+        pad.PaddingTop    = UDim.new(0, 6)
+        pad.PaddingBottom = UDim.new(0, 6)
+        pad.PaddingLeft   = UDim.new(0, 8)
+        pad.PaddingRight  = UDim.new(0, 8)
+    end
+
+    -- Settings panel (hidden until cog clicked)
     local panel = Instance.new("Frame")
-    panel.Position = UDim2.fromOffset(0, theme.featureHeight)
     panel.Size = UDim2.new(1, 0, 0, 0)
     panel.AutomaticSize = Enum.AutomaticSize.Y
     panel.BackgroundColor3 = theme.bgDark
     panel.BorderSizePixel = 0
     panel.Visible = false
+    panel.LayoutOrder = 3
     panel.Parent = root
 
     local panelPad = Instance.new("UIPadding", panel)
@@ -942,13 +1052,23 @@ function Feature.declare(def)
 
     indicator.MouseButton1Click:Connect(toggleEnabled)
 
-    -- Cog: expand/collapse
+    -- Cog: toggle settings panel
     local panelOpen = false
     cog.MouseButton1Click:Connect(function()
         panelOpen = not panelOpen
         panel.Visible = panelOpen
         cog.BackgroundColor3 = panelOpen and theme.accent or theme.bgDark
     end)
+
+    -- Info: toggle description label
+    if info then
+        local descOpen = false
+        info.MouseButton1Click:Connect(function()
+            descOpen = not descOpen
+            desc.Visible = descOpen
+            info.BackgroundColor3 = descOpen and theme.accent or theme.bgDark
+        end)
+    end
 
     -- Keybind dispatch
     local function onPress()
@@ -971,7 +1091,7 @@ function Feature.declare(def)
         keybinds.set(id, def.defaultKey, onPress, onRelease)
     end
 
-    -- Settings panel: keybind setter first
+    -- Settings panel content: keybind setter first
     components.KeybindSetter(panel, {
         label    = "Keybind",
         default  = def.defaultKey,
@@ -988,7 +1108,9 @@ function Feature.declare(def)
         sep.Parent = panel
 
         for _, opt in ipairs(def.settings) do
-            if opt.type == "toggle" then
+            if opt.type == "section" then
+                components.Section(panel, opt.name)
+            elseif opt.type == "toggle" then
                 components.Toggle(panel, {
                     text     = opt.name,
                     default  = opt.default,
@@ -1407,14 +1529,21 @@ return Highlight
 end
 
 _MODULES["modules.aim.shiftlock"] = function()
--- Custom shiftlock. Ports ShiftLockModule with two improvements:
---   1. BindToRenderStep at Camera+100 (deterministic timing vs RenderStepped:Connect competitors)
---   2. On enable, sweeps PlayerGui for ScreenGuis matching known foreign shiftlock names
---      and Destroys them, which breaks the foreign script's loop (their WaitForChild/
---      FindFirstChild on the GUI fails downstream).
+-- Custom shiftlock. Ports ShiftLockModule with three improvements:
+--   1. BindToRenderStep at Camera+100 (deterministic timing vs RenderStepped
+--      competitors).
+--   2. On enable AND on disable, sweeps PlayerGui for ScreenGuis matching
+--      known foreign shiftlock GUI names and Destroys them.
+--   3. On enable AND on disable, uses getconnections + getupvalues to find
+--      foreign RenderStepped/Heartbeat connections that look like a shiftlock
+--      loop (upvalue table has both `shiftLocked` and `humanoid`/`character`)
+--      and Disconnects them. This is what actually frees the mouse when
+--      another script's shiftlock is still running — without it, killing the
+--      GUI doesn't stop the foreign loop, and that loop keeps re-locking the
+--      mouse every frame.
 --
--- The externalSkipRotation gate from the legacy module is preserved so LockOn+ can
--- still take over rotation cleanly without two CFrame writes per frame.
+-- The externalSkipRotation gate from the legacy module is preserved so LockOn+
+-- can still take over rotation cleanly without two CFrame writes per frame.
 
 local state = require("modules.aim.state")
 local log   = require("core.log")
@@ -1428,7 +1557,7 @@ local Shiftlock = {}
 local RENDER_BIND = "PantheonShiftlock"
 local GUI_NAME    = "PantheonShiftLockVGui"
 
--- ScreenGui names commonly used by other custom shiftlock scripts. Does not
+-- ScreenGui names commonly used by other custom shiftlock scripts. Doesn't
 -- include our own GUI_NAME so the sweep never touches us.
 local FOREIGN_GUI_NAMES = {
     "ShiftLockVGui", "ShiftLockIcon", "ShiftLockHud", "ShiftLockButton",
@@ -1465,6 +1594,54 @@ local function killForeignGuis()
                     gui:Destroy()
                     count = count + 1
                     break
+                end
+            end
+        end
+    end
+    return count
+end
+
+-- Walk RenderStepped + Heartbeat connections looking for ones whose upvalues
+-- contain a table that looks like a shiftlock state object (has a `shiftLocked`
+-- field AND a `humanoid` or `character` instance reference). Our own code uses
+-- BindToRenderStep + Heartbeat with state.lua's flat state table (no humanoid
+-- field), so this heuristic does not catch us.
+local function killForeignLoops()
+    if not getconnections then return 0 end
+    local getU = rawget(getfenv(), "getupvalues") or (debug and debug.getupvalues)
+    if not getU then return 0 end
+
+    local function looksLikeShiftlockState(t)
+        if type(t) ~= "table" then return false end
+        local hasFlag    = (t.shiftLocked ~= nil) or (t.shiftlock_locked ~= nil)
+        local hasInstRef = (typeof(t.humanoid) == "Instance")
+                         or (typeof(t.character) == "Instance")
+                         or (typeof(t.root) == "Instance")
+        return hasFlag and hasInstRef
+    end
+
+    local function shouldKill(conn)
+        local ok, fn = pcall(function() return conn.Function end)
+        if not ok or type(fn) ~= "function" then
+            ok, fn = pcall(function() return conn.Func end)
+            if not ok or type(fn) ~= "function" then return false end
+        end
+        local ok2, ups = pcall(getU, fn)
+        if not ok2 or type(ups) ~= "table" then return false end
+        for _, up in pairs(ups) do
+            if looksLikeShiftlockState(up) then return true end
+        end
+        return false
+    end
+
+    local count = 0
+    for _, signal in ipairs({ RunService.RenderStepped, RunService.Heartbeat }) do
+        local ok, conns = pcall(getconnections, signal)
+        if ok and type(conns) == "table" then
+            for _, conn in pairs(conns) do
+                if shouldKill(conn) then
+                    local dok = pcall(function() conn:Disconnect() end)
+                    if dok then count = count + 1 end
                 end
             end
         end
@@ -1540,6 +1717,12 @@ function Shiftlock.toggle()
     end
 end
 
+local function reportKills(g, l, suffix)
+    if g > 0 or l > 0 then
+        log.info("shiftlock:", g, "GUI(s) +", l, "loop(s) killed " .. suffix)
+    end
+end
+
 function Shiftlock.setEnabled(v)
     v = v and true or false
     if state.shiftlock_enabled == v then return end
@@ -1547,11 +1730,16 @@ function Shiftlock.setEnabled(v)
     if v then
         disableGameShiftLock()
         if state.killForeign then
-            local n = killForeignGuis()
-            if n > 0 then log.info("shiftlock: killed", n, "foreign GUI(s)") end
+            reportKills(killForeignGuis(), killForeignLoops(), "(enable)")
         end
     else
         Shiftlock.forceOff()
+        -- Kill foreigns here too — otherwise a competing loop keeps holding
+        -- MouseBehavior=LockCenter every frame after we release, so the user
+        -- sees "the shiftlock didn't actually turn off."
+        if state.killForeign then
+            reportKills(killForeignGuis(), killForeignLoops(), "(disable)")
+        end
     end
 end
 
@@ -1568,11 +1756,11 @@ local function step()
     if not state.shiftlock_active or not self_state.root or not hum then return end
     if hum.PlatformStand or hum.Health <= 0 then return end
 
-    local s = hum:GetState()
-    if s == Enum.HumanoidStateType.Ragdoll
-       or s == Enum.HumanoidStateType.FallingDown
-       or s == Enum.HumanoidStateType.Physics
-       or s == Enum.HumanoidStateType.Dead then
+    local st = hum:GetState()
+    if st == Enum.HumanoidStateType.Ragdoll
+       or st == Enum.HumanoidStateType.FallingDown
+       or st == Enum.HumanoidStateType.Physics
+       or st == Enum.HumanoidStateType.Dead then
         return
     end
 
@@ -1603,6 +1791,13 @@ function Shiftlock.init()
     self_state.charConn = lp().CharacterAdded:Connect(function(c)
         updateCharRefs(c)
         Shiftlock.forceOff()
+        -- On respawn, foreign scripts may reconnect their loop against the new
+        -- humanoid. Re-sweep so they don't quietly take over.
+        if state.shiftlock_enabled and state.killForeign then
+            task.defer(function()
+                reportKills(killForeignGuis(), killForeignLoops(), "(respawn)")
+            end)
+        end
     end)
 
     self_state.focusConn = UserInputService.WindowFocusReleased:Connect(function()
@@ -1890,7 +2085,9 @@ local function validateStep()
 end
 
 -- RenderStep: force camera to look at target, optionally gated by resistance.
-local function cameraStep()
+-- `dt` comes from BindToRenderStep so the resistance lerp can be frame-rate
+-- independent (otherwise the pull feels stuttery on uneven frame times).
+local function cameraStep(dt)
     if not state.lockon_enabled or not state.lockon_locked then return end
 
     local cam = workspace.CurrentCamera
@@ -1919,8 +2116,12 @@ local function cameraStep()
             s.lastDir = currentLook
             return
         end
-        local strength = state.resistance_strength or 0.5
-        local blended = currentLook:Lerp(dir, strength)
+        -- Frame-rate-independent exponential approach.
+        -- alpha = 1 - exp(-smoothness * dt) converges smoothly regardless of fps.
+        -- Strength (0..1) maps to smoothness (0..20); higher = snappier.
+        local smoothness = (state.resistance_strength or 0.5) * 20
+        local alpha = 1 - math.exp(-smoothness * (dt or 1/60))
+        local blended = currentLook:Lerp(dir, alpha)
         if blended.Magnitude > 0.001 then dir = blended.Unit end
     end
 
@@ -1986,8 +2187,9 @@ return LockOn
 end
 
 _MODULES["modules.aim.init"] = function()
--- Aim Assist: declarative feature definitions. Implementations live in their
--- own files; this file wires them into the Wurst-style UI via feature.declare.
+-- Aim Assist: declarative feature definitions across three categories.
+-- Implementations live in their own files; this file wires them in and
+-- registers them as features in the Movement / Combat / Visuals containers.
 
 local window      = require("ui.window")
 local container   = require("ui.container")
@@ -2009,17 +2211,18 @@ function module.register()
     lockon.init()
     shiftlock.setExternalSkipRotation(lockon_plus.isActive)
 
-    -- Build the Aim Assist container
-    local cat = container.new(window.parent(), "Aim Assist")
+    local parent = window.parent()
 
-    -- Custom Shiftlock --------------------------------------------------------
-    cat:add(feature.declare({
-        id         = "aim.shiftlock",
-        name       = "Custom Shiftlock",
-        default    = false,
-        defaultKey = Enum.KeyCode.LeftShift,
-        onToggle   = function(v) shiftlock.setEnabled(v) end,
-        onKey      = function()
+    -- 1. Movement -------------------------------------------------------------
+    local move = container.new(parent, "Movement")
+    move:add(feature.declare({
+        id          = "aim.shiftlock",
+        name        = "Custom Shiftlock",
+        description = "Locks your mouse to the center of the screen and rotates your character to face the camera. Replaces Roblox's built-in shift-lock and also kills competing shift-lock GUIs from other scripts on enable.",
+        default     = false,
+        defaultKey  = Enum.KeyCode.LeftShift,
+        onToggle    = function(v) shiftlock.setEnabled(v) end,
+        onKey       = function()
             if not state.shiftlock_enabled then
                 shiftlock.setEnabled(true)
             end
@@ -2031,16 +2234,23 @@ function module.register()
         },
     }).root)
 
-    -- Lock-On -----------------------------------------------------------------
-    cat:add(feature.declare({
+    -- 2. Combat ---------------------------------------------------------------
+    -- Lock-On owns its modifiers (Lock-On+ and Resistance) as nested sections
+    -- inside its settings panel, since neither does anything without an active
+    -- lock-on target.
+    local combat = container.new(parent, "Combat")
+    combat:add(feature.declare({
         id           = "aim.lockon",
         name         = "Lock-On",
+        description  = "Picks the nearest valid target (with optional FOV / health / visibility filters) and forces your camera toward them while held. Lock-On+ rotates your body to match. Resistance gives you a free-aim deadzone around the target before the pull kicks in.",
         default      = false,
         defaultKey   = Enum.KeyCode.X,
         onToggle     = function(v) lockon.setEnabled(v) end,
         onKey        = function() lockon.hotkeyPress()   end,
         onKeyRelease = function() lockon.hotkeyRelease() end,
         settings = {
+            -- Targeting
+            { type = "section", name = "Targeting" },
             { type = "toggle", name = "Hold mode (vs toggle)", default = false,
               onChange = function(v) lockon.setHoldMode(v) end },
             { type = "toggle", name = "Realistic FOV (60 deg)", default = false,
@@ -2052,30 +2262,18 @@ function module.register()
             { type = "slider", name = "Range (0 = inf)",
               min = 0, max = 500, step = 5, default = 0,
               onChange = function(v) state.rangeLimit = v end },
-        },
-    }).root)
 
-    -- Swap Target -------------------------------------------------------------
-    cat:add(feature.declare({
-        id         = "aim.swap_target",
-        name       = "Swap Target",
-        default    = true,
-        defaultKey = Enum.KeyCode.C,
-        onToggle   = function(v) state.swap_enabled = v end,
-        onKey      = function() lockon.swapTarget() end,
-    }).root)
+            -- Lock-On+
+            { type = "section", name = "Lock-On+" },
+            { type = "toggle", name = "Enable", default = false,
+              onChange = function(v) state.lockonPlusEnabled = v end },
+            { type = "toggle", name = "Battlegrounds-safe", default = true,
+              onChange = function(v) state.bgSafeEnabled = v end },
 
-    -- Resistance --------------------------------------------------------------
-    -- Modifier on the Lock-On camera force. Off = camera snaps to target every
-    -- frame (rigid lock). On = camera is left alone within `threshold` degrees
-    -- of the target (free aim), and lerps back to the target at `strength`
-    -- per frame once the player has drifted past the threshold.
-    cat:add(feature.declare({
-        id       = "aim.resistance",
-        name     = "Resistance",
-        default  = false,
-        onToggle = function(v) state.resistance_enabled = v end,
-        settings = {
+            -- Resistance
+            { type = "section", name = "Resistance" },
+            { type = "toggle", name = "Enable", default = false,
+              onChange = function(v) state.resistance_enabled = v end },
             { type = "slider", name = "Threshold (deg)",
               min = 0, max = 30, step = 1, default = 5,
               onChange = function(v) state.resistance_threshold = v end },
@@ -2084,13 +2282,24 @@ function module.register()
               onChange = function(v) state.resistance_strength = v end },
         },
     }).root)
+    combat:add(feature.declare({
+        id          = "aim.swap_target",
+        name        = "Swap Target",
+        description = "While Lock-On is engaged, press this key to cycle to the next-best target.",
+        default     = true,
+        defaultKey  = Enum.KeyCode.C,
+        onToggle    = function(v) state.swap_enabled = v end,
+        onKey       = function() lockon.swapTarget() end,
+    }).root)
 
-    -- Highlight ---------------------------------------------------------------
-    cat:add(feature.declare({
-        id       = "aim.highlight",
-        name     = "Highlight",
-        default  = true,
-        onToggle = function(v) highlight.setEnabled(v) end,
+    -- 3. Visuals --------------------------------------------------------------
+    local vis = container.new(parent, "Visuals")
+    vis:add(feature.declare({
+        id          = "aim.highlight",
+        name        = "Highlight",
+        description = "Outlines your current target in red. Optional yellow outline on the next-best target, plus a self-fade option that drops your own character's opacity so it doesn't block your view.",
+        default     = true,
+        onToggle    = function(v) highlight.setEnabled(v) end,
         settings = {
             { type = "toggle", name = "Highlight next-best (yellow)", default = false,
               onChange = function(v) highlight.setSecondEnabled(v) end },
@@ -2099,19 +2308,7 @@ function module.register()
         },
     }).root)
 
-    -- Lock-On+ ----------------------------------------------------------------
-    cat:add(feature.declare({
-        id       = "aim.lockon_plus",
-        name     = "Lock-On+",
-        default  = false,
-        onToggle = function(v) state.lockonPlusEnabled = v end,
-        settings = {
-            { type = "toggle", name = "Battlegrounds-safe", default = true,
-              onChange = function(v) state.bgSafeEnabled = v end },
-        },
-    }).root)
-
-    log.info("Aim Assist registered")
+    log.info("Aim Assist registered (Movement / Combat / Visuals)")
 end
 
 return module

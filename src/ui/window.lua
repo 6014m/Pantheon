@@ -1,5 +1,5 @@
 -- Pantheon root UI. Hosts a ScreenGui that contains a `Containers` parent (for
--- draggable category windows) plus a floating "P" open/close button.
+-- draggable category windows) plus a floating hexagonal open/close button.
 -- Master hotkey (default RightControl) toggles visibility.
 
 local env      = require("core.env")
@@ -18,23 +18,65 @@ local s = {
     masterKey = Enum.KeyCode.RightControl,
 }
 
-local function buildOpenButton(sg)
-    local btn = Instance.new("TextButton")
-    btn.Name = "PantheonOpenButton"
-    btn.Size = UDim2.fromOffset(40, 40)
-    btn.Position = UDim2.new(0, 16, 1, -56)
-    btn.BackgroundColor3 = theme.accent
-    btn.BorderSizePixel = 0
-    btn.Text = "P"
-    btn.TextColor3 = theme.fg
-    btn.Font = theme.fontBold
-    btn.TextSize = 18
-    btn.AutoButtonColor = false
-    btn.Parent = sg
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(1, 0)
-    Instance.new("UIStroke", btn).Color = theme.border
+local function buildHexButton(sg)
+    local host = Instance.new("Frame")
+    host.Name = "PantheonOpenButton"
+    host.Size = UDim2.fromOffset(46, 50)
+    host.Position = UDim2.new(0, 16, 1, -66)
+    host.BackgroundTransparency = 1
+    host.ZIndex = 10
+    host.Parent = sg
 
-    -- Draggable + click-to-toggle (click only fires if not dragged)
+    -- 3-frame hex shape: top point + middle rectangle + bottom point.
+    -- The rotated squares are anchored so their outer tips sit at the host edges,
+    -- and the middle rectangle covers the diamonds' inner halves.
+    local top = Instance.new("Frame")
+    top.Size = UDim2.fromOffset(35, 35)
+    top.AnchorPoint = Vector2.new(0.5, 0)
+    top.Position = UDim2.new(0.5, 0, 0, 0)
+    top.Rotation = 45
+    top.BackgroundColor3 = theme.accent
+    top.BorderSizePixel = 0
+    top.ZIndex = 10
+    top.Parent = host
+
+    local mid = Instance.new("Frame")
+    mid.Size = UDim2.new(1, 0, 0, 26)
+    mid.Position = UDim2.fromOffset(0, 12)
+    mid.BackgroundColor3 = theme.accent
+    mid.BorderSizePixel = 0
+    mid.ZIndex = 11
+    mid.Parent = host
+
+    local bot = Instance.new("Frame")
+    bot.Size = UDim2.fromOffset(35, 35)
+    bot.AnchorPoint = Vector2.new(0.5, 1)
+    bot.Position = UDim2.new(0.5, 0, 1, 0)
+    bot.Rotation = 45
+    bot.BackgroundColor3 = theme.accent
+    bot.BorderSizePixel = 0
+    bot.ZIndex = 10
+    bot.Parent = host
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.fromScale(1, 1)
+    label.BackgroundTransparency = 1
+    label.Text = "P"
+    label.TextColor3 = theme.fg
+    label.Font = theme.fontBold
+    label.TextSize = 20
+    label.ZIndex = 12
+    label.Parent = host
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.fromScale(1, 1)
+    btn.BackgroundTransparency = 1
+    btn.Text = ""
+    btn.AutoButtonColor = false
+    btn.ZIndex = 13
+    btn.Parent = host
+
+    -- Drag + click-to-toggle (click only fires if not dragged)
     local dragging, dragStart, startPos = false, nil, nil
     local moved = false
     btn.InputBegan:Connect(function(input)
@@ -42,7 +84,7 @@ local function buildOpenButton(sg)
            or input.UserInputType == Enum.UserInputType.Touch then
             dragging  = true
             dragStart = input.Position
-            startPos  = btn.Position
+            startPos  = host.Position
             moved     = false
         end
     end)
@@ -52,7 +94,7 @@ local function buildOpenButton(sg)
            or input.UserInputType == Enum.UserInputType.Touch then
             local delta = input.Position - dragStart
             if delta.Magnitude > 4 then moved = true end
-            btn.Position = UDim2.new(
+            host.Position = UDim2.new(
                 startPos.X.Scale, startPos.X.Offset + delta.X,
                 startPos.Y.Scale, startPos.Y.Offset + delta.Y
             )
@@ -66,7 +108,7 @@ local function buildOpenButton(sg)
         end
     end)
 
-    return btn
+    return host
 end
 
 function Window.init()
@@ -88,7 +130,7 @@ function Window.init()
 
     s.screenGui = sg
     s.container = containerHost
-    s.openBtn   = buildOpenButton(sg)
+    s.openBtn   = buildHexButton(sg)
 
     keybinds.set("ui.master_toggle", s.masterKey, Window.toggle)
 end

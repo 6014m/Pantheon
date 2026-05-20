@@ -1,5 +1,6 @@
--- Draggable category window. Holds feature rows. Wurst-style layout: stacks
--- left-to-right by default; user can drag them anywhere.
+-- Draggable category window. Holds feature rows. Wurst-style — stacks left-to-right
+-- by default; user can drag them anywhere. Sharp angular corners + L-bracket accents
+-- at each corner for a HUD/sci-fi look.
 
 local theme = require("ui.theme")
 
@@ -9,6 +10,30 @@ local Container = {}
 Container.__index = Container
 
 local nextIndex = 0
+
+local function bracketPiece(parent, size, position, anchor, color)
+    local f = Instance.new("Frame")
+    f.Size = size
+    f.Position = position
+    f.AnchorPoint = anchor
+    f.BackgroundColor3 = color
+    f.BorderSizePixel = 0
+    f.ZIndex = 5
+    f.Parent = parent
+end
+
+local function addBracket(parent, position, anchor, color)
+    local SIZE, THICK = 8, 2
+    bracketPiece(parent, UDim2.fromOffset(SIZE, THICK), position, anchor, color)
+    bracketPiece(parent, UDim2.fromOffset(THICK, SIZE), position, anchor, color)
+end
+
+local function addCornerBrackets(parent, color)
+    addBracket(parent, UDim2.new(0, 0, 0, 0), Vector2.new(0, 0), color)
+    addBracket(parent, UDim2.new(1, 0, 0, 0), Vector2.new(1, 0), color)
+    addBracket(parent, UDim2.new(0, 0, 1, 0), Vector2.new(0, 1), color)
+    addBracket(parent, UDim2.new(1, 0, 1, 0), Vector2.new(1, 1), color)
+end
 
 function Container.new(parent, name)
     local self = setmetatable({}, Container)
@@ -25,7 +50,6 @@ function Container.new(parent, name)
     root.BackgroundColor3 = theme.bg
     root.BorderSizePixel = 0
     root.Parent = parent
-    Instance.new("UICorner", root).CornerRadius = theme.cornerRadius
 
     local stroke = Instance.new("UIStroke", root)
     stroke.Color = theme.border
@@ -42,15 +66,6 @@ function Container.new(parent, name)
     header.Font = theme.fontBold
     header.TextSize = 13
     header.Parent = root
-    Instance.new("UICorner", header).CornerRadius = theme.cornerRadius
-
-    -- Mask the rounded bottom corners of the header so it tiles flush with the body
-    local headerMask = Instance.new("Frame")
-    headerMask.Size = UDim2.new(1, 0, 0.5, 0)
-    headerMask.Position = UDim2.new(0, 0, 0.5, 0)
-    headerMask.BackgroundColor3 = theme.accent
-    headerMask.BorderSizePixel = 0
-    headerMask.Parent = header
 
     -- Features stack
     local features = Instance.new("Frame")
@@ -65,15 +80,18 @@ function Container.new(parent, name)
     list.SortOrder = Enum.SortOrder.LayoutOrder
     list.Padding = UDim.new(0, 1)
 
-    -- Drag handler on the header
+    -- Corner brackets (drawn last so they sit on top of header + stroke)
+    addCornerBrackets(root, theme.accent)
+
+    -- Drag on header
     do
         local dragging, dragStart, startPos = false, nil, nil
         header.InputBegan:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1
                or input.UserInputType == Enum.UserInputType.Touch then
-                dragging  = true
+                dragging = true
                 dragStart = input.Position
-                startPos  = root.Position
+                startPos = root.Position
             end
         end)
         UIS.InputChanged:Connect(function(input)

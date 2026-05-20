@@ -1,19 +1,9 @@
--- Feature row: [name] [ON/OFF indicator] [cog].
--- Cog click expands an inline settings panel below the row. The panel always
--- starts with a keybind setter; per-feature options follow.
+-- Feature row: [name] [ON/OFF indicator] [i info] [cog].
+-- Cog click expands an inline settings panel below the row.
+-- "i" click expands a description label below the row (separate from settings).
+-- Sharp angular corners throughout.
 --
--- Declarative API:
---   feature.declare({
---     id           = "aim.lockon",            -- stable id for keybind persistence
---     name         = "Lock-On",
---     default      = false,                   -- initial on/off
---     defaultKey   = Enum.KeyCode.E,          -- default keybind (nil = unbound)
---     onToggle     = function(enabled) end,   -- called on on/off flips
---     onKey        = function() end,          -- called when hotkey pressed (default: flip toggle)
---     onKeyRelease = function() end,          -- called when hotkey released
---     settings     = { { type = "toggle"/"slider"/"button", ... }, ... },
---   })
--- Returns { root = Frame, id = ..., setEnabled = fn, getEnabled = fn }
+-- Settings types: toggle, slider, button, section.
 
 local theme      = require("ui.theme")
 local keybinds   = require("core.keybinds")
@@ -26,23 +16,31 @@ local nextId = 0
 function Feature.declare(def)
     nextId = nextId + 1
     local id = def.id or ("feature_" .. nextId)
+    local hasDesc = def.description and #def.description > 0
 
+    -- Root uses UIListLayout so row / description / settings panel stack
+    -- vertically and only contribute height when Visible = true.
     local root = Instance.new("Frame")
     root.Name = "Feature_" .. id
-    root.Size = UDim2.new(1, 0, 0, theme.featureHeight)
+    root.Size = UDim2.new(1, 0, 0, 0)
     root.AutomaticSize = Enum.AutomaticSize.Y
     root.BackgroundTransparency = 1
+
+    local rootList = Instance.new("UIListLayout", root)
+    rootList.SortOrder = Enum.SortOrder.LayoutOrder
 
     -- Row
     local row = Instance.new("Frame")
     row.Size = UDim2.new(1, 0, 0, theme.featureHeight)
     row.BackgroundColor3 = theme.bgAlt
     row.BorderSizePixel = 0
+    row.LayoutOrder = 1
     row.Parent = root
 
+    -- Reserve right-side space: indicator(40) + i(20) + cog(20) + gaps = ~108
     local nameLabel = Instance.new("TextLabel")
     nameLabel.Position = UDim2.fromOffset(8, 0)
-    nameLabel.Size = UDim2.new(1, -84, 1, 0)
+    nameLabel.Size = UDim2.new(1, hasDesc and -108 or -84, 1, 0)
     nameLabel.BackgroundTransparency = 1
     nameLabel.Text = def.name or "Feature"
     nameLabel.TextColor3 = theme.fgDim
@@ -52,7 +50,7 @@ function Feature.declare(def)
     nameLabel.Parent = row
 
     local indicator = Instance.new("TextButton")
-    indicator.Position = UDim2.new(1, -76, 0.5, -10)
+    indicator.Position = UDim2.new(1, hasDesc and -100 or -76, 0.5, -10)
     indicator.Size = UDim2.fromOffset(40, 20)
     indicator.BackgroundColor3 = theme.off
     indicator.AutoButtonColor = false
@@ -61,7 +59,20 @@ function Feature.declare(def)
     indicator.Font = theme.fontBold
     indicator.TextSize = 10
     indicator.Parent = row
-    Instance.new("UICorner", indicator).CornerRadius = UDim.new(0, 3)
+
+    local info -- info "i" button, only if a description was provided
+    if hasDesc then
+        info = Instance.new("TextButton")
+        info.Position = UDim2.new(1, -52, 0.5, -10)
+        info.Size = UDim2.fromOffset(20, 20)
+        info.BackgroundColor3 = theme.bgDark
+        info.AutoButtonColor = false
+        info.Text = "i"
+        info.TextColor3 = theme.fgDim
+        info.Font = theme.fontBold
+        info.TextSize = 12
+        info.Parent = row
+    end
 
     local cog = Instance.new("TextButton")
     cog.Position = UDim2.new(1, -28, 0.5, -10)
@@ -73,16 +84,41 @@ function Feature.declare(def)
     cog.Font = theme.font
     cog.TextSize = 14
     cog.Parent = row
-    Instance.new("UICorner", cog).CornerRadius = UDim.new(0, 3)
 
-    -- Settings panel
+    -- Description label (hidden until "i" clicked)
+    local desc
+    if hasDesc then
+        desc = Instance.new("TextLabel")
+        desc.Size = UDim2.new(1, 0, 0, 0)
+        desc.AutomaticSize = Enum.AutomaticSize.Y
+        desc.BackgroundColor3 = theme.bgDark
+        desc.BorderSizePixel = 0
+        desc.Text = def.description
+        desc.TextColor3 = theme.fgDim
+        desc.Font = theme.font
+        desc.TextSize = 11
+        desc.TextWrapped = true
+        desc.TextXAlignment = Enum.TextXAlignment.Left
+        desc.TextYAlignment = Enum.TextYAlignment.Top
+        desc.Visible = false
+        desc.LayoutOrder = 2
+        desc.Parent = root
+
+        local pad = Instance.new("UIPadding", desc)
+        pad.PaddingTop    = UDim.new(0, 6)
+        pad.PaddingBottom = UDim.new(0, 6)
+        pad.PaddingLeft   = UDim.new(0, 8)
+        pad.PaddingRight  = UDim.new(0, 8)
+    end
+
+    -- Settings panel (hidden until cog clicked)
     local panel = Instance.new("Frame")
-    panel.Position = UDim2.fromOffset(0, theme.featureHeight)
     panel.Size = UDim2.new(1, 0, 0, 0)
     panel.AutomaticSize = Enum.AutomaticSize.Y
     panel.BackgroundColor3 = theme.bgDark
     panel.BorderSizePixel = 0
     panel.Visible = false
+    panel.LayoutOrder = 3
     panel.Parent = root
 
     local panelPad = Instance.new("UIPadding", panel)
@@ -122,13 +158,23 @@ function Feature.declare(def)
 
     indicator.MouseButton1Click:Connect(toggleEnabled)
 
-    -- Cog: expand/collapse
+    -- Cog: toggle settings panel
     local panelOpen = false
     cog.MouseButton1Click:Connect(function()
         panelOpen = not panelOpen
         panel.Visible = panelOpen
         cog.BackgroundColor3 = panelOpen and theme.accent or theme.bgDark
     end)
+
+    -- Info: toggle description label
+    if info then
+        local descOpen = false
+        info.MouseButton1Click:Connect(function()
+            descOpen = not descOpen
+            desc.Visible = descOpen
+            info.BackgroundColor3 = descOpen and theme.accent or theme.bgDark
+        end)
+    end
 
     -- Keybind dispatch
     local function onPress()
@@ -151,7 +197,7 @@ function Feature.declare(def)
         keybinds.set(id, def.defaultKey, onPress, onRelease)
     end
 
-    -- Settings panel: keybind setter first
+    -- Settings panel content: keybind setter first
     components.KeybindSetter(panel, {
         label    = "Keybind",
         default  = def.defaultKey,
@@ -168,7 +214,9 @@ function Feature.declare(def)
         sep.Parent = panel
 
         for _, opt in ipairs(def.settings) do
-            if opt.type == "toggle" then
+            if opt.type == "section" then
+                components.Section(panel, opt.name)
+            elseif opt.type == "toggle" then
                 components.Toggle(panel, {
                     text     = opt.name,
                     default  = opt.default,

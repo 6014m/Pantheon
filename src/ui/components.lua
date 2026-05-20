@@ -1,4 +1,5 @@
 -- UI primitives: Section, Label, Button, Toggle, Slider, KeybindSetter.
+-- Sharp angular corners — no UICorner anywhere — to match the hex/HUD theme.
 
 local theme = require("ui.theme")
 
@@ -12,7 +13,6 @@ local function baseRow(parent, height)
     f.BackgroundColor3 = theme.bgAlt
     f.BorderSizePixel = 0
     f.Parent = parent
-    Instance.new("UICorner", f).CornerRadius = UDim.new(0, 4)
     return f
 end
 
@@ -21,7 +21,7 @@ function components.Section(parent, text)
     f.Size = UDim2.new(1, 0, 0, 22)
     f.BackgroundTransparency = 1
     f.Text = string.upper(text or "")
-    f.TextColor3 = theme.fgDim
+    f.TextColor3 = theme.accent
     f.Font = theme.fontBold
     f.TextSize = 11
     f.TextXAlignment = Enum.TextXAlignment.Left
@@ -81,14 +81,12 @@ function components.Toggle(parent, opts)
     switch.AutoButtonColor = false
     switch.Text = ""
     switch.Parent = f
-    Instance.new("UICorner", switch).CornerRadius = UDim.new(1, 0)
 
     local knob = Instance.new("Frame")
     knob.Size = UDim2.fromOffset(14, 14)
     knob.BackgroundColor3 = theme.fg
     knob.BorderSizePixel = 0
     knob.Parent = switch
-    Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
 
     local function apply()
         switch.BackgroundColor3 = state and theme.accent or theme.bgDark
@@ -141,14 +139,12 @@ function components.Slider(parent, opts)
     track.BackgroundColor3 = theme.bgDark
     track.BorderSizePixel = 0
     track.Parent = f
-    Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
 
     local fill = Instance.new("Frame")
     fill.BackgroundColor3 = theme.accent
     fill.BorderSizePixel = 0
     fill.Size = UDim2.new((value - min) / (max - min), 0, 1, 0)
     fill.Parent = track
-    Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
 
     local dragging = false
 
@@ -222,9 +218,10 @@ function components.KeybindSetter(parent, opts)
     label.TextXAlignment = Enum.TextXAlignment.Left
     label.Parent = f
 
+    -- Setter button (click to enter listen mode, then press any key to bind)
     local btn = Instance.new("TextButton")
     btn.Position = UDim2.new(0.5, 4, 0.5, -10)
-    btn.Size = UDim2.new(0.5, -14, 0, 20)
+    btn.Size = UDim2.new(0.5, -38, 0, 20)
     btn.BackgroundColor3 = theme.bgDark
     btn.AutoButtonColor = false
     btn.TextColor3 = theme.fgDim
@@ -232,7 +229,18 @@ function components.KeybindSetter(parent, opts)
     btn.TextSize = 11
     btn.Text = keyDisplayName(current)
     btn.Parent = f
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 3)
+
+    -- Unbind button: clears the keybind in one click
+    local unbind = Instance.new("TextButton")
+    unbind.Position = UDim2.new(1, -22, 0.5, -10)
+    unbind.Size = UDim2.fromOffset(20, 20)
+    unbind.BackgroundColor3 = theme.danger
+    unbind.AutoButtonColor = false
+    unbind.Text = "X"
+    unbind.TextColor3 = theme.fg
+    unbind.Font = theme.fontBold
+    unbind.TextSize = 10
+    unbind.Parent = f
 
     btn.MouseButton1Click:Connect(function()
         if listening then return end
@@ -268,6 +276,12 @@ function components.KeybindSetter(parent, opts)
             if opts.onChange then opts.onChange(current) end
             conn:Disconnect()
         end)
+    end)
+
+    unbind.MouseButton1Click:Connect(function()
+        current = Enum.KeyCode.Unknown
+        btn.Text = keyDisplayName(current)
+        if opts.onChange then opts.onChange(current) end
     end)
 
     return {

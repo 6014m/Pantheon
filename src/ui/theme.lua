@@ -25,7 +25,7 @@ local theme = {
     containerGap   = 12,
     featureHeight  = 30,
     rowHeight      = 30,
-    cornerRadius   = UDim.new(0, 4),
+    cornerRadius   = UDim.new(0, 0),
     padding        = 6,
 }
 

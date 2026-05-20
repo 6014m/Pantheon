@@ -84,7 +84,9 @@ local function validateStep()
 end
 
 -- RenderStep: force camera to look at target, optionally gated by resistance.
-local function cameraStep()
+-- `dt` comes from BindToRenderStep so the resistance lerp can be frame-rate
+-- independent (otherwise the pull feels stuttery on uneven frame times).
+local function cameraStep(dt)
     if not state.lockon_enabled or not state.lockon_locked then return end
 
     local cam = workspace.CurrentCamera
@@ -113,8 +115,12 @@ local function cameraStep()
             s.lastDir = currentLook
             return
         end
-        local strength = state.resistance_strength or 0.5
-        local blended = currentLook:Lerp(dir, strength)
+        -- Frame-rate-independent exponential approach.
+        -- alpha = 1 - exp(-smoothness * dt) converges smoothly regardless of fps.
+        -- Strength (0..1) maps to smoothness (0..20); higher = snappier.
+        local smoothness = (state.resistance_strength or 0.5) * 20
+        local alpha = 1 - math.exp(-smoothness * (dt or 1/60))
+        local blended = currentLook:Lerp(dir, alpha)
         if blended.Magnitude > 0.001 then dir = blended.Unit end
     end
 
