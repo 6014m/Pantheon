@@ -39,6 +39,9 @@ local self_state = {
     focusConn = nil,
     externalSkipRotation = nil,
     bound = false,
+    hookInstalled = false,
+    blockedWrites = 0,
+    lastBlockedLog = 0,
 }
 
 local function lp() return Players.LocalPlayer end
@@ -156,6 +159,59 @@ local function disableForeignScripts()
         end
     end
     return count
+end
+
+-- Install a __newindex hook on UserInputService so we intercept every write to
+-- MouseBehavior. With killForeign on, only writes that match Pantheon's
+-- current desired state get through; everything else is silently swallowed.
+-- This is what actually beats foreign shiftlocks that win via BindToRenderStep
+-- at higher priority than us, or that run on Heartbeat, or that use any other
+-- path - they can't write the property at all.
+local function installMouseBehaviorHook()
+    if self_state.hookInstalled then return end
+    if type(hookmetamethod) ~= "function" then
+        log.debug("shiftlock: hookmetamethod unavailable; relying on connection sweep")
+        return
+    end
+
+    -- Forward-declared upvalue. Hook may fire before assignment in pathological
+    -- cases; the nil check inside the hook handles that safely.
+    local originalNewindex = nil
+
+    local hookFn = function(self, key, value)
+        if state.killForeign
+           and key == "MouseBehavior"
+           and self == UserInputService then
+            local wanted = state.shiftlock_active
+                and Enum.MouseBehavior.LockCenter
+                or Enum.MouseBehavior.Default
+            if value ~= wanted then
+                self_state.blockedWrites = self_state.blockedWrites + 1
+                local now = os.clock()
+                if now - self_state.lastBlockedLog > 2 then
+                    log.info(string.format(
+                        "shiftlock: blocked %d foreign MouseBehavior write(s) (last value: %s)",
+                        self_state.blockedWrites, tostring(value)
+                    ))
+                    self_state.blockedWrites = 0
+                    self_state.lastBlockedLog = now
+                end
+                return
+            end
+        end
+        if originalNewindex then
+            return originalNewindex(self, key, value)
+        end
+    end
+
+    local ok, original = pcall(hookmetamethod, UserInputService, "__newindex", hookFn)
+    if ok and original then
+        originalNewindex = original
+        self_state.hookInstalled = true
+        log.info("shiftlock: MouseBehavior hook installed (foreign writes will be blocked)")
+    else
+        log.warn("shiftlock: hookmetamethod failed:", tostring(original))
+    end
 end
 
 local function sweepForeigns(label)
@@ -315,9 +371,17 @@ function Shiftlock.init()
     end)
 
     if not self_state.bound then
-        RunService:BindToRenderStep(RENDER_BIND, Enum.RenderPriority.Camera.Value + 100, step)
+        -- RenderPriority.Last (= 2000) so we run AFTER every other
+        -- BindToRenderStep callback in the frame. Combined with the
+        -- __newindex hook, this means we're the final writer for
+        -- MouseBehavior even if a foreign script binds at a high priority.
+        RunService:BindToRenderStep(RENDER_BIND, Enum.RenderPriority.Last.Value, step)
         self_state.bound = true
     end
+
+    -- Property-level hook: blocks foreign writes outright instead of
+    -- racing them in the render pipeline.
+    installMouseBehaviorHook()
 
     -- Boot-time sweep so leftover foreign shiftlocks from previous script
     -- loads don't make ours "look enabled by default."
