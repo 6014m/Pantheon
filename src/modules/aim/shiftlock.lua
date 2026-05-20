@@ -192,19 +192,30 @@ local function installMouseBehaviorHook()
     end
 
     local hookFn = function(self, key, value)
-        if state.killForeign
-           and key == "MouseBehavior"
-           and self == UserInputService then
-            local wanted = state.shiftlock_active
-                and Enum.MouseBehavior.LockCenter
-                or Enum.MouseBehavior.Default
-            if value ~= wanted then
+        if state.killForeign and self == UserInputService then
+            local block = false
+            if key == "MouseBehavior" then
+                local wanted = state.shiftlock_active
+                    and Enum.MouseBehavior.LockCenter
+                    or Enum.MouseBehavior.Default
+                if value ~= wanted then block = true end
+            elseif key == "MouseIconEnabled" then
+                -- Hidden cursor while locked, visible otherwise.
+                local wanted = not state.shiftlock_active
+                if value ~= wanted then block = true end
+            elseif key == "MouseIcon" then
+                -- Foreign scripts swap the cursor image. We want the default
+                -- (empty string) - block any non-empty write.
+                if value ~= "" then block = true end
+            end
+
+            if block then
                 self_state.blockedWrites = self_state.blockedWrites + 1
                 local now = os.clock()
                 if now - self_state.lastBlockedLog > 2 then
                     log.info(string.format(
-                        "shiftlock: blocked %d foreign MouseBehavior write(s) (last value: %s)",
-                        self_state.blockedWrites, tostring(value)
+                        "shiftlock: blocked %d foreign UIS write(s) (last %s = %s)",
+                        self_state.blockedWrites, tostring(key), tostring(value)
                     ))
                     self_state.blockedWrites = 0
                     self_state.lastBlockedLog = now
@@ -370,6 +381,20 @@ local function step()
         local wantedAR = not state.shiftlock_active
         if hum.AutoRotate ~= wantedAR then
             hum.AutoRotate = wantedAR
+        end
+    end
+
+    -- Pin mouse icon properties every frame too. The hook catches direct
+    -- writes; this catches anything that slips past (e.g. a foreign script
+    -- that hooks first, sees our hook re-install, and writes between
+    -- ticks of our hook guard).
+    if state.killForeign then
+        local wantedEnabled = not state.shiftlock_active
+        if UserInputService.MouseIconEnabled ~= wantedEnabled then
+            UserInputService.MouseIconEnabled = wantedEnabled
+        end
+        if UserInputService.MouseIcon ~= "" then
+            UserInputService.MouseIcon = ""
         end
     end
 
