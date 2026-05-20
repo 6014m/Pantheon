@@ -48,7 +48,7 @@ local function animateContainers(showing)
     -- in a predictable visual sequence.
     local list = {}
     for _, c in ipairs(s.container:GetChildren()) do
-        if c:IsA("Frame") then
+        if c:IsA("GuiObject") then
             captureOrig(c)
             table.insert(list, c)
         end
