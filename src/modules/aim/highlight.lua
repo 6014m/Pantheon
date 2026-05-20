@@ -43,9 +43,9 @@ end
 
 function Highlight.update(currentTarget, getSecondFn)
     Highlight.clearAll()
-    if not state.highlightEnabled or not state.lockon_locked then return end
+    if not state.highlightEnabled or not currentTarget then return end
 
-    if currentTarget and not state.isFriendly(currentTarget) then
+    if not state.isFriendly(currentTarget) then
         setOne(currentTarget, Color3.new(1, 0, 0), true)
     end
 

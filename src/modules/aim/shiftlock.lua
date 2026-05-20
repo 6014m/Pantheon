@@ -277,6 +277,16 @@ function Shiftlock.init()
         RunService:BindToRenderStep(RENDER_BIND, Enum.RenderPriority.Camera.Value + 100, step)
         self_state.bound = true
     end
+
+    -- Boot-time sweep. Foreign shiftlocks left over from another loaded script
+    -- are what makes Pantheon "look enabled by default" (their loop locks the
+    -- mouse regardless of our toggle). Wipe them on init so the user starts
+    -- with a clean slate, not just on enable.
+    if state.killForeign then
+        task.defer(function()
+            reportKills(killForeignGuis(), killForeignLoops(), "(boot)")
+        end)
+    end
 end
 
 function Shiftlock.destroy()

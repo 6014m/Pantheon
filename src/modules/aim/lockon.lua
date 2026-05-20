@@ -1,93 +1,38 @@
--- Main lock-on driver:
---   * Hotkey dispatch comes through core.keybinds (handled by the feature row),
---     so this module only exposes the press/release entry points.
---   * Heartbeat loop validates the current target (drops if dead/gone/friendly).
---   * RenderStep loop forces the camera to point at the target while locked,
---     gated by the Resistance modifier:
---       - resistance off    : camera snaps to target every frame
---       - resistance on     : within `resistance_threshold` deg of target the
---                             camera is left alone (free aim); past the
---                             threshold it lerps toward the target by
---                             `resistance_strength` per frame.
+-- Lock-On: aim-assist applicator. Reads target from Target Select, applies
+-- the camera force when state.lockon_enabled AND state.cameraLockEnabled AND a
+-- target exists. Resistance gate is the same dt-scaled exponential approach.
+--
+-- Rotation Lock lives in a separate module (rotation_lock.lua) with its own
+-- keybind and hold/toggle mode.
 
-local state     = require("modules.aim.state")
-local targeting = require("modules.aim.targeting")
-local highlight = require("modules.aim.highlight")
+local state = require("modules.aim.state")
 
 local RunService = game:GetService("RunService")
-local Players    = game:GetService("Players")
 
 local LockOn = {}
 
 local CAM_BIND = "PantheonLockOnCamera"
 
 local s = {
-    holdMode   = false,
-    holdActive = false,
-    runConn    = nil,
-    bound      = false,
-    lastDir    = nil,
+    bound   = false,
+    lastDir = nil,
 }
-
-local function lp() return Players.LocalPlayer end
 
 local function rootOf(charOrModel)
     return charOrModel and charOrModel:FindFirstChild("HumanoidRootPart")
 end
 
 local function targetCharacter()
-    local t = state.lockon_target
+    local t = state.target
     if not t then return nil end
-    if state.lockon_target_type == "player" then return t.Character end
+    if state.target_type == "player" then return t.Character end
     return t
 end
 
-local function releaseLock()
-    state.setLocked(false)
-    state.lockon_held = false
-    state.setTarget(nil, nil)
-    s.holdActive = false
-    s.lastDir = nil
-    highlight.update(nil, nil)
-end
-
-local function engageLock()
-    local t = targeting.getBestTarget()
-    if not t then return false end
-    state.setTarget(t, "player")
-    state.setLocked(true)
-    state.lockon_held = true
-    return true
-end
-
--- Heartbeat: drop the target if it stops being valid.
-local function validateStep()
-    if not state.lockon_enabled or not state.lockon_locked then return end
-
-    local t = state.lockon_target
-    if state.lockon_target_type == "player" then
-        local char = t and t.Character
-        local hum  = char and char:FindFirstChildOfClass("Humanoid")
-        if not hum or hum.Health <= 0 or not char.Parent or state.isFriendly(t) then
-            releaseLock()
-            return
-        end
-    elseif state.lockon_target_type == "npc" then
-        local hum = t and t:FindFirstChildOfClass("Humanoid")
-        if not hum or hum.Health <= 0 or not t.Parent then
-            releaseLock()
-            return
-        end
-    end
-
-    highlight.update(t, function(exclude) return targeting.getBestTarget(exclude) end)
-end
-
--- RenderStep: force camera to look at target, optionally gated by resistance.
--- `dt` comes from BindToRenderStep so the resistance lerp can be frame-rate
--- independent (otherwise the pull feels stuttery on uneven frame times).
 local function cameraStep(dt)
-    if not state.lockon_enabled or not state.lockon_locked then return end
+    if not state.lockon_enabled then return end
+    if not state.cameraLockEnabled then return end
+    if not state.target then return end
 
     local cam = workspace.CurrentCamera
     if not cam then return end
@@ -111,13 +56,9 @@ local function cameraStep(dt)
         local cosTheta = math.clamp(currentLook:Dot(dir), -1, 1)
         local angleDeg = math.deg(math.acos(cosTheta))
         if angleDeg < (state.resistance_threshold or 0) then
-            -- Within deadzone: leave the camera alone so the player can free-aim.
             s.lastDir = currentLook
             return
         end
-        -- Frame-rate-independent exponential approach.
-        -- alpha = 1 - exp(-smoothness * dt) converges smoothly regardless of fps.
-        -- Strength (0..1) maps to smoothness (0..20); higher = snappier.
         local smoothness = (state.resistance_strength or 0.5) * 20
         local alpha = 1 - math.exp(-smoothness * (dt or 1/60))
         local blended = currentLook:Lerp(dir, alpha)
@@ -128,54 +69,17 @@ local function cameraStep(dt)
     cam.CFrame = CFrame.new(camPos, camPos + dir)
 end
 
--- Cycle to the next-best target (excluding the current one).
-function LockOn.swapTarget()
-    if not state.swap_enabled then return end
-    if not state.lockon_enabled or not state.lockon_locked then return end
-    local next_ = targeting.getBestTarget(state.lockon_target)
-    if next_ then
-        state.setTarget(next_, "player")
-        s.lastDir = nil
-    end
-end
-
--- Called by the central keybind dispatcher on key press.
-function LockOn.hotkeyPress()
-    if not state.lockon_enabled then return end
-    if s.holdMode then
-        if not state.lockon_locked then engageLock() end
-        s.holdActive = true
-    else
-        if state.lockon_locked then releaseLock() else engageLock() end
-    end
-end
-
--- Called by the central keybind dispatcher on key release.
-function LockOn.hotkeyRelease()
-    if s.holdMode and s.holdActive and state.lockon_locked then
-        releaseLock()
-    end
-end
-
-function LockOn.setHoldMode(v)
-    s.holdMode = v and true or false
-end
-
 function LockOn.setEnabled(v)
     state.lockon_enabled = v and true or false
-    if not v then releaseLock() end
 end
 
 function LockOn.init()
-    s.runConn = RunService.Heartbeat:Connect(validateStep)
-    if not s.bound then
-        RunService:BindToRenderStep(CAM_BIND, Enum.RenderPriority.Camera.Value + 1, cameraStep)
-        s.bound = true
-    end
+    if s.bound then return end
+    RunService:BindToRenderStep(CAM_BIND, Enum.RenderPriority.Camera.Value + 1, cameraStep)
+    s.bound = true
 end
 
 function LockOn.destroy()
-    if s.runConn then s.runConn:Disconnect(); s.runConn = nil end
     if s.bound then
         pcall(function() RunService:UnbindFromRenderStep(CAM_BIND) end)
         s.bound = false

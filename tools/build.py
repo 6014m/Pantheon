@@ -27,8 +27,9 @@ BUILD_ORDER = [
     "modules/aim/targeting",
     "modules/aim/highlight",
     "modules/aim/shiftlock",
-    "modules/aim/lockon_plus",
+    "modules/aim/rotation_lock",
     "modules/aim/lockon",
+    "modules/aim/target_select",
     "modules/aim/init",
     "init",
 ]

@@ -1,70 +1,59 @@
 -- Shared state for the aim-assist subsystem.
--- Targeting writes the target; lockon writes the locked/held flags; lockon+ and
--- highlight read. All sub-modules access this single table by reference.
+-- Target Select writes the target; Lock-On (camera) and Rotation Lock read it.
 
 local Signal = require("core.signal")
 
 local state = {
-    -- Lock-on
-    lockon_enabled     = false,
-    lockon_held        = false,
-    lockon_locked      = false,
-    lockon_target      = nil,
-    lockon_target_type = nil, -- "player" or "npc"
+    -- Target (set by Target Select, read by Lock-On / Rotation Lock / Highlight)
+    target              = nil,
+    target_type         = nil, -- "player" or "npc"
 
-    -- Targeting options
+    -- Target Select
+    target_select_enabled = false,
+
+    -- Targeting filters
     realisticEnabled       = false,
     checkHealthEnabled     = true,
     visibilityCheckEnabled = false,
-    rangeLimit             = 0,  -- 0 = infinite
+    rangeLimit             = 0,    -- 0 = infinite
 
-    -- Highlight options
+    -- Lock-On master + sub-toggles
+    lockon_enabled       = false,
+    cameraLockEnabled    = true,   -- camera force on/off
+    rotationLockEnabled  = false,  -- rotation lock on/off (was lockonPlusEnabled)
+    bgSafeEnabled        = true,   -- battlegrounds-safe modifier on rotation lock
+
+    -- Resistance (modifies camera lock)
+    resistance_enabled   = false,
+    resistance_threshold = 5,
+    resistance_strength  = 0.5,
+
+    -- Highlight
     highlightEnabled       = true,
     highlightSecondEnabled = false,
     selfFadeEnabled        = false,
 
-    -- LockOn+ options
-    lockonPlusEnabled      = false,
-    bgSafeEnabled          = true,
+    -- Shiftlock
+    shiftlock_enabled = false,
+    shiftlock_active  = false,
+    killForeign       = true,
 
-    -- Shiftlock options
-    shiftlock_enabled      = false,
-    shiftlock_active       = false,
-    killForeign            = true,
+    -- Swap
+    swap_enabled = true,
 
-    -- Camera lock
-    lockHeightOffset       = 0,
-
-    -- Swap target hotkey
-    swap_enabled           = true,
-
-    -- Camera resistance modifier: deadzone-then-lerp toward target
-    resistance_enabled     = false,
-    resistance_threshold   = 5,    -- degrees of free-aim cone around target
-    resistance_strength    = 0.5,  -- lerp alpha applied beyond threshold (0..1)
-
-    -- Friendlies map (UserId -> true). Other systems (team filters, party
-    -- modules) can mutate this freely; targeting reads at runtime.
-    friendlies = {},
+    -- Misc
+    lockHeightOffset = 0,
+    friendlies       = {},
 
     -- Signals
     onTargetChanged = Signal.new(),
-    onLockChanged   = Signal.new(),
 }
 
 function state.setTarget(target, type_)
-    if state.lockon_target ~= target then
-        state.lockon_target = target
-        state.lockon_target_type = type_
+    if state.target ~= target then
+        state.target = target
+        state.target_type = type_
         state.onTargetChanged:Fire(target, type_)
-    end
-end
-
-function state.setLocked(v)
-    v = v and true or false
-    if state.lockon_locked ~= v then
-        state.lockon_locked = v
-        state.onLockChanged:Fire(v)
     end
 end
 

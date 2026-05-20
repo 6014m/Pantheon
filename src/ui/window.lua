@@ -18,40 +18,49 @@ local s = {
     masterKey = Enum.KeyCode.RightControl,
 }
 
+-- Flat-top hex P button. ClipsDescendants on host clips the two rotated
+-- diamonds at the top and bottom edges, creating the flat top/bottom of the
+-- hex shape. The diamonds' horizontal vertices align with the host width,
+-- and the middle rectangle covers the diamonds' inner halves so the silhouette
+-- is one continuous hexagon.
 local function buildHexButton(sg)
     local host = Instance.new("Frame")
     host.Name = "PantheonOpenButton"
     host.Size = UDim2.fromOffset(46, 50)
     host.Position = UDim2.new(0, 16, 1, -66)
     host.BackgroundTransparency = 1
+    host.ClipsDescendants = true
     host.ZIndex = 10
     host.Parent = sg
 
-    -- 3-frame hex shape: top point + middle rectangle + bottom point.
-    -- The rotated squares are anchored so their outer tips sit at the host edges,
-    -- and the middle rectangle covers the diamonds' inner halves.
+    -- Top half: rotated square centered at y=12.5. Its top vertex extends
+    -- above the host (clipped at y=0 -> flat top). Side vertices at y=12.5
+    -- align with the middle rectangle's top edge.
     local top = Instance.new("Frame")
-    top.Size = UDim2.fromOffset(35, 35)
-    top.AnchorPoint = Vector2.new(0.5, 0)
-    top.Position = UDim2.new(0.5, 0, 0, 0)
+    top.Size = UDim2.fromOffset(33, 33)
+    top.AnchorPoint = Vector2.new(0.5, 0.5)
+    top.Position = UDim2.new(0.5, 0, 0, 12.5)
     top.Rotation = 45
     top.BackgroundColor3 = theme.accent
     top.BorderSizePixel = 0
     top.ZIndex = 10
     top.Parent = host
 
+    -- Middle rectangle (y=12.5 to y=37.5)
     local mid = Instance.new("Frame")
-    mid.Size = UDim2.new(1, 0, 0, 26)
-    mid.Position = UDim2.fromOffset(0, 12)
+    mid.Size = UDim2.new(1, 0, 0, 25)
+    mid.Position = UDim2.fromOffset(0, 12.5)
     mid.BackgroundColor3 = theme.accent
     mid.BorderSizePixel = 0
     mid.ZIndex = 11
     mid.Parent = host
 
+    -- Bottom half: rotated square centered at y=37.5, bottom vertex clipped
+    -- at y=50 -> flat bottom.
     local bot = Instance.new("Frame")
-    bot.Size = UDim2.fromOffset(35, 35)
-    bot.AnchorPoint = Vector2.new(0.5, 1)
-    bot.Position = UDim2.new(0.5, 0, 1, 0)
+    bot.Size = UDim2.fromOffset(33, 33)
+    bot.AnchorPoint = Vector2.new(0.5, 0.5)
+    bot.Position = UDim2.new(0.5, 0, 0, 37.5)
     bot.Rotation = 45
     bot.BackgroundColor3 = theme.accent
     bot.BorderSizePixel = 0

@@ -1,6 +1,6 @@
 -- Draggable category window. Holds feature rows. Wurst-style — stacks left-to-right
--- by default; user can drag them anywhere. Sharp angular corners + L-bracket accents
--- at each corner for a HUD/sci-fi look.
+-- by default; user can drag them anywhere. Sharp corners with rotated-square
+-- diamond accents at each corner for a hex/HUD look.
 
 local theme = require("ui.theme")
 
@@ -11,28 +11,23 @@ Container.__index = Container
 
 local nextIndex = 0
 
-local function bracketPiece(parent, size, position, anchor, color)
-    local f = Instance.new("Frame")
-    f.Size = size
-    f.Position = position
-    f.AnchorPoint = anchor
-    f.BackgroundColor3 = color
-    f.BorderSizePixel = 0
-    f.ZIndex = 5
-    f.Parent = parent
+local function cornerDiamond(parent, position, color)
+    local d = Instance.new("Frame")
+    d.Size = UDim2.fromOffset(10, 10)
+    d.Position = position
+    d.AnchorPoint = Vector2.new(0.5, 0.5)
+    d.Rotation = 45
+    d.BackgroundColor3 = color
+    d.BorderSizePixel = 0
+    d.ZIndex = 5
+    d.Parent = parent
 end
 
-local function addBracket(parent, position, anchor, color)
-    local SIZE, THICK = 8, 2
-    bracketPiece(parent, UDim2.fromOffset(SIZE, THICK), position, anchor, color)
-    bracketPiece(parent, UDim2.fromOffset(THICK, SIZE), position, anchor, color)
-end
-
-local function addCornerBrackets(parent, color)
-    addBracket(parent, UDim2.new(0, 0, 0, 0), Vector2.new(0, 0), color)
-    addBracket(parent, UDim2.new(1, 0, 0, 0), Vector2.new(1, 0), color)
-    addBracket(parent, UDim2.new(0, 0, 1, 0), Vector2.new(0, 1), color)
-    addBracket(parent, UDim2.new(1, 0, 1, 0), Vector2.new(1, 1), color)
+local function addCornerDiamonds(parent, color)
+    cornerDiamond(parent, UDim2.new(0, 0, 0, 0), color) -- TL
+    cornerDiamond(parent, UDim2.new(1, 0, 0, 0), color) -- TR
+    cornerDiamond(parent, UDim2.new(0, 0, 1, 0), color) -- BL
+    cornerDiamond(parent, UDim2.new(1, 0, 1, 0), color) -- BR
 end
 
 function Container.new(parent, name)
@@ -80,8 +75,8 @@ function Container.new(parent, name)
     list.SortOrder = Enum.SortOrder.LayoutOrder
     list.Padding = UDim.new(0, 1)
 
-    -- Corner brackets (drawn last so they sit on top of header + stroke)
-    addCornerBrackets(root, theme.accent)
+    -- Corner diamonds (added last so they render on top of stroke + header)
+    addCornerDiamonds(root, theme.accent)
 
     -- Drag on header
     do
@@ -89,9 +84,9 @@ function Container.new(parent, name)
         header.InputBegan:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1
                or input.UserInputType == Enum.UserInputType.Touch then
-                dragging = true
+                dragging  = true
                 dragStart = input.Position
-                startPos = root.Position
+                startPos  = root.Position
             end
         end)
         UIS.InputChanged:Connect(function(input)

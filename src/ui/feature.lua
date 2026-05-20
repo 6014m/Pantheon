@@ -236,6 +236,19 @@ function Feature.declare(def)
                     text    = opt.name,
                     onClick = opt.onClick,
                 })
+            elseif opt.type == "keybind" then
+                if opt.default and opt.id then
+                    keybinds.set(opt.id, opt.default, opt.onPress, opt.onRelease)
+                end
+                components.KeybindSetter(panel, {
+                    label    = opt.name or "Key",
+                    default  = opt.default,
+                    onChange = function(newKey)
+                        if opt.id then
+                            keybinds.set(opt.id, newKey, opt.onPress, opt.onRelease)
+                        end
+                    end,
+                })
             end
         end
     end

@@ -1,0 +1,198 @@
+-- Rotation Lock (formerly Lock-On+): rotates the local body to face the
+-- target while the camera stays free. Has its own keybind (default Q, set in
+-- Lock-On's settings panel) with hold/toggle mode. Gated by:
+--   - state.lockon_enabled       (Lock-On master toggle)
+--   - state.rotationLockEnabled  (Rotation Lock sub-toggle)
+--   - state.target               (Target Select has acquired someone)
+--   - s.holdActive               (hotkey is engaged per hold/toggle mode)
+-- Battlegrounds-safe gate (state.bgSafeEnabled) suppresses rotation while
+-- either humanoid is in a non-walking state (ragdoll/falling/seated/etc.) and
+-- gives a 0.15s smooth-resume window so the catch-up doesn't snap obviously.
+
+local state = require("modules.aim.state")
+
+local Players    = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local RotationLock = {}
+
+local BIND = "PantheonRotationLock"
+local SMOOTH_DURATION = 0.15
+
+local SUPPRESS_STATES = {
+    [Enum.HumanoidStateType.Physics]          = true,
+    [Enum.HumanoidStateType.FallingDown]      = true,
+    [Enum.HumanoidStateType.Ragdoll]          = true,
+    [Enum.HumanoidStateType.Seated]           = true,
+    [Enum.HumanoidStateType.PlatformStanding] = true,
+}
+
+local s = {
+    align           = nil,
+    attachment      = nil,
+    suppressedSince = 0,
+    smoothUntil     = 0,
+    bound           = false,
+    holdMode        = true,   -- default: hold-to-engage
+    holdActive      = false,  -- unified flag: true when rotation should engage
+}
+
+local function rootOf(charOrModel)
+    return charOrModel and charOrModel:FindFirstChild("HumanoidRootPart")
+end
+
+local function targetCharacter()
+    local t = state.target
+    if not t then return nil end
+    if state.target_type == "player" then return t.Character end
+    return t
+end
+
+local function getHumanoids()
+    local myChar = Players.LocalPlayer.Character
+    local myHum  = myChar and myChar:FindFirstChildOfClass("Humanoid")
+    local tChar  = targetCharacter()
+    local tHum   = tChar and tChar:FindFirstChildOfClass("Humanoid")
+    return myHum, tHum
+end
+
+local function shouldRotate()
+    if not state.lockon_enabled then return false end
+    if not state.rotationLockEnabled then return false end
+    if not state.target then return false end
+    if not s.holdActive then return false end
+    return true
+end
+
+local function bgSuppressed()
+    if not state.bgSafeEnabled then return false end
+    local myHum, tHum = getHumanoids()
+    if myHum then
+        if myHum.PlatformStand then return true end
+        if SUPPRESS_STATES[myHum:GetState()] then return true end
+    end
+    if tHum then
+        if tHum.PlatformStand then return true end
+        if SUPPRESS_STATES[tHum:GetState()] then return true end
+    end
+    return false
+end
+
+local function ensureConstraint(myRoot)
+    if not s.attachment or not s.attachment.Parent then
+        s.attachment = Instance.new("Attachment")
+        s.attachment.Name = "PantheonRotationLockAttachment"
+        s.attachment.Parent = myRoot
+    end
+    if not s.align or not s.align.Parent then
+        s.align = Instance.new("AlignOrientation")
+        s.align.Name = "PantheonRotationLockAlign"
+        s.align.Mode = Enum.OrientationAlignmentMode.OneAttachment
+        s.align.Attachment0 = s.attachment
+        s.align.RigidityEnabled = true
+        s.align.Responsiveness = 200
+        s.align.MaxTorque = math.huge
+        s.align.Parent = myRoot
+    end
+end
+
+local function disableAlign()
+    if s.align then s.align.Enabled = false end
+end
+
+local function step()
+    if not shouldRotate() then
+        disableAlign()
+        return
+    end
+
+    local myChar = Players.LocalPlayer.Character
+    if not myChar then return end
+    local myRoot = rootOf(myChar)
+    local myHum  = myChar:FindFirstChildOfClass("Humanoid")
+    if not myRoot or not myHum then return end
+
+    local tRoot = rootOf(targetCharacter())
+    if not tRoot then return end
+
+    if bgSuppressed() then
+        s.suppressedSince = os.clock()
+        disableAlign()
+        return
+    end
+
+    local now = os.clock()
+    if s.suppressedSince > 0 then
+        s.smoothUntil = now + SMOOTH_DURATION
+        s.suppressedSince = 0
+    end
+
+    local dir = tRoot.Position - myRoot.Position
+    local flat = Vector3.new(dir.X, 0, dir.Z)
+    if flat.Magnitude < 0.1 then return end
+
+    myHum.AutoRotate = false
+    ensureConstraint(myRoot)
+    if s.align then
+        s.align.Enabled = true
+        s.align.CFrame = CFrame.lookAt(Vector3.zero, flat)
+    end
+
+    if now >= s.smoothUntil then
+        local cf = CFrame.lookAt(myRoot.Position, myRoot.Position + flat)
+        local _, yAngle, _ = cf:ToEulerAnglesYXZ()
+        myRoot.CFrame = CFrame.new(myRoot.Position) * CFrame.Angles(0, yAngle, 0)
+    end
+end
+
+function RotationLock.hotkeyPress()
+    if not state.rotationLockEnabled then return end
+    if s.holdMode then
+        s.holdActive = true
+    else
+        s.holdActive = not s.holdActive
+    end
+end
+
+function RotationLock.hotkeyRelease()
+    if s.holdMode then
+        s.holdActive = false
+    end
+end
+
+function RotationLock.setHoldMode(v)
+    s.holdMode = v and true or false
+    -- Switching to toggle mode while engaged would leave holdActive stuck on.
+    if not s.holdMode then s.holdActive = false end
+end
+
+function RotationLock.setEnabled(v)
+    state.rotationLockEnabled = v and true or false
+    if not v then
+        s.holdActive = false
+        disableAlign()
+    end
+end
+
+-- True when Rotation Lock is currently driving the body. Shiftlock uses this
+-- to yield: when Rotation Lock is active, shiftlock skips its own rotation.
+function RotationLock.isActive()
+    return shouldRotate() and not bgSuppressed()
+end
+
+function RotationLock.init()
+    if s.bound then return end
+    RunService:BindToRenderStep(BIND, Enum.RenderPriority.Camera.Value + 150, step)
+    s.bound = true
+end
+
+function RotationLock.destroy()
+    if s.bound then
+        pcall(function() RunService:UnbindFromRenderStep(BIND) end)
+        s.bound = false
+    end
+    if s.align then pcall(function() s.align:Destroy() end); s.align = nil end
+    if s.attachment then pcall(function() s.attachment:Destroy() end); s.attachment = nil end
+end
+
+return RotationLock

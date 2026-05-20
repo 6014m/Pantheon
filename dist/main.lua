@@ -615,40 +615,49 @@ local s = {
     masterKey = Enum.KeyCode.RightControl,
 }
 
+-- Flat-top hex P button. ClipsDescendants on host clips the two rotated
+-- diamonds at the top and bottom edges, creating the flat top/bottom of the
+-- hex shape. The diamonds' horizontal vertices align with the host width,
+-- and the middle rectangle covers the diamonds' inner halves so the silhouette
+-- is one continuous hexagon.
 local function buildHexButton(sg)
     local host = Instance.new("Frame")
     host.Name = "PantheonOpenButton"
     host.Size = UDim2.fromOffset(46, 50)
     host.Position = UDim2.new(0, 16, 1, -66)
     host.BackgroundTransparency = 1
+    host.ClipsDescendants = true
     host.ZIndex = 10
     host.Parent = sg
 
-    -- 3-frame hex shape: top point + middle rectangle + bottom point.
-    -- The rotated squares are anchored so their outer tips sit at the host edges,
-    -- and the middle rectangle covers the diamonds' inner halves.
+    -- Top half: rotated square centered at y=12.5. Its top vertex extends
+    -- above the host (clipped at y=0 -> flat top). Side vertices at y=12.5
+    -- align with the middle rectangle's top edge.
     local top = Instance.new("Frame")
-    top.Size = UDim2.fromOffset(35, 35)
-    top.AnchorPoint = Vector2.new(0.5, 0)
-    top.Position = UDim2.new(0.5, 0, 0, 0)
+    top.Size = UDim2.fromOffset(33, 33)
+    top.AnchorPoint = Vector2.new(0.5, 0.5)
+    top.Position = UDim2.new(0.5, 0, 0, 12.5)
     top.Rotation = 45
     top.BackgroundColor3 = theme.accent
     top.BorderSizePixel = 0
     top.ZIndex = 10
     top.Parent = host
 
+    -- Middle rectangle (y=12.5 to y=37.5)
     local mid = Instance.new("Frame")
-    mid.Size = UDim2.new(1, 0, 0, 26)
-    mid.Position = UDim2.fromOffset(0, 12)
+    mid.Size = UDim2.new(1, 0, 0, 25)
+    mid.Position = UDim2.fromOffset(0, 12.5)
     mid.BackgroundColor3 = theme.accent
     mid.BorderSizePixel = 0
     mid.ZIndex = 11
     mid.Parent = host
 
+    -- Bottom half: rotated square centered at y=37.5, bottom vertex clipped
+    -- at y=50 -> flat bottom.
     local bot = Instance.new("Frame")
-    bot.Size = UDim2.fromOffset(35, 35)
-    bot.AnchorPoint = Vector2.new(0.5, 1)
-    bot.Position = UDim2.new(0.5, 0, 1, 0)
+    bot.Size = UDim2.fromOffset(33, 33)
+    bot.AnchorPoint = Vector2.new(0.5, 0.5)
+    bot.Position = UDim2.new(0.5, 0, 0, 37.5)
     bot.Rotation = 45
     bot.BackgroundColor3 = theme.accent
     bot.BorderSizePixel = 0
@@ -759,8 +768,8 @@ end
 
 _MODULES["ui.container"] = function()
 -- Draggable category window. Holds feature rows. Wurst-style — stacks left-to-right
--- by default; user can drag them anywhere. Sharp angular corners + L-bracket accents
--- at each corner for a HUD/sci-fi look.
+-- by default; user can drag them anywhere. Sharp corners with rotated-square
+-- diamond accents at each corner for a hex/HUD look.
 
 local theme = require("ui.theme")
 
@@ -771,28 +780,23 @@ Container.__index = Container
 
 local nextIndex = 0
 
-local function bracketPiece(parent, size, position, anchor, color)
-    local f = Instance.new("Frame")
-    f.Size = size
-    f.Position = position
-    f.AnchorPoint = anchor
-    f.BackgroundColor3 = color
-    f.BorderSizePixel = 0
-    f.ZIndex = 5
-    f.Parent = parent
+local function cornerDiamond(parent, position, color)
+    local d = Instance.new("Frame")
+    d.Size = UDim2.fromOffset(10, 10)
+    d.Position = position
+    d.AnchorPoint = Vector2.new(0.5, 0.5)
+    d.Rotation = 45
+    d.BackgroundColor3 = color
+    d.BorderSizePixel = 0
+    d.ZIndex = 5
+    d.Parent = parent
 end
 
-local function addBracket(parent, position, anchor, color)
-    local SIZE, THICK = 8, 2
-    bracketPiece(parent, UDim2.fromOffset(SIZE, THICK), position, anchor, color)
-    bracketPiece(parent, UDim2.fromOffset(THICK, SIZE), position, anchor, color)
-end
-
-local function addCornerBrackets(parent, color)
-    addBracket(parent, UDim2.new(0, 0, 0, 0), Vector2.new(0, 0), color)
-    addBracket(parent, UDim2.new(1, 0, 0, 0), Vector2.new(1, 0), color)
-    addBracket(parent, UDim2.new(0, 0, 1, 0), Vector2.new(0, 1), color)
-    addBracket(parent, UDim2.new(1, 0, 1, 0), Vector2.new(1, 1), color)
+local function addCornerDiamonds(parent, color)
+    cornerDiamond(parent, UDim2.new(0, 0, 0, 0), color) -- TL
+    cornerDiamond(parent, UDim2.new(1, 0, 0, 0), color) -- TR
+    cornerDiamond(parent, UDim2.new(0, 0, 1, 0), color) -- BL
+    cornerDiamond(parent, UDim2.new(1, 0, 1, 0), color) -- BR
 end
 
 function Container.new(parent, name)
@@ -840,8 +844,8 @@ function Container.new(parent, name)
     list.SortOrder = Enum.SortOrder.LayoutOrder
     list.Padding = UDim.new(0, 1)
 
-    -- Corner brackets (drawn last so they sit on top of header + stroke)
-    addCornerBrackets(root, theme.accent)
+    -- Corner diamonds (added last so they render on top of stroke + header)
+    addCornerDiamonds(root, theme.accent)
 
     -- Drag on header
     do
@@ -849,9 +853,9 @@ function Container.new(parent, name)
         header.InputBegan:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1
                or input.UserInputType == Enum.UserInputType.Touch then
-                dragging = true
+                dragging  = true
                 dragStart = input.Position
-                startPos = root.Position
+                startPos  = root.Position
             end
         end)
         UIS.InputChanged:Connect(function(input)
@@ -1130,6 +1134,19 @@ function Feature.declare(def)
                     text    = opt.name,
                     onClick = opt.onClick,
                 })
+            elseif opt.type == "keybind" then
+                if opt.default and opt.id then
+                    keybinds.set(opt.id, opt.default, opt.onPress, opt.onRelease)
+                end
+                components.KeybindSetter(panel, {
+                    label    = opt.name or "Key",
+                    default  = opt.default,
+                    onChange = function(newKey)
+                        if opt.id then
+                            keybinds.set(opt.id, newKey, opt.onPress, opt.onRelease)
+                        end
+                    end,
+                })
             end
         end
     end
@@ -1254,72 +1271,61 @@ end
 
 _MODULES["modules.aim.state"] = function()
 -- Shared state for the aim-assist subsystem.
--- Targeting writes the target; lockon writes the locked/held flags; lockon+ and
--- highlight read. All sub-modules access this single table by reference.
+-- Target Select writes the target; Lock-On (camera) and Rotation Lock read it.
 
 local Signal = require("core.signal")
 
 local state = {
-    -- Lock-on
-    lockon_enabled     = false,
-    lockon_held        = false,
-    lockon_locked      = false,
-    lockon_target      = nil,
-    lockon_target_type = nil, -- "player" or "npc"
+    -- Target (set by Target Select, read by Lock-On / Rotation Lock / Highlight)
+    target              = nil,
+    target_type         = nil, -- "player" or "npc"
 
-    -- Targeting options
+    -- Target Select
+    target_select_enabled = false,
+
+    -- Targeting filters
     realisticEnabled       = false,
     checkHealthEnabled     = true,
     visibilityCheckEnabled = false,
-    rangeLimit             = 0,  -- 0 = infinite
+    rangeLimit             = 0,    -- 0 = infinite
 
-    -- Highlight options
+    -- Lock-On master + sub-toggles
+    lockon_enabled       = false,
+    cameraLockEnabled    = true,   -- camera force on/off
+    rotationLockEnabled  = false,  -- rotation lock on/off (was lockonPlusEnabled)
+    bgSafeEnabled        = true,   -- battlegrounds-safe modifier on rotation lock
+
+    -- Resistance (modifies camera lock)
+    resistance_enabled   = false,
+    resistance_threshold = 5,
+    resistance_strength  = 0.5,
+
+    -- Highlight
     highlightEnabled       = true,
     highlightSecondEnabled = false,
     selfFadeEnabled        = false,
 
-    -- LockOn+ options
-    lockonPlusEnabled      = false,
-    bgSafeEnabled          = true,
+    -- Shiftlock
+    shiftlock_enabled = false,
+    shiftlock_active  = false,
+    killForeign       = true,
 
-    -- Shiftlock options
-    shiftlock_enabled      = false,
-    shiftlock_active       = false,
-    killForeign            = true,
+    -- Swap
+    swap_enabled = true,
 
-    -- Camera lock
-    lockHeightOffset       = 0,
-
-    -- Swap target hotkey
-    swap_enabled           = true,
-
-    -- Camera resistance modifier: deadzone-then-lerp toward target
-    resistance_enabled     = false,
-    resistance_threshold   = 5,    -- degrees of free-aim cone around target
-    resistance_strength    = 0.5,  -- lerp alpha applied beyond threshold (0..1)
-
-    -- Friendlies map (UserId -> true). Other systems (team filters, party
-    -- modules) can mutate this freely; targeting reads at runtime.
-    friendlies = {},
+    -- Misc
+    lockHeightOffset = 0,
+    friendlies       = {},
 
     -- Signals
     onTargetChanged = Signal.new(),
-    onLockChanged   = Signal.new(),
 }
 
 function state.setTarget(target, type_)
-    if state.lockon_target ~= target then
-        state.lockon_target = target
-        state.lockon_target_type = type_
+    if state.target ~= target then
+        state.target = target
+        state.target_type = type_
         state.onTargetChanged:Fire(target, type_)
-    end
-end
-
-function state.setLocked(v)
-    v = v and true or false
-    if state.lockon_locked ~= v then
-        state.lockon_locked = v
-        state.onLockChanged:Fire(v)
     end
 end
 
@@ -1477,9 +1483,9 @@ end
 
 function Highlight.update(currentTarget, getSecondFn)
     Highlight.clearAll()
-    if not state.highlightEnabled or not state.lockon_locked then return end
+    if not state.highlightEnabled or not currentTarget then return end
 
-    if currentTarget and not state.isFriendly(currentTarget) then
+    if not state.isFriendly(currentTarget) then
         setOne(currentTarget, Color3.new(1, 0, 0), true)
     end
 
@@ -1808,6 +1814,16 @@ function Shiftlock.init()
         RunService:BindToRenderStep(RENDER_BIND, Enum.RenderPriority.Camera.Value + 100, step)
         self_state.bound = true
     end
+
+    -- Boot-time sweep. Foreign shiftlocks left over from another loaded script
+    -- are what makes Pantheon "look enabled by default" (their loop locks the
+    -- mouse regardless of our toggle). Wipe them on init so the user starts
+    -- with a clean slate, not just on enable.
+    if state.killForeign then
+        task.defer(function()
+            reportKills(killForeignGuis(), killForeignLoops(), "(boot)")
+        end)
+    end
 end
 
 function Shiftlock.destroy()
@@ -1823,27 +1839,26 @@ end
 return Shiftlock
 end
 
-_MODULES["modules.aim.lockon_plus"] = function()
--- Rotates own character body to face the lock-on target while camera stays free.
--- Ports LockOnPlusModule with a "battlegrounds-safe" gate:
---   Suppresses rotation when either the local OR target Humanoid is in a non-
---   walking state (Physics, FallingDown, Ragdoll, Seated, PlatformStanding) or
---   has PlatformStand=true. This catches the ragdoll-cycle window after a hit,
---   the time when forcing rotation visibly fights the move's animation/weld and
---   makes it obvious a script is running.
---
--- On resume from a suppress window, the direct CFrame snap is held back for
--- ~0.15s so the body slides into position via AlignOrientation instead of
--- teleporting.
+_MODULES["modules.aim.rotation_lock"] = function()
+-- Rotation Lock (formerly Lock-On+): rotates the local body to face the
+-- target while the camera stays free. Has its own keybind (default Q, set in
+-- Lock-On's settings panel) with hold/toggle mode. Gated by:
+--   - state.lockon_enabled       (Lock-On master toggle)
+--   - state.rotationLockEnabled  (Rotation Lock sub-toggle)
+--   - state.target               (Target Select has acquired someone)
+--   - s.holdActive               (hotkey is engaged per hold/toggle mode)
+-- Battlegrounds-safe gate (state.bgSafeEnabled) suppresses rotation while
+-- either humanoid is in a non-walking state (ragdoll/falling/seated/etc.) and
+-- gives a 0.15s smooth-resume window so the catch-up doesn't snap obviously.
 
 local state = require("modules.aim.state")
 
 local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
-local LockOnPlus = {}
+local RotationLock = {}
 
-local BIND = "PantheonLockOnPlus"
+local BIND = "PantheonRotationLock"
 local SMOOTH_DURATION = 0.15
 
 local SUPPRESS_STATES = {
@@ -1854,41 +1869,41 @@ local SUPPRESS_STATES = {
     [Enum.HumanoidStateType.PlatformStanding] = true,
 }
 
-local self_state = {
-    align            = nil,
-    attachment       = nil,
-    suppressedSince  = 0,
-    smoothUntil      = 0,
-    bound            = false,
+local s = {
+    align           = nil,
+    attachment      = nil,
+    suppressedSince = 0,
+    smoothUntil     = 0,
+    bound           = false,
+    holdMode        = true,   -- default: hold-to-engage
+    holdActive      = false,  -- unified flag: true when rotation should engage
 }
-
-local function lp() return Players.LocalPlayer end
 
 local function rootOf(charOrModel)
     return charOrModel and charOrModel:FindFirstChild("HumanoidRootPart")
 end
 
-local function targetChar()
-    local t = state.lockon_target
+local function targetCharacter()
+    local t = state.target
     if not t then return nil end
-    if state.lockon_target_type == "player" then return t.Character end
+    if state.target_type == "player" then return t.Character end
     return t
 end
 
 local function getHumanoids()
-    local myChar = lp().Character
-    local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
-    local tChar = targetChar()
-    local tHum = tChar and tChar:FindFirstChildOfClass("Humanoid")
+    local myChar = Players.LocalPlayer.Character
+    local myHum  = myChar and myChar:FindFirstChildOfClass("Humanoid")
+    local tChar  = targetCharacter()
+    local tHum   = tChar and tChar:FindFirstChildOfClass("Humanoid")
     return myHum, tHum
 end
 
 local function shouldRotate()
-    return state.lockon_enabled
-        and state.lockon_held
-        and state.lockon_locked
-        and state.lockon_target ~= nil
-        and state.lockonPlusEnabled
+    if not state.lockon_enabled then return false end
+    if not state.rotationLockEnabled then return false end
+    if not state.target then return false end
+    if not s.holdActive then return false end
+    return true
 end
 
 local function bgSuppressed()
@@ -1906,25 +1921,25 @@ local function bgSuppressed()
 end
 
 local function ensureConstraint(myRoot)
-    if not self_state.attachment or not self_state.attachment.Parent then
-        self_state.attachment = Instance.new("Attachment")
-        self_state.attachment.Name = "PantheonLockOnPlusAttachment"
-        self_state.attachment.Parent = myRoot
+    if not s.attachment or not s.attachment.Parent then
+        s.attachment = Instance.new("Attachment")
+        s.attachment.Name = "PantheonRotationLockAttachment"
+        s.attachment.Parent = myRoot
     end
-    if not self_state.align or not self_state.align.Parent then
-        self_state.align = Instance.new("AlignOrientation")
-        self_state.align.Name = "PantheonLockOnPlusAlign"
-        self_state.align.Mode = Enum.OrientationAlignmentMode.OneAttachment
-        self_state.align.Attachment0 = self_state.attachment
-        self_state.align.RigidityEnabled = true
-        self_state.align.Responsiveness = 200
-        self_state.align.MaxTorque = math.huge
-        self_state.align.Parent = myRoot
+    if not s.align or not s.align.Parent then
+        s.align = Instance.new("AlignOrientation")
+        s.align.Name = "PantheonRotationLockAlign"
+        s.align.Mode = Enum.OrientationAlignmentMode.OneAttachment
+        s.align.Attachment0 = s.attachment
+        s.align.RigidityEnabled = true
+        s.align.Responsiveness = 200
+        s.align.MaxTorque = math.huge
+        s.align.Parent = myRoot
     end
 end
 
 local function disableAlign()
-    if self_state.align then self_state.align.Enabled = false end
+    if s.align then s.align.Enabled = false end
 end
 
 local function step()
@@ -1933,25 +1948,25 @@ local function step()
         return
     end
 
-    local myChar = lp().Character
+    local myChar = Players.LocalPlayer.Character
     if not myChar then return end
     local myRoot = rootOf(myChar)
     local myHum  = myChar:FindFirstChildOfClass("Humanoid")
     if not myRoot or not myHum then return end
 
-    local tRoot = rootOf(targetChar())
+    local tRoot = rootOf(targetCharacter())
     if not tRoot then return end
 
     if bgSuppressed() then
-        self_state.suppressedSince = os.clock()
+        s.suppressedSince = os.clock()
         disableAlign()
         return
     end
 
     local now = os.clock()
-    if self_state.suppressedSince > 0 then
-        self_state.smoothUntil = now + SMOOTH_DURATION
-        self_state.suppressedSince = 0
+    if s.suppressedSince > 0 then
+        s.smoothUntil = now + SMOOTH_DURATION
+        s.suppressedSince = 0
     end
 
     local dir = tRoot.Position - myRoot.Position
@@ -1960,135 +1975,107 @@ local function step()
 
     myHum.AutoRotate = false
     ensureConstraint(myRoot)
-    if self_state.align then
-        self_state.align.Enabled = true
-        self_state.align.CFrame = CFrame.lookAt(Vector3.zero, flat)
+    if s.align then
+        s.align.Enabled = true
+        s.align.CFrame = CFrame.lookAt(Vector3.zero, flat)
     end
 
-    -- Skip the direct CFrame snap during the smooth-resume window so we slide
-    -- in via AlignOrientation instead of teleporting after the ragdoll ends.
-    if now >= self_state.smoothUntil then
+    if now >= s.smoothUntil then
         local cf = CFrame.lookAt(myRoot.Position, myRoot.Position + flat)
         local _, yAngle, _ = cf:ToEulerAnglesYXZ()
         myRoot.CFrame = CFrame.new(myRoot.Position) * CFrame.Angles(0, yAngle, 0)
     end
 end
 
--- True when LockOn+ is currently driving the body rotation. Shiftlock uses this
--- to yield: when LockOn+ is active, shiftlock skips its own camera-based rotation.
-function LockOnPlus.isActive()
+function RotationLock.hotkeyPress()
+    if not state.rotationLockEnabled then return end
+    if s.holdMode then
+        s.holdActive = true
+    else
+        s.holdActive = not s.holdActive
+    end
+end
+
+function RotationLock.hotkeyRelease()
+    if s.holdMode then
+        s.holdActive = false
+    end
+end
+
+function RotationLock.setHoldMode(v)
+    s.holdMode = v and true or false
+    -- Switching to toggle mode while engaged would leave holdActive stuck on.
+    if not s.holdMode then s.holdActive = false end
+end
+
+function RotationLock.setEnabled(v)
+    state.rotationLockEnabled = v and true or false
+    if not v then
+        s.holdActive = false
+        disableAlign()
+    end
+end
+
+-- True when Rotation Lock is currently driving the body. Shiftlock uses this
+-- to yield: when Rotation Lock is active, shiftlock skips its own rotation.
+function RotationLock.isActive()
     return shouldRotate() and not bgSuppressed()
 end
 
-function LockOnPlus.init()
-    if self_state.bound then return end
+function RotationLock.init()
+    if s.bound then return end
     RunService:BindToRenderStep(BIND, Enum.RenderPriority.Camera.Value + 150, step)
-    self_state.bound = true
+    s.bound = true
 end
 
-function LockOnPlus.destroy()
-    if self_state.bound then
+function RotationLock.destroy()
+    if s.bound then
         pcall(function() RunService:UnbindFromRenderStep(BIND) end)
-        self_state.bound = false
+        s.bound = false
     end
-    if self_state.align then pcall(function() self_state.align:Destroy() end); self_state.align = nil end
-    if self_state.attachment then pcall(function() self_state.attachment:Destroy() end); self_state.attachment = nil end
+    if s.align then pcall(function() s.align:Destroy() end); s.align = nil end
+    if s.attachment then pcall(function() s.attachment:Destroy() end); s.attachment = nil end
 end
 
-return LockOnPlus
+return RotationLock
 end
 
 _MODULES["modules.aim.lockon"] = function()
--- Main lock-on driver:
---   * Hotkey dispatch comes through core.keybinds (handled by the feature row),
---     so this module only exposes the press/release entry points.
---   * Heartbeat loop validates the current target (drops if dead/gone/friendly).
---   * RenderStep loop forces the camera to point at the target while locked,
---     gated by the Resistance modifier:
---       - resistance off    : camera snaps to target every frame
---       - resistance on     : within `resistance_threshold` deg of target the
---                             camera is left alone (free aim); past the
---                             threshold it lerps toward the target by
---                             `resistance_strength` per frame.
+-- Lock-On: aim-assist applicator. Reads target from Target Select, applies
+-- the camera force when state.lockon_enabled AND state.cameraLockEnabled AND a
+-- target exists. Resistance gate is the same dt-scaled exponential approach.
+--
+-- Rotation Lock lives in a separate module (rotation_lock.lua) with its own
+-- keybind and hold/toggle mode.
 
-local state     = require("modules.aim.state")
-local targeting = require("modules.aim.targeting")
-local highlight = require("modules.aim.highlight")
+local state = require("modules.aim.state")
 
 local RunService = game:GetService("RunService")
-local Players    = game:GetService("Players")
 
 local LockOn = {}
 
 local CAM_BIND = "PantheonLockOnCamera"
 
 local s = {
-    holdMode   = false,
-    holdActive = false,
-    runConn    = nil,
-    bound      = false,
-    lastDir    = nil,
+    bound   = false,
+    lastDir = nil,
 }
-
-local function lp() return Players.LocalPlayer end
 
 local function rootOf(charOrModel)
     return charOrModel and charOrModel:FindFirstChild("HumanoidRootPart")
 end
 
 local function targetCharacter()
-    local t = state.lockon_target
+    local t = state.target
     if not t then return nil end
-    if state.lockon_target_type == "player" then return t.Character end
+    if state.target_type == "player" then return t.Character end
     return t
 end
 
-local function releaseLock()
-    state.setLocked(false)
-    state.lockon_held = false
-    state.setTarget(nil, nil)
-    s.holdActive = false
-    s.lastDir = nil
-    highlight.update(nil, nil)
-end
-
-local function engageLock()
-    local t = targeting.getBestTarget()
-    if not t then return false end
-    state.setTarget(t, "player")
-    state.setLocked(true)
-    state.lockon_held = true
-    return true
-end
-
--- Heartbeat: drop the target if it stops being valid.
-local function validateStep()
-    if not state.lockon_enabled or not state.lockon_locked then return end
-
-    local t = state.lockon_target
-    if state.lockon_target_type == "player" then
-        local char = t and t.Character
-        local hum  = char and char:FindFirstChildOfClass("Humanoid")
-        if not hum or hum.Health <= 0 or not char.Parent or state.isFriendly(t) then
-            releaseLock()
-            return
-        end
-    elseif state.lockon_target_type == "npc" then
-        local hum = t and t:FindFirstChildOfClass("Humanoid")
-        if not hum or hum.Health <= 0 or not t.Parent then
-            releaseLock()
-            return
-        end
-    end
-
-    highlight.update(t, function(exclude) return targeting.getBestTarget(exclude) end)
-end
-
--- RenderStep: force camera to look at target, optionally gated by resistance.
--- `dt` comes from BindToRenderStep so the resistance lerp can be frame-rate
--- independent (otherwise the pull feels stuttery on uneven frame times).
 local function cameraStep(dt)
-    if not state.lockon_enabled or not state.lockon_locked then return end
+    if not state.lockon_enabled then return end
+    if not state.cameraLockEnabled then return end
+    if not state.target then return end
 
     local cam = workspace.CurrentCamera
     if not cam then return end
@@ -2112,13 +2099,9 @@ local function cameraStep(dt)
         local cosTheta = math.clamp(currentLook:Dot(dir), -1, 1)
         local angleDeg = math.deg(math.acos(cosTheta))
         if angleDeg < (state.resistance_threshold or 0) then
-            -- Within deadzone: leave the camera alone so the player can free-aim.
             s.lastDir = currentLook
             return
         end
-        -- Frame-rate-independent exponential approach.
-        -- alpha = 1 - exp(-smoothness * dt) converges smoothly regardless of fps.
-        -- Strength (0..1) maps to smoothness (0..20); higher = snappier.
         local smoothness = (state.resistance_strength or 0.5) * 20
         local alpha = 1 - math.exp(-smoothness * (dt or 1/60))
         local blended = currentLook:Lerp(dir, alpha)
@@ -2129,54 +2112,17 @@ local function cameraStep(dt)
     cam.CFrame = CFrame.new(camPos, camPos + dir)
 end
 
--- Cycle to the next-best target (excluding the current one).
-function LockOn.swapTarget()
-    if not state.swap_enabled then return end
-    if not state.lockon_enabled or not state.lockon_locked then return end
-    local next_ = targeting.getBestTarget(state.lockon_target)
-    if next_ then
-        state.setTarget(next_, "player")
-        s.lastDir = nil
-    end
-end
-
--- Called by the central keybind dispatcher on key press.
-function LockOn.hotkeyPress()
-    if not state.lockon_enabled then return end
-    if s.holdMode then
-        if not state.lockon_locked then engageLock() end
-        s.holdActive = true
-    else
-        if state.lockon_locked then releaseLock() else engageLock() end
-    end
-end
-
--- Called by the central keybind dispatcher on key release.
-function LockOn.hotkeyRelease()
-    if s.holdMode and s.holdActive and state.lockon_locked then
-        releaseLock()
-    end
-end
-
-function LockOn.setHoldMode(v)
-    s.holdMode = v and true or false
-end
-
 function LockOn.setEnabled(v)
     state.lockon_enabled = v and true or false
-    if not v then releaseLock() end
 end
 
 function LockOn.init()
-    s.runConn = RunService.Heartbeat:Connect(validateStep)
-    if not s.bound then
-        RunService:BindToRenderStep(CAM_BIND, Enum.RenderPriority.Camera.Value + 1, cameraStep)
-        s.bound = true
-    end
+    if s.bound then return end
+    RunService:BindToRenderStep(CAM_BIND, Enum.RenderPriority.Camera.Value + 1, cameraStep)
+    s.bound = true
 end
 
 function LockOn.destroy()
-    if s.runConn then s.runConn:Disconnect(); s.runConn = nil end
     if s.bound then
         pcall(function() RunService:UnbindFromRenderStep(CAM_BIND) end)
         s.bound = false
@@ -2186,20 +2132,119 @@ end
 return LockOn
 end
 
+_MODULES["modules.aim.target_select"] = function()
+-- Target Select: picks and holds a target, triggers Highlight. Lock-On and
+-- Rotation Lock read state.target to know who to aim at. Owns the toggle/hold
+-- hotkey (default X).
+
+local state     = require("modules.aim.state")
+local targeting = require("modules.aim.targeting")
+local highlight = require("modules.aim.highlight")
+
+local RunService = game:GetService("RunService")
+
+local TargetSelect = {}
+
+local s = {
+    holdMode   = false,
+    holdActive = false,
+    heartConn  = nil,
+}
+
+local function releaseTarget()
+    state.setTarget(nil, nil)
+    s.holdActive = false
+    highlight.update(nil, nil)
+end
+
+local function engageTarget()
+    local t = targeting.getBestTarget()
+    if not t then return false end
+    state.setTarget(t, "player")
+    return true
+end
+
+function TargetSelect.swapTarget()
+    if not state.swap_enabled then return end
+    if not state.target_select_enabled or not state.target then return end
+    local next_ = targeting.getBestTarget(state.target)
+    if next_ then state.setTarget(next_, "player") end
+end
+
+local function step()
+    if not state.target_select_enabled then return end
+    if not state.target then return end
+
+    local t = state.target
+    if state.target_type == "player" then
+        local char = t and t.Character
+        local hum  = char and char:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 or not char.Parent or state.isFriendly(t) then
+            releaseTarget()
+            return
+        end
+    elseif state.target_type == "npc" then
+        local hum = t and t:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 or not t.Parent then
+            releaseTarget()
+            return
+        end
+    end
+
+    highlight.update(t, function(exclude) return targeting.getBestTarget(exclude) end)
+end
+
+function TargetSelect.hotkeyPress()
+    if not state.target_select_enabled then return end
+    if s.holdMode then
+        if not state.target then engageTarget() end
+        s.holdActive = true
+    else
+        if state.target then releaseTarget() else engageTarget() end
+    end
+end
+
+function TargetSelect.hotkeyRelease()
+    if s.holdMode and s.holdActive and state.target then
+        releaseTarget()
+    end
+end
+
+function TargetSelect.setHoldMode(v)
+    s.holdMode = v and true or false
+end
+
+function TargetSelect.setEnabled(v)
+    state.target_select_enabled = v and true or false
+    if not v then releaseTarget() end
+end
+
+function TargetSelect.init()
+    s.heartConn = RunService.Heartbeat:Connect(step)
+end
+
+function TargetSelect.destroy()
+    if s.heartConn then s.heartConn:Disconnect(); s.heartConn = nil end
+end
+
+return TargetSelect
+end
+
 _MODULES["modules.aim.init"] = function()
 -- Aim Assist: declarative feature definitions across three categories.
--- Implementations live in their own files; this file wires them in and
--- registers them as features in the Movement / Combat / Visuals containers.
+-- Target Select picks the target, Lock-On applies aim assist (camera + rotation
+-- sub-toggles), Highlight reflects the selected target.
 
-local window      = require("ui.window")
-local container   = require("ui.container")
-local feature     = require("ui.feature")
-local state       = require("modules.aim.state")
-local highlight   = require("modules.aim.highlight")
-local shiftlock   = require("modules.aim.shiftlock")
-local lockon_plus = require("modules.aim.lockon_plus")
-local lockon      = require("modules.aim.lockon")
-local log         = require("core.log")
+local window       = require("ui.window")
+local container    = require("ui.container")
+local feature      = require("ui.feature")
+local state        = require("modules.aim.state")
+local highlight    = require("modules.aim.highlight")
+local shiftlock    = require("modules.aim.shiftlock")
+local rotationLock = require("modules.aim.rotation_lock")
+local lockon       = require("modules.aim.lockon")
+local targetSelect = require("modules.aim.target_select")
+local log          = require("core.log")
 
 local module = {}
 
@@ -2207,9 +2252,10 @@ function module.register()
     -- Boot the implementations
     highlight.init()
     shiftlock.init()
-    lockon_plus.init()
+    rotationLock.init()
     lockon.init()
-    shiftlock.setExternalSkipRotation(lockon_plus.isActive)
+    targetSelect.init()
+    shiftlock.setExternalSkipRotation(rotationLock.isActive)
 
     local parent = window.parent()
 
@@ -2218,7 +2264,7 @@ function module.register()
     move:add(feature.declare({
         id          = "aim.shiftlock",
         name        = "Custom Shiftlock",
-        description = "Locks your mouse to the center of the screen and rotates your character to face the camera. Replaces Roblox's built-in shift-lock and also kills competing shift-lock GUIs from other scripts on enable.",
+        description = "Locks your mouse to the center of the screen and rotates your character to face the camera. Replaces Roblox's built-in shift-lock and disconnects competing shift-lock loops from other scripts on enable, disable, and boot.",
         default     = false,
         defaultKey  = Enum.KeyCode.LeftShift,
         onToggle    = function(v) shiftlock.setEnabled(v) end,
@@ -2229,30 +2275,27 @@ function module.register()
             shiftlock.toggle()
         end,
         settings = {
-            { type = "toggle", name = "Kill foreign shiftlock GUIs", default = true,
+            { type = "toggle", name = "Kill foreign shiftlock GUIs / loops", default = true,
               onChange = function(v) state.killForeign = v end },
         },
     }).root)
 
     -- 2. Combat ---------------------------------------------------------------
-    -- Lock-On owns its modifiers (Lock-On+ and Resistance) as nested sections
-    -- inside its settings panel, since neither does anything without an active
-    -- lock-on target.
     local combat = container.new(parent, "Combat")
+
+    -- Target Select: owns the X hotkey, picks targets, triggers Highlight.
     combat:add(feature.declare({
-        id           = "aim.lockon",
-        name         = "Lock-On",
-        description  = "Picks the nearest valid target (with optional FOV / health / visibility filters) and forces your camera toward them while held. Lock-On+ rotates your body to match. Resistance gives you a free-aim deadzone around the target before the pull kicks in.",
+        id           = "aim.target_select",
+        name         = "Target Select",
+        description  = "Picks the nearest valid target (with optional FOV / health / visibility / range filters) and triggers the Highlight. Lock-On and Rotation Lock read the chosen target. Hold-mode releases when you release the key; toggle-mode latches.",
         default      = false,
         defaultKey   = Enum.KeyCode.X,
-        onToggle     = function(v) lockon.setEnabled(v) end,
-        onKey        = function() lockon.hotkeyPress()   end,
-        onKeyRelease = function() lockon.hotkeyRelease() end,
+        onToggle     = function(v) targetSelect.setEnabled(v) end,
+        onKey        = function() targetSelect.hotkeyPress()   end,
+        onKeyRelease = function() targetSelect.hotkeyRelease() end,
         settings = {
-            -- Targeting
-            { type = "section", name = "Targeting" },
             { type = "toggle", name = "Hold mode (vs toggle)", default = false,
-              onChange = function(v) lockon.setHoldMode(v) end },
+              onChange = function(v) targetSelect.setHoldMode(v) end },
             { type = "toggle", name = "Realistic FOV (60 deg)", default = false,
               onChange = function(v) state.realisticEnabled = v end },
             { type = "toggle", name = "Skip dead / shielded", default = true,
@@ -2262,17 +2305,35 @@ function module.register()
             { type = "slider", name = "Range (0 = inf)",
               min = 0, max = 500, step = 5, default = 0,
               onChange = function(v) state.rangeLimit = v end },
+        },
+    }).root)
 
-            -- Lock-On+
-            { type = "section", name = "Lock-On+" },
-            { type = "toggle", name = "Enable", default = false,
-              onChange = function(v) state.lockonPlusEnabled = v end },
+    -- Lock-On: aim-assist applicator. Master toggle plus sub-toggles for
+    -- Camera Lock and Rotation Lock so the user can mix-and-match.
+    combat:add(feature.declare({
+        id          = "aim.lockon",
+        name        = "Lock-On",
+        description = "Applies aim assist to the target picked by Target Select. Sub-toggles let you mix the type: Camera Lock forces the camera to look at the target, Rotation Lock (its own keybind) spins your body to face them. Resistance gives you a free-aim deadzone before the camera pull kicks in.",
+        default     = false,
+        onToggle    = function(v) lockon.setEnabled(v) end,
+        settings = {
+            { type = "section", name = "Types" },
+            { type = "toggle", name = "Camera Lock", default = true,
+              onChange = function(v) state.cameraLockEnabled = v end },
+            { type = "toggle", name = "Rotation Lock", default = false,
+              onChange = function(v) rotationLock.setEnabled(v) end },
+            { type = "keybind", name = "Rotation Lock key",
+              id       = "aim.rotation_lock",
+              default  = Enum.KeyCode.Q,
+              onPress  = function() rotationLock.hotkeyPress()   end,
+              onRelease= function() rotationLock.hotkeyRelease() end },
+            { type = "toggle", name = "Rotation Lock hold mode", default = true,
+              onChange = function(v) rotationLock.setHoldMode(v) end },
             { type = "toggle", name = "Battlegrounds-safe", default = true,
               onChange = function(v) state.bgSafeEnabled = v end },
 
-            -- Resistance
             { type = "section", name = "Resistance" },
-            { type = "toggle", name = "Enable", default = false,
+            { type = "toggle", name = "Enable Resistance", default = false,
               onChange = function(v) state.resistance_enabled = v end },
             { type = "slider", name = "Threshold (deg)",
               min = 0, max = 30, step = 1, default = 5,
@@ -2282,14 +2343,16 @@ function module.register()
               onChange = function(v) state.resistance_strength = v end },
         },
     }).root)
+
+    -- Swap Target: cycles to the next-best target while Target Select is engaged.
     combat:add(feature.declare({
         id          = "aim.swap_target",
         name        = "Swap Target",
-        description = "While Lock-On is engaged, press this key to cycle to the next-best target.",
+        description = "While Target Select has a target, press this key to cycle to the next-best target.",
         default     = true,
         defaultKey  = Enum.KeyCode.C,
         onToggle    = function(v) state.swap_enabled = v end,
-        onKey       = function() lockon.swapTarget() end,
+        onKey       = function() targetSelect.swapTarget() end,
     }).root)
 
     -- 3. Visuals --------------------------------------------------------------
@@ -2297,7 +2360,7 @@ function module.register()
     vis:add(feature.declare({
         id          = "aim.highlight",
         name        = "Highlight",
-        description = "Outlines your current target in red. Optional yellow outline on the next-best target, plus a self-fade option that drops your own character's opacity so it doesn't block your view.",
+        description = "Outlines whichever target Target Select picks: red on the active target, optional yellow on the next-best. Self-fade drops your own character's opacity so you don't get blocked by your own back.",
         default     = true,
         onToggle    = function(v) highlight.setEnabled(v) end,
         settings = {
