@@ -67,6 +67,26 @@ function module.register()
         },
     }).root)
 
+    -- Resistance --------------------------------------------------------------
+    -- Modifier on the Lock-On camera force. Off = camera snaps to target every
+    -- frame (rigid lock). On = camera is left alone within `threshold` degrees
+    -- of the target (free aim), and lerps back to the target at `strength`
+    -- per frame once the player has drifted past the threshold.
+    cat:add(feature.declare({
+        id       = "aim.resistance",
+        name     = "Resistance",
+        default  = false,
+        onToggle = function(v) state.resistance_enabled = v end,
+        settings = {
+            { type = "slider", name = "Threshold (deg)",
+              min = 0, max = 30, step = 1, default = 5,
+              onChange = function(v) state.resistance_threshold = v end },
+            { type = "slider", name = "Strength",
+              min = 0.05, max = 1, step = 0.05, default = 0.5,
+              onChange = function(v) state.resistance_strength = v end },
+        },
+    }).root)
+
     -- Highlight ---------------------------------------------------------------
     cat:add(feature.declare({
         id       = "aim.highlight",

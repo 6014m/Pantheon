@@ -32,6 +32,14 @@ local state = {
     shiftlock_active       = false,
     killForeign            = true,
 
+    -- Camera lock
+    lockHeightOffset       = 0,
+
+    -- Camera resistance modifier: deadzone-then-lerp toward target
+    resistance_enabled     = false,
+    resistance_threshold   = 5,    -- degrees of free-aim cone around target
+    resistance_strength    = 0.5,  -- lerp alpha applied beyond threshold (0..1)
+
     -- Friendlies map (UserId -> true). Other systems (team filters, party
     -- modules) can mutate this freely; targeting reads at runtime.
     friendlies = {},

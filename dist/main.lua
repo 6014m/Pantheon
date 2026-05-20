@@ -1165,6 +1165,14 @@ local state = {
     shiftlock_active       = false,
     killForeign            = true,
 
+    -- Camera lock
+    lockHeightOffset       = 0,
+
+    -- Camera resistance modifier: deadzone-then-lerp toward target
+    resistance_enabled     = false,
+    resistance_threshold   = 5,    -- degrees of free-aim cone around target
+    resistance_strength    = 0.5,  -- lerp alpha applied beyond threshold (0..1)
+
     -- Friendlies map (UserId -> true). Other systems (team filters, party
     -- modules) can mutate this freely; targeting reads at runtime.
     friendlies = {},
@@ -1793,29 +1801,56 @@ return LockOnPlus
 end
 
 _MODULES["modules.aim.lockon"] = function()
--- Main lock-on driver. Hotkey dispatch comes through core.keybinds (handled by
--- the feature row), so this module only exposes the press/release entry points
--- and runs the per-frame target-validity loop.
+-- Main lock-on driver:
+--   * Hotkey dispatch comes through core.keybinds (handled by the feature row),
+--     so this module only exposes the press/release entry points.
+--   * Heartbeat loop validates the current target (drops if dead/gone/friendly).
+--   * RenderStep loop forces the camera to point at the target while locked,
+--     gated by the Resistance modifier:
+--       - resistance off    : camera snaps to target every frame
+--       - resistance on     : within `resistance_threshold` deg of target the
+--                             camera is left alone (free aim); past the
+--                             threshold it lerps toward the target by
+--                             `resistance_strength` per frame.
 
 local state     = require("modules.aim.state")
 local targeting = require("modules.aim.targeting")
 local highlight = require("modules.aim.highlight")
 
 local RunService = game:GetService("RunService")
+local Players    = game:GetService("Players")
 
 local LockOn = {}
+
+local CAM_BIND = "PantheonLockOnCamera"
 
 local s = {
     holdMode   = false,
     holdActive = false,
     runConn    = nil,
+    bound      = false,
+    lastDir    = nil,
 }
+
+local function lp() return Players.LocalPlayer end
+
+local function rootOf(charOrModel)
+    return charOrModel and charOrModel:FindFirstChild("HumanoidRootPart")
+end
+
+local function targetCharacter()
+    local t = state.lockon_target
+    if not t then return nil end
+    if state.lockon_target_type == "player" then return t.Character end
+    return t
+end
 
 local function releaseLock()
     state.setLocked(false)
     state.lockon_held = false
     state.setTarget(nil, nil)
     s.holdActive = false
+    s.lastDir = nil
     highlight.update(nil, nil)
 end
 
@@ -1828,7 +1863,8 @@ local function engageLock()
     return true
 end
 
-local function step()
+-- Heartbeat: drop the target if it stops being valid.
+local function validateStep()
     if not state.lockon_enabled or not state.lockon_locked then return end
 
     local t = state.lockon_target
@@ -1848,6 +1884,45 @@ local function step()
     end
 
     highlight.update(t, function(exclude) return targeting.getBestTarget(exclude) end)
+end
+
+-- RenderStep: force camera to look at target, optionally gated by resistance.
+local function cameraStep()
+    if not state.lockon_enabled or not state.lockon_locked then return end
+
+    local cam = workspace.CurrentCamera
+    if not cam then return end
+
+    local tRoot = rootOf(targetCharacter())
+    if not tRoot then return end
+
+    local camPos  = cam.CFrame.Position
+    local lookPos = tRoot.Position + Vector3.new(0, state.lockHeightOffset or 0, 0)
+    local desired = lookPos - camPos
+    if desired.Magnitude < 0.5 then
+        if s.lastDir then
+            cam.CFrame = CFrame.new(camPos, camPos + s.lastDir)
+        end
+        return
+    end
+    local dir = desired.Unit
+
+    if state.resistance_enabled then
+        local currentLook = cam.CFrame.LookVector
+        local cosTheta = math.clamp(currentLook:Dot(dir), -1, 1)
+        local angleDeg = math.deg(math.acos(cosTheta))
+        if angleDeg < (state.resistance_threshold or 0) then
+            -- Within deadzone: leave the camera alone so the player can free-aim.
+            s.lastDir = currentLook
+            return
+        end
+        local strength = state.resistance_strength or 0.5
+        local blended = currentLook:Lerp(dir, strength)
+        if blended.Magnitude > 0.001 then dir = blended.Unit end
+    end
+
+    s.lastDir = dir
+    cam.CFrame = CFrame.new(camPos, camPos + dir)
 end
 
 -- Called by the central keybind dispatcher on key press.
@@ -1878,11 +1953,19 @@ function LockOn.setEnabled(v)
 end
 
 function LockOn.init()
-    s.runConn = RunService.Heartbeat:Connect(step)
+    s.runConn = RunService.Heartbeat:Connect(validateStep)
+    if not s.bound then
+        RunService:BindToRenderStep(CAM_BIND, Enum.RenderPriority.Camera.Value + 1, cameraStep)
+        s.bound = true
+    end
 end
 
 function LockOn.destroy()
-    if s.runConn then s.runConn:Disconnect() end
+    if s.runConn then s.runConn:Disconnect(); s.runConn = nil end
+    if s.bound then
+        pcall(function() RunService:UnbindFromRenderStep(CAM_BIND) end)
+        s.bound = false
+    end
 end
 
 return LockOn
@@ -1955,6 +2038,26 @@ function module.register()
             { type = "slider", name = "Range (0 = inf)",
               min = 0, max = 500, step = 5, default = 0,
               onChange = function(v) state.rangeLimit = v end },
+        },
+    }).root)
+
+    -- Resistance --------------------------------------------------------------
+    -- Modifier on the Lock-On camera force. Off = camera snaps to target every
+    -- frame (rigid lock). On = camera is left alone within `threshold` degrees
+    -- of the target (free aim), and lerps back to the target at `strength`
+    -- per frame once the player has drifted past the threshold.
+    cat:add(feature.declare({
+        id       = "aim.resistance",
+        name     = "Resistance",
+        default  = false,
+        onToggle = function(v) state.resistance_enabled = v end,
+        settings = {
+            { type = "slider", name = "Threshold (deg)",
+              min = 0, max = 30, step = 1, default = 5,
+              onChange = function(v) state.resistance_threshold = v end },
+            { type = "slider", name = "Strength",
+              min = 0.05, max = 1, step = 0.05, default = 0.5,
+              onChange = function(v) state.resistance_strength = v end },
         },
     }).root)
 
