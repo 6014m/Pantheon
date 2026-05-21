@@ -5,9 +5,11 @@
 --   - state.rotationLockEnabled  (Rotation Lock sub-toggle)
 --   - state.target               (Target Select has acquired someone)
 --   - s.holdActive               (hotkey is engaged per hold/toggle mode)
--- Battlegrounds-safe gate (state.bgSafeEnabled) suppresses rotation while
--- either humanoid is in a non-walking state (ragdoll/falling/seated/etc.) and
--- gives a 0.15s smooth-resume window so the catch-up doesn't snap obviously.
+-- Battlegrounds-safe gate (state.bgSafeEnabled) suppresses rotation only
+-- while OUR humanoid is in a non-walking state (PlatformStand / Ragdoll /
+-- Physics / etc). We deliberately don't check the target's state -- doing
+-- so was losing block windows during their attacks, because knockback
+-- briefly puts attackers into Physics state and we'd stop tracking.
 
 local state = require("modules.aim.state")
 
@@ -17,7 +19,6 @@ local RunService = game:GetService("RunService")
 local RotationLock = {}
 
 local BIND = "PantheonRotationLock"
-local SMOOTH_DURATION = 0.15
 
 local SUPPRESS_STATES = {
     [Enum.HumanoidStateType.Physics]          = true,
@@ -28,13 +29,11 @@ local SUPPRESS_STATES = {
 }
 
 local s = {
-    align           = nil,
-    attachment      = nil,
-    suppressedSince = 0,
-    smoothUntil     = 0,
-    bound           = false,
-    holdMode        = true,   -- default: hold-to-engage
-    holdActive      = false,  -- unified flag: true when rotation should engage
+    align      = nil,
+    attachment = nil,
+    bound      = false,
+    holdMode   = true,   -- default: hold-to-engage
+    holdActive = false,  -- unified flag: true when rotation should engage
 }
 
 local function rootOf(charOrModel)
@@ -66,15 +65,16 @@ end
 
 local function bgSuppressed()
     if not state.bgSafeEnabled then return false end
-    local myHum, tHum = getHumanoids()
+    local myHum, _tHum = getHumanoids()
     if myHum then
         if myHum.PlatformStand then return true end
         if SUPPRESS_STATES[myHum:GetState()] then return true end
     end
-    if tHum then
-        if tHum.PlatformStand then return true end
-        if SUPPRESS_STATES[tHum:GetState()] then return true end
-    end
+    -- Intentionally NOT checking the target's state. Knockback during their
+    -- attacks puts them in Physics state for a moment; if we suppressed
+    -- rotation for that we'd stop tracking right when blocks are about to
+    -- land -- "missing a lot of blocks" feedback. Suppressing on our own
+    -- state is still useful so the body doesn't spin while we're ragdolled.
     return false
 end
 
@@ -116,18 +116,16 @@ local function step()
     if not tRoot then return end
 
     if bgSuppressed() then
-        s.suppressedSince = os.clock()
         disableAlign()
         return
     end
 
-    local now = os.clock()
-    if s.suppressedSince > 0 then
-        s.smoothUntil = now + SMOOTH_DURATION
-        s.suppressedSince = 0
-    end
-
-    local dir = tRoot.Position - myRoot.Position
+    -- Lead the target the same way [[modules.aim.lockon]] does, so the body
+    -- faces where they'll be at impact, not where they were on the last
+    -- network update. Critical for block timing on fast-moving attackers.
+    local tVel = tRoot.AssemblyLinearVelocity
+    local predicted = tRoot.Position + (tVel * (state.predictionTime or 0))
+    local dir = predicted - myRoot.Position
     local flat = Vector3.new(dir.X, 0, dir.Z)
     if flat.Magnitude < 0.1 then return end
 
@@ -138,11 +136,14 @@ local function step()
         s.align.CFrame = CFrame.lookAt(Vector3.zero, flat)
     end
 
-    if now >= s.smoothUntil then
-        local cf = CFrame.lookAt(myRoot.Position, myRoot.Position + flat)
-        local _, yAngle, _ = cf:ToEulerAnglesYXZ()
-        myRoot.CFrame = CFrame.new(myRoot.Position) * CFrame.Angles(0, yAngle, 0)
-    end
+    -- Direct root.CFrame write every frame -- no smooth-resume window.
+    -- The old 0.15s smoothing after an unsuppression cost block windows
+    -- (target ragdolls briefly -> suppression -> unsuppression -> 0.15s
+    -- of catch-up where direct CFrame write was skipped -> hit lands).
+    -- Snap-to-face is what the user wants for combat.
+    local cf = CFrame.lookAt(myRoot.Position, myRoot.Position + flat)
+    local _, yAngle, _ = cf:ToEulerAnglesYXZ()
+    myRoot.CFrame = CFrame.new(myRoot.Position) * CFrame.Angles(0, yAngle, 0)
 end
 
 function RotationLock.hotkeyPress()

@@ -62,6 +62,14 @@ local state = {
     lockHeightOffset = 0,
     friendlies       = {},
 
+    -- Aim-assist prediction window. lockon's camera tracking and rotation_lock's
+    -- body facing both add (target.AssemblyLinearVelocity * predictionTime) to
+    -- the target's read position so the aim leads them. Without this we sit on
+    -- the last network-replicated position, which feels "insanely inaccurate"
+    -- on fast-moving enemies because they've already moved by the time we
+    -- write the camera/body CFrame. 0 = no prediction.
+    predictionTime = 0.05,
+
     -- Signals
     onTargetChanged = Signal.new(),
 }

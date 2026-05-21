@@ -116,6 +116,17 @@ function module.register()
             { type = "toggle", name = "Battlegrounds-safe", default = true,
               onChange = function(v) state.bgSafeEnabled = v end },
 
+            -- Lead time on the target's position. lockon's camera and
+            -- rotation_lock's body both shift their aim by
+            -- (target.AssemblyLinearVelocity * predictionTime), which
+            -- compensates for the network-update gap. 0 = no prediction
+            -- (aim at last replicated position, what you'd get on a
+            -- stationary target); 0.05s leads a 30 studs/s runner by ~1.5
+            -- studs. Bump higher in laggier games.
+            { type = "slider", name = "Aim prediction (s)",
+              key = "prediction", min = 0, max = 0.2, step = 0.01, default = 0.05,
+              onChange = function(v) state.predictionTime = v end },
+
             { type = "section", name = "Resistance" },
             { type = "toggle", name = "Enable Resistance", default = false,
               onChange = function(v) state.resistance_enabled = v end },

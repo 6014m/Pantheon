@@ -47,8 +47,16 @@ local function cameraStep(dt)
     local tRoot = rootOf(targetCharacter())
     if not tRoot then return end
 
-    local camPos  = cam.CFrame.Position
-    local lookPos = tRoot.Position + Vector3.new(0, state.lockHeightOffset or 0, 0)
+    local camPos = cam.CFrame.Position
+    -- Lead the target by (velocity * predictionTime). Without this we aim
+    -- at the last network-replicated position, which on a fast-moving
+    -- target is several studs behind where they actually are -- that's
+    -- the "insanely inaccurate" feedback. AssemblyLinearVelocity is the
+    -- right velocity source for a HumanoidRootPart in a movable assembly.
+    local tVel = tRoot.AssemblyLinearVelocity
+    local lookPos = tRoot.Position
+        + (tVel * (state.predictionTime or 0))
+        + Vector3.new(0, state.lockHeightOffset or 0, 0)
     local desired = lookPos - camPos
     if desired.Magnitude < 0.5 then
         if s.lastDir then
