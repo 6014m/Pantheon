@@ -1726,8 +1726,10 @@ local state = {
     -- the target's read position so the aim leads them. Without this we sit on
     -- the last network-replicated position, which feels "insanely inaccurate"
     -- on fast-moving enemies because they've already moved by the time we
-    -- write the camera/body CFrame. 0 = no prediction.
-    predictionTime = 0.05,
+    -- write the camera/body CFrame. 0 = no prediction; 0.1 leads ~5 studs
+    -- against a 50-stud/s sprinter, which is closer to the typical ping
+    -- compensation a battlegrounds-style game needs.
+    predictionTime = 0.1,
 
     -- Signals
     onTargetChanged = Signal.new(),
@@ -2775,7 +2777,10 @@ local function step()
     local predicted = tRoot.Position + (tVel * (state.predictionTime or 0))
     local dir = predicted - myRoot.Position
     local flat = Vector3.new(dir.X, 0, dir.Z)
-    if flat.Magnitude < 0.1 then return end
+    -- Only skip when the target is genuinely co-located with us (a 0.1
+    -- stud guard was conservative; lowering keeps the rotation engaged
+    -- right up against the target so combat-range facing never glitches).
+    if flat.Magnitude < 0.001 then return end
 
     myHum.AutoRotate = false
     ensureConstraint(myRoot)
@@ -2831,13 +2836,22 @@ end
 
 function RotationLock.init()
     if s.bound then return end
+    -- Bound to BOTH RenderStepped (pre-render) and Stepped (pre-physics) so
+    -- we rotate twice per frame -- once for what physics sees this tick,
+    -- once for what render shows. The user wants godspeed; doubling the
+    -- write rate eliminates the half-frame visual lag where rotation
+    -- "catches up" between physics and render, and ensures the
+    -- physics-side rotation (used for hit registration on movable parts)
+    -- always reflects the latest target position.
     RunService:BindToRenderStep(BIND, Enum.RenderPriority.Camera.Value + 150, step)
+    s.steppedConn = RunService.Stepped:Connect(function() step() end)
     s.bound = true
 end
 
 function RotationLock.destroy()
     if s.bound then
         pcall(function() RunService:UnbindFromRenderStep(BIND) end)
+        if s.steppedConn then s.steppedConn:Disconnect(); s.steppedConn = nil end
         s.bound = false
     end
     if s.align then pcall(function() s.align:Destroy() end); s.align = nil end
@@ -3177,10 +3191,10 @@ function module.register()
             -- (target.AssemblyLinearVelocity * predictionTime), which
             -- compensates for the network-update gap. 0 = no prediction
             -- (aim at last replicated position, what you'd get on a
-            -- stationary target); 0.05s leads a 30 studs/s runner by ~1.5
-            -- studs. Bump higher in laggier games.
+            -- stationary target); 0.1 leads a 50-stud/s sprinter by ~5
+            -- studs. Crank up to 0.2 for laggy servers / very fast games.
             { type = "slider", name = "Aim prediction (s)",
-              key = "prediction", min = 0, max = 0.2, step = 0.01, default = 0.05,
+              key = "prediction", min = 0, max = 0.3, step = 0.01, default = 0.1,
               onChange = function(v) state.predictionTime = v end },
 
             { type = "section", name = "Resistance" },

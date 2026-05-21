@@ -127,7 +127,10 @@ local function step()
     local predicted = tRoot.Position + (tVel * (state.predictionTime or 0))
     local dir = predicted - myRoot.Position
     local flat = Vector3.new(dir.X, 0, dir.Z)
-    if flat.Magnitude < 0.1 then return end
+    -- Only skip when the target is genuinely co-located with us (a 0.1
+    -- stud guard was conservative; lowering keeps the rotation engaged
+    -- right up against the target so combat-range facing never glitches).
+    if flat.Magnitude < 0.001 then return end
 
     myHum.AutoRotate = false
     ensureConstraint(myRoot)
@@ -183,13 +186,22 @@ end
 
 function RotationLock.init()
     if s.bound then return end
+    -- Bound to BOTH RenderStepped (pre-render) and Stepped (pre-physics) so
+    -- we rotate twice per frame -- once for what physics sees this tick,
+    -- once for what render shows. The user wants godspeed; doubling the
+    -- write rate eliminates the half-frame visual lag where rotation
+    -- "catches up" between physics and render, and ensures the
+    -- physics-side rotation (used for hit registration on movable parts)
+    -- always reflects the latest target position.
     RunService:BindToRenderStep(BIND, Enum.RenderPriority.Camera.Value + 150, step)
+    s.steppedConn = RunService.Stepped:Connect(function() step() end)
     s.bound = true
 end
 
 function RotationLock.destroy()
     if s.bound then
         pcall(function() RunService:UnbindFromRenderStep(BIND) end)
+        if s.steppedConn then s.steppedConn:Disconnect(); s.steppedConn = nil end
         s.bound = false
     end
     if s.align then pcall(function() s.align:Destroy() end); s.align = nil end

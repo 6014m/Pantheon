@@ -121,10 +121,10 @@ function module.register()
             -- (target.AssemblyLinearVelocity * predictionTime), which
             -- compensates for the network-update gap. 0 = no prediction
             -- (aim at last replicated position, what you'd get on a
-            -- stationary target); 0.05s leads a 30 studs/s runner by ~1.5
-            -- studs. Bump higher in laggier games.
+            -- stationary target); 0.1 leads a 50-stud/s sprinter by ~5
+            -- studs. Crank up to 0.2 for laggy servers / very fast games.
             { type = "slider", name = "Aim prediction (s)",
-              key = "prediction", min = 0, max = 0.2, step = 0.01, default = 0.05,
+              key = "prediction", min = 0, max = 0.3, step = 0.01, default = 0.1,
               onChange = function(v) state.predictionTime = v end },
 
             { type = "section", name = "Resistance" },

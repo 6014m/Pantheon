@@ -67,8 +67,10 @@ local state = {
     -- the target's read position so the aim leads them. Without this we sit on
     -- the last network-replicated position, which feels "insanely inaccurate"
     -- on fast-moving enemies because they've already moved by the time we
-    -- write the camera/body CFrame. 0 = no prediction.
-    predictionTime = 0.05,
+    -- write the camera/body CFrame. 0 = no prediction; 0.1 leads ~5 studs
+    -- against a 50-stud/s sprinter, which is closer to the typical ping
+    -- compensation a battlegrounds-style game needs.
+    predictionTime = 0.1,
 
     -- Signals
     onTargetChanged = Signal.new(),
