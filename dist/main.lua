@@ -2857,6 +2857,7 @@ _MODULES["modules.aim.lockon"] = function()
 
 local state = require("modules.aim.state")
 
+local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 local LockOn = {}
