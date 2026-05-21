@@ -39,9 +39,13 @@ local state = {
     killForeign       = true,
     -- When true, the locked-mode rotation pass skips root.CFrame writes when
     -- we're welded to another character (grab moves) so we don't drag them
-    -- around. Turn off to recover rotation through nerf-style welds, e.g.
-    -- JJS moves that weld your HRP to the victim to lock your aim.
-    weldSafetyEnabled = true,
+    -- around. Default OFF so we match normal-player behavior in games like
+    -- JJS where strikes weld the victim but the game doesn't actually lock
+    -- rotation -- the PlatformStand / Ragdoll / Physics / Dead state checks
+    -- already handle the cases where the game DOES lock you (bleedout, etc).
+    -- Turn ON in Battlegrounds-style games where the welded victim follows
+    -- your rotation and that's not what you want.
+    weldSafetyEnabled = false,
 
     -- Swap
     swap_enabled = true,

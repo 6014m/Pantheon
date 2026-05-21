@@ -1696,9 +1696,13 @@ local state = {
     killForeign       = true,
     -- When true, the locked-mode rotation pass skips root.CFrame writes when
     -- we're welded to another character (grab moves) so we don't drag them
-    -- around. Turn off to recover rotation through nerf-style welds, e.g.
-    -- JJS moves that weld your HRP to the victim to lock your aim.
-    weldSafetyEnabled = true,
+    -- around. Default OFF so we match normal-player behavior in games like
+    -- JJS where strikes weld the victim but the game doesn't actually lock
+    -- rotation -- the PlatformStand / Ragdoll / Physics / Dead state checks
+    -- already handle the cases where the game DOES lock you (bleedout, etc).
+    -- Turn ON in Battlegrounds-style games where the welded victim follows
+    -- your rotation and that's not what you want.
+    weldSafetyEnabled = false,
 
     -- Swap
     swap_enabled = true,
@@ -2940,12 +2944,15 @@ function module.register()
         settings = {
             { type = "toggle", name = "Kill foreign shiftlock GUIs / loops", default = true,
               onChange = function(v) state.killForeign = v end },
-            -- Off => rotation still fires through grab welds. Lets you keep
-            -- aiming during nerf-style moves that lock your camera by
-            -- welding your HRP to the victim (JJS, etc). On (default) =>
-            -- keep the safety so grab moves don't drag the welded player.
+            -- Off (default) => rotation fires through grab welds, matching
+            -- the normal-player behavior in games like JJS where Decisive
+            -- Strikes welds the victim but the game doesn't lock rotation.
+            -- Game-imposed lock states (bleedout / PlatformStand / Ragdoll
+            -- / Physics / Dead) are already caught further up the rotation
+            -- pass. On => Battlegrounds-style safety: skip rotation while
+            -- welded so the victim isn't dragged around with you.
             { type = "toggle", name = "Skip rotation while welded to enemy",
-              key = "weld_safety", default = true,
+              key = "weld_safety", default = false,
               onChange = function(v) state.weldSafetyEnabled = v end },
         },
     }).root)
