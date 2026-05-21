@@ -11,12 +11,14 @@
 -- Runs on boot, enable, disable, and respawn so foreign code that reconnects
 -- doesn't quietly take back over.
 
-local state = require("modules.aim.state")
-local log   = require("core.log")
+local state    = require("modules.aim.state")
+local log      = require("core.log")
+local keybinds = require("core.keybinds")
 
-local Players          = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
-local RunService       = game:GetService("RunService")
+local Players             = game:GetService("Players")
+local UserInputService    = game:GetService("UserInputService")
+local RunService          = game:GetService("RunService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local Shiftlock = {}
 
@@ -435,6 +437,47 @@ function Shiftlock.setExternalSkipRotation(fn)
     self_state.externalSkipRotation = fn
 end
 
+-- Auto-repair pairing with the game's shiftlock after respawn.
+--
+-- Symptom: the user has Pantheon shiftlock running alongside the game's own
+-- shiftlock script and they're normally in sync (Pantheon's Shift keybind
+-- triggers both because UIS.InputBegan fans out to every listener). Sometimes
+-- the game's shiftlock state machine resets on respawn while Pantheon's
+-- still thinks it was locked from before death; the result is a glitched
+-- "free rotate broken" (cursor stuck LockCenter or AutoRotate stuck false).
+--
+-- Fix: 0.5s after CharacterAdded, if shiftlock_active says we should be
+-- free but the cursor/AutoRotate disagree, cycle Pantheon's master once
+-- to reset our internal state, then fire a single synthetic Shift key
+-- event so the game's state machine retriggers and lands in the same
+-- state Pantheon now has.
+local function autoRepair()
+    if state.shiftlock_active then return end  -- we expect locked; not glitched
+    local cursorLocked = UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter
+    local hum = self_state.humanoid
+    local rotLocked = hum and (not hum.AutoRotate)
+    if not (cursorLocked or rotLocked) then return end
+
+    log.info("shiftlock: post-respawn pairing glitch detected, re-pairing")
+
+    if state.shiftlock_enabled then
+        Shiftlock.setEnabled(false)
+        task.wait(0.05)
+        Shiftlock.setEnabled(true)
+    end
+
+    -- Retrigger the game's shiftlock keybind handler. Use the user's actual
+    -- bound key so custom binds still work.
+    local key = (keybinds.get and keybinds.get("aim.shiftlock")) or Enum.KeyCode.LeftShift
+    if key and key ~= Enum.KeyCode.Unknown then
+        pcall(function()
+            VirtualInputManager:SendKeyEvent(true,  key, false, game)
+            task.wait(0.03)
+            VirtualInputManager:SendKeyEvent(false, key, false, game)
+        end)
+    end
+end
+
 local function step()
     -- "shouldLock" is the SINGLE source of truth for whether the cursor should
     -- be locked right now. It is true only when Pantheon's shiftlock is both
@@ -532,6 +575,9 @@ function Shiftlock.init()
             if state.killForeign then
                 task.defer(function() sweepForeigns("respawn") end)
             end
+            -- Auto-repair pairing with the game's shiftlock once the
+            -- game's post-respawn scripts have settled (~0.5s).
+            task.delay(0.5, autoRepair)
         end
     end)
 
