@@ -208,4 +208,14 @@ function Window.setMasterKey(key)
     keybinds.set("ui.master_toggle", key, Window.toggle)
 end
 
+function Window.destroy()
+    if s.screenGui then
+        pcall(function() s.screenGui:Destroy() end)
+    end
+    s.screenGui, s.container, s.openBtn = nil, nil, nil
+    -- origPositions keys hold references to GuiObjects that just died; reset
+    -- so a fresh Window.init() doesn't try to slide-animate stale frames.
+    origPositions = {}
+end
+
 return Window

@@ -82,13 +82,20 @@ function Highlight.setSecondEnabled(v)
     state.highlightSecondEnabled = v and true or false
 end
 
+local charConn
+
 function Highlight.init()
-    Players.LocalPlayer.CharacterAdded:Connect(function(char)
+    charConn = Players.LocalPlayer.CharacterAdded:Connect(function(char)
         if state.selfFadeEnabled then
             char:WaitForChild("HumanoidRootPart", 5)
             applySelfFade(char)
         end
     end)
+end
+
+function Highlight.destroy()
+    if charConn then charConn:Disconnect(); charConn = nil end
+    Highlight.clearAll()
 end
 
 return Highlight

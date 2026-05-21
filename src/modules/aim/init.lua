@@ -35,12 +35,12 @@ function module.register()
         default     = false,
         defaultKey  = Enum.KeyCode.LeftShift,
         onToggle    = function(v) shiftlock.setEnabled(v) end,
-        onKey       = function()
-            if not state.shiftlock_enabled then
-                shiftlock.setEnabled(true)
-            end
-            shiftlock.toggle()
-        end,
+        -- Key only toggles the lock when the feature master toggle is on.
+        -- shiftlock.toggle() returns early otherwise, matching target_select
+        -- and rotation_lock's pattern. Previously this auto-enabled the
+        -- feature on Shift press, which made walking silently turn shiftlock
+        -- on while the UI button still showed OFF.
+        onKey       = function() shiftlock.toggle() end,
         settings = {
             { type = "toggle", name = "Kill foreign shiftlock GUIs / loops", default = true,
               onChange = function(v) state.killForeign = v end },
@@ -141,6 +141,14 @@ function module.register()
     }).root)
 
     log.info("Aim Assist registered (Movement / Combat / Visuals)")
+end
+
+function module.destroy()
+    pcall(function() if targetSelect.destroy then targetSelect.destroy() end end)
+    pcall(function() if rotationLock.destroy then rotationLock.destroy() end end)
+    pcall(function() if lockon.destroy       then lockon.destroy()       end end)
+    pcall(function() if shiftlock.destroy    then shiftlock.destroy()    end end)
+    pcall(function() if highlight.destroy    then highlight.destroy()    end end)
 end
 
 return module

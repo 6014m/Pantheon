@@ -9,6 +9,7 @@ local Keybinds = {}
 local bindings = {} -- [id] = { key = KeyCode, onPress = fn, onRelease = fn }
 local keyToIds = {} -- [KeyCode] = { id, ... }
 local hooked   = false
+local inputBeganConn, inputEndedConn
 
 local function removeFromKeyTable(id)
     local b = bindings[id]
@@ -51,7 +52,7 @@ function Keybinds.init()
     if hooked then return end
     hooked = true
 
-    UserInputService.InputBegan:Connect(function(input, gpe)
+    inputBeganConn = UserInputService.InputBegan:Connect(function(input, gpe)
         if gpe then return end
         if input.KeyCode == Enum.KeyCode.Unknown then return end
         local ids = keyToIds[input.KeyCode]
@@ -64,7 +65,7 @@ function Keybinds.init()
         end
     end)
 
-    UserInputService.InputEnded:Connect(function(input)
+    inputEndedConn = UserInputService.InputEnded:Connect(function(input)
         if input.KeyCode == Enum.KeyCode.Unknown then return end
         local ids = keyToIds[input.KeyCode]
         if not ids then return end
@@ -75,6 +76,14 @@ function Keybinds.init()
             end
         end
     end)
+end
+
+function Keybinds.destroy()
+    if inputBeganConn then inputBeganConn:Disconnect(); inputBeganConn = nil end
+    if inputEndedConn then inputEndedConn:Disconnect(); inputEndedConn = nil end
+    bindings = {}
+    keyToIds = {}
+    hooked = false
 end
 
 return Keybinds

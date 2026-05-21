@@ -77,4 +77,12 @@ function notify.warn(text, duration)    toast(text, duration, theme.danger)  end
 
 notify.toast = toast
 
+function notify.destroy()
+    if container and container.Parent then
+        local sg = container:FindFirstAncestorWhichIsA("ScreenGui")
+        if sg then pcall(function() sg:Destroy() end) end
+    end
+    container = nil
+end
+
 return notify

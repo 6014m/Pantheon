@@ -130,13 +130,34 @@ return log
 end
 
 _MODULES["core.persist"] = function()
--- Save/load persistent settings via the executor's filesystem APIs.
+-- Per-game settings persistence. Each Roblox PlaceId gets its own JSON file
+-- at Pantheon/settings/<placeId>.json so toggles, sliders, and keybinds the
+-- user changes in one game don't bleed into another. Mutations are kept in
+-- an in-memory cache and flushed to disk on a 0.5s debounce, so dragging a
+-- slider doesn't hammer the filesystem.
 
 local env = require("core.env")
 local log = require("core.log")
 
-local FOLDER = "Pantheon"
-local FILE   = FOLDER .. "/settings.json"
+local FOLDER          = "Pantheon"
+local SETTINGS_FOLDER = FOLDER .. "/settings"
+local SAVE_DELAY      = 0.5
+
+local persist = {}
+
+local cache         = {}
+local loaded        = false
+local saveScheduled = false
+
+local function placeFile()
+    return SETTINGS_FOLDER .. "/" .. tostring(game.PlaceId) .. ".json"
+end
+
+local function ensureFolders()
+    if not env.makefolder or not env.isfolder then return end
+    if not env.isfolder(FOLDER)          then env.makefolder(FOLDER)          end
+    if not env.isfolder(SETTINGS_FOLDER) then env.makefolder(SETTINGS_FOLDER) end
+end
 
 local function jsonEncode(t)
     local HttpService = game:GetService("HttpService")
@@ -150,28 +171,99 @@ local function jsonDecode(s)
     return ok and t or {}
 end
 
-local persist = {}
-
-function persist.load()
-    if not env.readfile or not env.isfile then return {} end
-    if not env.isfile(FILE) then return {} end
-    local ok, content = pcall(env.readfile, FILE)
-    if not ok then return {} end
-    return jsonDecode(content)
+function persist.init()
+    if loaded then return end
+    loaded = true
+    if not env.readfile or not env.isfile then
+        log.info("persist: filesystem APIs unavailable, persistence disabled")
+        return
+    end
+    local file = placeFile()
+    if not env.isfile(file) then
+        log.info("persist: no saved settings for PlaceId " .. tostring(game.PlaceId))
+        return
+    end
+    local ok, content = pcall(env.readfile, file)
+    if ok and content and #content > 0 then
+        cache = jsonDecode(content) or {}
+        log.info("persist: loaded settings for PlaceId " .. tostring(game.PlaceId))
+    end
 end
 
-function persist.save(data)
-    if not env.writefile then return false end
-    if env.makefolder and env.isfolder and not env.isfolder(FOLDER) then
-        env.makefolder(FOLDER)
-    end
-    local ok, err = pcall(env.writefile, FILE, jsonEncode(data))
+function persist.get(key, default)
+    if not loaded then persist.init() end
+    local v = cache[key]
+    if v == nil then return default end
+    return v
+end
+
+local function writeNow()
+    if not env.writefile then return end
+    ensureFolders()
+    local ok, err = pcall(env.writefile, placeFile(), jsonEncode(cache))
     if not ok then
-        log.warn("persist.save failed:", err)
-        return false
+        log.warn("persist: save failed: " .. tostring(err))
     end
-    return true
 end
+
+function persist.scheduleSave()
+    if saveScheduled then return end
+    if not env.writefile then return end
+    saveScheduled = true
+    task.delay(SAVE_DELAY, function()
+        saveScheduled = false
+        writeNow()
+    end)
+end
+
+function persist.set(key, value)
+    if not loaded then persist.init() end
+    if cache[key] == value then return end
+    cache[key] = value
+    persist.scheduleSave()
+end
+
+-- Synchronous flush. Called by the shutdown teardown so pending debounced
+-- writes aren't lost when the user re-executes Pantheon mid-debounce.
+function persist.flush()
+    if not loaded then return end
+    saveScheduled = false
+    writeNow()
+end
+
+-- ---- KeyCode <-> string helpers -------------------------------------------
+-- Enum.KeyCode values are userdata; HttpService:JSONEncode can't serialize
+-- them. We persist the short name ("LeftShift") and rehydrate via
+-- Enum.KeyCode[name]. Empty string represents an explicit "unbound" choice;
+-- nil means "never saved, use the declared default."
+
+function persist.keyToString(k)
+    if not k then return nil end
+    if k == Enum.KeyCode.Unknown then return "" end
+    return (tostring(k):gsub("Enum.KeyCode.", ""))
+end
+
+function persist.stringToKey(s)
+    if s == nil then return nil end
+    if s == "" then return Enum.KeyCode.Unknown end
+    return Enum.KeyCode[s] or Enum.KeyCode.Unknown
+end
+
+-- Slug a human-readable setting name so it can be a stable file key. If the
+-- user renames a setting we'll lose the old saved value — opt-in workaround
+-- is to pass an explicit `key = "..."` field on the setting declaration.
+
+function persist.slug(s)
+    if not s or s == "" then return "_" end
+    s = string.lower(s)
+    s = string.gsub(s, "[^%w]+", "_")
+    s = string.gsub(s, "^_+", "")
+    s = string.gsub(s, "_+$", "")
+    if s == "" then return "_" end
+    return s
+end
+
+function persist.all() return cache end
 
 return persist
 end
@@ -188,6 +280,7 @@ local Keybinds = {}
 local bindings = {} -- [id] = { key = KeyCode, onPress = fn, onRelease = fn }
 local keyToIds = {} -- [KeyCode] = { id, ... }
 local hooked   = false
+local inputBeganConn, inputEndedConn
 
 local function removeFromKeyTable(id)
     local b = bindings[id]
@@ -230,7 +323,7 @@ function Keybinds.init()
     if hooked then return end
     hooked = true
 
-    UserInputService.InputBegan:Connect(function(input, gpe)
+    inputBeganConn = UserInputService.InputBegan:Connect(function(input, gpe)
         if gpe then return end
         if input.KeyCode == Enum.KeyCode.Unknown then return end
         local ids = keyToIds[input.KeyCode]
@@ -243,7 +336,7 @@ function Keybinds.init()
         end
     end)
 
-    UserInputService.InputEnded:Connect(function(input)
+    inputEndedConn = UserInputService.InputEnded:Connect(function(input)
         if input.KeyCode == Enum.KeyCode.Unknown then return end
         local ids = keyToIds[input.KeyCode]
         if not ids then return end
@@ -254,6 +347,14 @@ function Keybinds.init()
             end
         end
     end)
+end
+
+function Keybinds.destroy()
+    if inputBeganConn then inputBeganConn:Disconnect(); inputBeganConn = nil end
+    if inputEndedConn then inputEndedConn:Disconnect(); inputEndedConn = nil end
+    bindings = {}
+    keyToIds = {}
+    hooked = false
 end
 
 return Keybinds
@@ -870,6 +971,16 @@ function Window.setMasterKey(key)
     keybinds.set("ui.master_toggle", key, Window.toggle)
 end
 
+function Window.destroy()
+    if s.screenGui then
+        pcall(function() s.screenGui:Destroy() end)
+    end
+    s.screenGui, s.container, s.openBtn = nil, nil, nil
+    -- origPositions keys hold references to GuiObjects that just died; reset
+    -- so a fresh Window.init() doesn't try to slide-animate stale frames.
+    origPositions = {}
+end
+
 return Window
 end
 
@@ -1056,11 +1167,19 @@ _MODULES["ui.feature"] = function()
 -- dependency is auto-disabled too (so e.g. turning off Target Select turns
 -- off Lock-On / Highlight / Swap Target instead of leaving them stuck "on"
 -- with no target source).
+--
+-- Per-game persistence ([[core.persist]]):
+-- Saved values override declared defaults on boot. Each setting persists
+-- under "<id>.<slug-or-key>"; the feature row's master toggle and keybind
+-- persist under "<id>.enabled" / "<id>.keybind". Nested keybinds in the
+-- settings array persist under "<opt.id>.keybind" (so e.g. the rotation_lock
+-- key declared inside Lock-On's panel survives reloads keyed to its own id).
 
 local theme      = require("ui.theme")
 local hex        = require("ui.hex")
 local keybinds   = require("core.keybinds")
 local components = require("ui.components")
+local persist    = require("core.persist")
 
 local Feature = {}
 
@@ -1201,7 +1320,10 @@ function Feature.declare(def)
     panelList.Padding   = UDim.new(0, 4)
     panelList.SortOrder = Enum.SortOrder.LayoutOrder
 
-    local enabled = def.default == true
+    -- enabled starts FALSE; the initial value (saved or declared default) is
+    -- applied at the bottom of declare(), after the registry entry exists,
+    -- so it can route through setEnabled without losing the dependency cascade.
+    local enabled = false
 
     local function applyToggle()
         hex.setColor(indicatorHex, enabled and theme.on or theme.off)
@@ -1212,6 +1334,11 @@ function Feature.declare(def)
             if not ok then warn("[Pantheon] feature onToggle error:", err) end
         end
     end
+
+    -- Suppresses the persist write during the boot-time initial-state apply
+    -- so loading the saved value doesn't immediately re-write the same value
+    -- back to disk.
+    local suppressPersist = false
 
     local function setEnabled(v)
         v = v and true or false
@@ -1229,6 +1356,9 @@ function Feature.declare(def)
 
         enabled = v
         applyToggle()
+        if not suppressPersist then
+            persist.set(id .. ".enabled", v)
+        end
 
         -- Disable cascade: anyone who lists us as a dependency goes off too.
         if not v and dependents[id] then
@@ -1276,17 +1406,22 @@ function Feature.declare(def)
         end
     end
 
-    if def.defaultKey then
-        keybinds.set(id, def.defaultKey, onPress, onRelease)
+    -- Master keybind: saved value overrides declared default.
+    do
+        local savedKey = persist.stringToKey(persist.get(id .. ".keybind", nil))
+        local effectiveKey = savedKey or def.defaultKey
+        if effectiveKey and effectiveKey ~= Enum.KeyCode.Unknown then
+            keybinds.set(id, effectiveKey, onPress, onRelease)
+        end
+        components.KeybindSetter(panel, {
+            label    = "Keybind",
+            default  = effectiveKey,
+            onChange = function(newKey)
+                keybinds.set(id, newKey, onPress, onRelease)
+                persist.set(id .. ".keybind", persist.keyToString(newKey))
+            end,
+        })
     end
-
-    components.KeybindSetter(panel, {
-        label    = "Keybind",
-        default  = def.defaultKey,
-        onChange = function(newKey)
-            keybinds.set(id, newKey, onPress, onRelease)
-        end,
-    })
 
     if def.settings and #def.settings > 0 then
         local sep = Instance.new("Frame")
@@ -1296,37 +1431,73 @@ function Feature.declare(def)
         sep.Parent = panel
 
         for _, opt in ipairs(def.settings) do
+            -- Settings persist under "<id>.<opt.key or slug(opt.name)>".
+            -- Nested keybinds use "<opt.id>.keybind" instead so their saved
+            -- value matches the standalone-feature key format.
+            local optSlug = opt.key or persist.slug(opt.name or "?")
+            local saveKey = id .. "." .. optSlug
+
             if opt.type == "section" then
                 components.Section(panel, opt.name)
+
             elseif opt.type == "toggle" then
+                local saved = persist.get(saveKey)
+                local effective = (saved ~= nil) and saved or opt.default
                 components.Toggle(panel, {
                     text     = opt.name,
-                    default  = opt.default,
-                    onChange = opt.onChange,
+                    default  = effective,
+                    onChange = function(v)
+                        persist.set(saveKey, v)
+                        if opt.onChange then opt.onChange(v) end
+                    end,
                 })
+                -- Fire onChange once with the effective value so the impl
+                -- side picks up the persisted (or declared) state instead of
+                -- relying on whatever the impl's own initial state happened
+                -- to be in [[modules.aim.state]].
+                if opt.onChange then
+                    local ok, err = pcall(opt.onChange, effective)
+                    if not ok then warn("[Pantheon] setting init error:", err) end
+                end
+
             elseif opt.type == "slider" then
+                local saved = persist.get(saveKey)
+                local effective = (saved ~= nil) and saved or opt.default
                 components.Slider(panel, {
                     text     = opt.name,
                     min      = opt.min, max = opt.max, step = opt.step,
-                    default  = opt.default,
-                    onChange = opt.onChange,
+                    default  = effective,
+                    onChange = function(v)
+                        persist.set(saveKey, v)
+                        if opt.onChange then opt.onChange(v) end
+                    end,
                 })
+                if opt.onChange then
+                    local ok, err = pcall(opt.onChange, effective)
+                    if not ok then warn("[Pantheon] setting init error:", err) end
+                end
+
             elseif opt.type == "button" then
                 components.Button(panel, {
                     text    = opt.name,
                     onClick = opt.onClick,
                 })
+
             elseif opt.type == "keybind" then
-                if opt.default and opt.id then
-                    keybinds.set(opt.id, opt.default, opt.onPress, opt.onRelease)
+                local persistKey  = opt.id and (opt.id .. ".keybind") or saveKey
+                local savedNested = persist.stringToKey(persist.get(persistKey, nil))
+                local effectiveK  = savedNested or opt.default
+                if opt.id and effectiveK and effectiveK ~= Enum.KeyCode.Unknown then
+                    keybinds.set(opt.id, effectiveK, opt.onPress, opt.onRelease)
                 end
                 components.KeybindSetter(panel, {
                     label    = opt.name or "Key",
-                    default  = opt.default,
+                    default  = effectiveK,
                     onChange = function(newKey)
                         if opt.id then
                             keybinds.set(opt.id, newKey, opt.onPress, opt.onRelease)
                         end
+                        persist.set(persistKey, persist.keyToString(newKey))
                     end,
                 })
             end
@@ -1339,7 +1510,25 @@ function Feature.declare(def)
         def        = def,
     }
 
-    applyToggle()
+    -- Apply initial value LAST, after registry[id] exists so dependents that
+    -- ran their cascade earlier (i.e. when WE were the dependency) already
+    -- saw us. The cascade itself is suppressed for the initial value: we
+    -- trust the saved snapshot to already be internally consistent, and
+    -- don't want a default=true child to drag a default=false parent on.
+    do
+        local saved = persist.get(id .. ".enabled")
+        local initial = (saved ~= nil) and saved or (def.default == true)
+        if initial then
+            -- Direct assign + applyToggle (no setEnabled) so we don't run
+            -- the dependency cascade at boot. Pre-existing behavior, kept.
+            enabled = true
+            suppressPersist = true
+            applyToggle()
+            suppressPersist = false
+        else
+            applyToggle()
+        end
+    end
 
     return {
         root       = root,
@@ -1431,6 +1620,14 @@ function notify.success(text, duration) toast(text, duration, theme.success) end
 function notify.warn(text, duration)    toast(text, duration, theme.danger)  end
 
 notify.toast = toast
+
+function notify.destroy()
+    if container and container.Parent then
+        local sg = container:FindFirstAncestorWhichIsA("ScreenGui")
+        if sg then pcall(function() sg:Destroy() end) end
+    end
+    container = nil
+end
 
 return notify
 end
@@ -1710,13 +1907,20 @@ function Highlight.setSecondEnabled(v)
     state.highlightSecondEnabled = v and true or false
 end
 
+local charConn
+
 function Highlight.init()
-    Players.LocalPlayer.CharacterAdded:Connect(function(char)
+    charConn = Players.LocalPlayer.CharacterAdded:Connect(function(char)
         if state.selfFadeEnabled then
             char:WaitForChild("HumanoidRootPart", 5)
             applySelfFade(char)
         end
     end)
+end
+
+function Highlight.destroy()
+    if charConn then charConn:Disconnect(); charConn = nil end
+    Highlight.clearAll()
 end
 
 return Highlight
@@ -1769,6 +1973,10 @@ local self_state = {
     lastBlockedLog = 0,
     weldCheckLast = 0,
     weldCheckResult = false,
+    -- Set true by Shiftlock.destroy() so the previously-installed hook
+    -- becomes a pure pass-through and the hookGuard task exits, letting a
+    -- freshly re-executed Pantheon take over without thrashing.
+    shutdown = false,
     -- After Pantheon is disabled, hold the released state for this many
     -- seconds even though shiftlock_enabled is false. Prevents the half-tick
     -- where the game's shiftlock re-locks before we've finished writing
@@ -1938,6 +2146,13 @@ local function installMouseBehaviorHook()
     end
 
     local hookFn = function(self, key, value)
+        -- Pass-through after destroy() so a previously-loaded Pantheon
+        -- instance doesn't keep blocking writes when a fresh one is taking
+        -- over (re-execute case).
+        if self_state.shutdown then
+            if realOriginal then return realOriginal(self, key, value) end
+            return
+        end
         -- killForeign behaviour is gated on Pantheon's shiftlock master toggle.
         -- When Pantheon shiftlock is OFF the hook becomes a pass-through and
         -- the game's normal shiftlock works again. During the brief
@@ -2011,6 +2226,7 @@ local function spawnHookGuard()
     self_state.hookGuardStarted = true
     task.spawn(function()
         while task.wait(1) do
+            if self_state.shutdown then return end
             if state.killForeign then
                 installMouseBehaviorHook()
             end
@@ -2094,9 +2310,10 @@ function Shiftlock.forceOff()
 end
 
 function Shiftlock.toggle()
-    if not state.shiftlock_enabled then
-        Shiftlock.setEnabled(true)
-    end
+    -- Gated on the feature master toggle so the Shift key only locks the
+    -- cursor when the user has explicitly enabled Pantheon shiftlock.
+    -- Same pattern as target_select / rotation_lock hotkeys.
+    if not state.shiftlock_enabled then return end
     if state.shiftlock_active then
         Shiftlock.forceOff()
     else
@@ -2211,9 +2428,15 @@ function Shiftlock.init()
 
     self_state.charConn = lp().CharacterAdded:Connect(function(c)
         updateCharRefs(c)
-        Shiftlock.forceOff()
-        if state.shiftlock_enabled and state.killForeign then
-            task.defer(function() sweepForeigns("respawn") end)
+        -- Only intervene on respawn when Pantheon shiftlock is actually enabled.
+        -- When Pantheon shiftlock is OFF the game's shiftlock script (which we
+        -- never disabled) owns the cursor; calling forceOff here races its own
+        -- CharacterAdded and left free movement broken after dying.
+        if state.shiftlock_enabled then
+            Shiftlock.forceOff()
+            if state.killForeign then
+                task.defer(function() sweepForeigns("respawn") end)
+            end
         end
     end)
 
@@ -2235,20 +2458,33 @@ function Shiftlock.init()
     installMouseBehaviorHook()
     spawnHookGuard()
 
-    -- Boot-time sweep so leftover foreign shiftlocks from previous script
-    -- loads don't make ours "look enabled by default."
-    if state.killForeign then
+    -- Boot-time sweep: only if Pantheon shiftlock is enabled. Otherwise we'd
+    -- destroy the game's still-working shiftlock at load time, leaving the
+    -- player with no shiftlock at all when Pantheon's master toggle is off.
+    -- When persistence loads a saved "enabled = true" later, setEnabled(true)
+    -- runs sweepForeigns("enable") instead.
+    if state.shiftlock_enabled and state.killForeign then
         task.defer(function() sweepForeigns("boot") end)
     end
 end
 
 function Shiftlock.destroy()
+    -- Flips the previously-installed hookmetamethod into pass-through mode
+    -- and stops the hookGuard re-install loop.
+    self_state.shutdown = true
+
     if self_state.bound then
         pcall(function() RunService:UnbindFromRenderStep(RENDER_BIND) end)
         self_state.bound = false
     end
+
     Shiftlock.forceOff()
-    if self_state.gui then self_state.gui:Destroy() end
+
+    if self_state.charConn  then self_state.charConn:Disconnect();  self_state.charConn  = nil end
+    if self_state.humConn   then self_state.humConn:Disconnect();   self_state.humConn   = nil end
+    if self_state.focusConn then self_state.focusConn:Disconnect(); self_state.focusConn = nil end
+
+    if self_state.gui then pcall(function() self_state.gui:Destroy() end) end
     self_state.gui, self_state.vIcon = nil, nil
 end
 
@@ -2684,12 +2920,12 @@ function module.register()
         default     = false,
         defaultKey  = Enum.KeyCode.LeftShift,
         onToggle    = function(v) shiftlock.setEnabled(v) end,
-        onKey       = function()
-            if not state.shiftlock_enabled then
-                shiftlock.setEnabled(true)
-            end
-            shiftlock.toggle()
-        end,
+        -- Key only toggles the lock when the feature master toggle is on.
+        -- shiftlock.toggle() returns early otherwise, matching target_select
+        -- and rotation_lock's pattern. Previously this auto-enabled the
+        -- feature on Shift press, which made walking silently turn shiftlock
+        -- on while the UI button still showed OFF.
+        onKey       = function() shiftlock.toggle() end,
         settings = {
             { type = "toggle", name = "Kill foreign shiftlock GUIs / loops", default = true,
               onChange = function(v) state.killForeign = v end },
@@ -2792,38 +3028,73 @@ function module.register()
     log.info("Aim Assist registered (Movement / Combat / Visuals)")
 end
 
+function module.destroy()
+    pcall(function() if targetSelect.destroy then targetSelect.destroy() end end)
+    pcall(function() if rotationLock.destroy then rotationLock.destroy() end end)
+    pcall(function() if lockon.destroy       then lockon.destroy()       end end)
+    pcall(function() if shiftlock.destroy    then shiftlock.destroy()    end end)
+    pcall(function() if highlight.destroy    then highlight.destroy()    end end)
+end
+
 return module
 end
 
 _MODULES["init"] = function()
--- Pantheon entry point. Boots keybinds + window, registers modules.
+-- Pantheon entry point. Boots persist + keybinds + window, registers modules,
+-- and stashes a shutdown handle on the executor's global env so a second
+-- loadstring() of Pantheon tears down the previous instance before starting
+-- fresh (no duplicate GUIs, stacked input listeners, or hook layering).
 
 local log      = require("core.log")
 local env      = require("core.env")
+local persist  = require("core.persist")
 local keybinds = require("core.keybinds")
 local window   = require("ui.window")
 local notify   = require("ui.notify")
 local registry = require("games.registry")
 
-log.info("booting on executor:", env.executor)
+local genv = (env.getgenv and env.getgenv()) or _G
 
+-- Tear down any previously-loaded Pantheon instance. Uses getgenv() (not _G)
+-- because Wave/Synapse-style executors share getgenv across loadstring calls;
+-- _G is the Roblox-sandbox-local table and would forget across reloads.
+if genv.Pantheon and type(genv.Pantheon.shutdown) == "function" then
+    log.info("replacing previously loaded Pantheon instance")
+    local ok, err = pcall(genv.Pantheon.shutdown)
+    if not ok then log.warn("previous shutdown errored: " .. tostring(err)) end
+end
+genv.Pantheon = {}
+
+log.info("booting on executor: " .. tostring(env.executor))
+
+persist.init()
 keybinds.init()
 window.init()
 
 -- Universal modules
-do
-    local aim = require("modules.aim.init")
-    aim.register()
-end
+local aim = require("modules.aim.init")
+aim.register()
 
 -- Per-game module (if registered for this PlaceId)
 local gameMod = registry.current()
 if gameMod and gameMod.register then
-    log.info("game module found for PlaceId", game.PlaceId)
+    log.info("game module found for PlaceId " .. tostring(game.PlaceId))
     local ok, err = pcall(gameMod.register)
-    if not ok then log.err("game module register failed:", err) end
+    if not ok then log.err("game module register failed: " .. tostring(err)) end
 else
-    log.info("no game module for PlaceId", game.PlaceId)
+    log.info("no game module for PlaceId " .. tostring(game.PlaceId))
+end
+
+-- Expose the teardown so a future re-execute can call it.
+-- Order matters: aim first (it stops render binds and unhooks the UIS
+-- __newindex, so leftover input events from the about-to-die UI don't reach
+-- already-torn-down state), then UI, then keybinds, then persist flush.
+genv.Pantheon.shutdown = function()
+    pcall(function() if aim.destroy      then aim.destroy()      end end)
+    pcall(function() if window.destroy   then window.destroy()   end end)
+    pcall(function() if notify.destroy   then notify.destroy()   end end)
+    pcall(function() if keybinds.destroy then keybinds.destroy() end end)
+    pcall(function() if persist.flush    then persist.flush()    end end)
 end
 
 notify.success("Pantheon loaded. Press RightCtrl to toggle UI.")

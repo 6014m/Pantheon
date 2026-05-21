@@ -10,11 +10,19 @@
 -- dependency is auto-disabled too (so e.g. turning off Target Select turns
 -- off Lock-On / Highlight / Swap Target instead of leaving them stuck "on"
 -- with no target source).
+--
+-- Per-game persistence ([[core.persist]]):
+-- Saved values override declared defaults on boot. Each setting persists
+-- under "<id>.<slug-or-key>"; the feature row's master toggle and keybind
+-- persist under "<id>.enabled" / "<id>.keybind". Nested keybinds in the
+-- settings array persist under "<opt.id>.keybind" (so e.g. the rotation_lock
+-- key declared inside Lock-On's panel survives reloads keyed to its own id).
 
 local theme      = require("ui.theme")
 local hex        = require("ui.hex")
 local keybinds   = require("core.keybinds")
 local components = require("ui.components")
+local persist    = require("core.persist")
 
 local Feature = {}
 
@@ -155,7 +163,10 @@ function Feature.declare(def)
     panelList.Padding   = UDim.new(0, 4)
     panelList.SortOrder = Enum.SortOrder.LayoutOrder
 
-    local enabled = def.default == true
+    -- enabled starts FALSE; the initial value (saved or declared default) is
+    -- applied at the bottom of declare(), after the registry entry exists,
+    -- so it can route through setEnabled without losing the dependency cascade.
+    local enabled = false
 
     local function applyToggle()
         hex.setColor(indicatorHex, enabled and theme.on or theme.off)
@@ -166,6 +177,11 @@ function Feature.declare(def)
             if not ok then warn("[Pantheon] feature onToggle error:", err) end
         end
     end
+
+    -- Suppresses the persist write during the boot-time initial-state apply
+    -- so loading the saved value doesn't immediately re-write the same value
+    -- back to disk.
+    local suppressPersist = false
 
     local function setEnabled(v)
         v = v and true or false
@@ -183,6 +199,9 @@ function Feature.declare(def)
 
         enabled = v
         applyToggle()
+        if not suppressPersist then
+            persist.set(id .. ".enabled", v)
+        end
 
         -- Disable cascade: anyone who lists us as a dependency goes off too.
         if not v and dependents[id] then
@@ -230,17 +249,22 @@ function Feature.declare(def)
         end
     end
 
-    if def.defaultKey then
-        keybinds.set(id, def.defaultKey, onPress, onRelease)
+    -- Master keybind: saved value overrides declared default.
+    do
+        local savedKey = persist.stringToKey(persist.get(id .. ".keybind", nil))
+        local effectiveKey = savedKey or def.defaultKey
+        if effectiveKey and effectiveKey ~= Enum.KeyCode.Unknown then
+            keybinds.set(id, effectiveKey, onPress, onRelease)
+        end
+        components.KeybindSetter(panel, {
+            label    = "Keybind",
+            default  = effectiveKey,
+            onChange = function(newKey)
+                keybinds.set(id, newKey, onPress, onRelease)
+                persist.set(id .. ".keybind", persist.keyToString(newKey))
+            end,
+        })
     end
-
-    components.KeybindSetter(panel, {
-        label    = "Keybind",
-        default  = def.defaultKey,
-        onChange = function(newKey)
-            keybinds.set(id, newKey, onPress, onRelease)
-        end,
-    })
 
     if def.settings and #def.settings > 0 then
         local sep = Instance.new("Frame")
@@ -250,37 +274,73 @@ function Feature.declare(def)
         sep.Parent = panel
 
         for _, opt in ipairs(def.settings) do
+            -- Settings persist under "<id>.<opt.key or slug(opt.name)>".
+            -- Nested keybinds use "<opt.id>.keybind" instead so their saved
+            -- value matches the standalone-feature key format.
+            local optSlug = opt.key or persist.slug(opt.name or "?")
+            local saveKey = id .. "." .. optSlug
+
             if opt.type == "section" then
                 components.Section(panel, opt.name)
+
             elseif opt.type == "toggle" then
+                local saved = persist.get(saveKey)
+                local effective = (saved ~= nil) and saved or opt.default
                 components.Toggle(panel, {
                     text     = opt.name,
-                    default  = opt.default,
-                    onChange = opt.onChange,
+                    default  = effective,
+                    onChange = function(v)
+                        persist.set(saveKey, v)
+                        if opt.onChange then opt.onChange(v) end
+                    end,
                 })
+                -- Fire onChange once with the effective value so the impl
+                -- side picks up the persisted (or declared) state instead of
+                -- relying on whatever the impl's own initial state happened
+                -- to be in [[modules.aim.state]].
+                if opt.onChange then
+                    local ok, err = pcall(opt.onChange, effective)
+                    if not ok then warn("[Pantheon] setting init error:", err) end
+                end
+
             elseif opt.type == "slider" then
+                local saved = persist.get(saveKey)
+                local effective = (saved ~= nil) and saved or opt.default
                 components.Slider(panel, {
                     text     = opt.name,
                     min      = opt.min, max = opt.max, step = opt.step,
-                    default  = opt.default,
-                    onChange = opt.onChange,
+                    default  = effective,
+                    onChange = function(v)
+                        persist.set(saveKey, v)
+                        if opt.onChange then opt.onChange(v) end
+                    end,
                 })
+                if opt.onChange then
+                    local ok, err = pcall(opt.onChange, effective)
+                    if not ok then warn("[Pantheon] setting init error:", err) end
+                end
+
             elseif opt.type == "button" then
                 components.Button(panel, {
                     text    = opt.name,
                     onClick = opt.onClick,
                 })
+
             elseif opt.type == "keybind" then
-                if opt.default and opt.id then
-                    keybinds.set(opt.id, opt.default, opt.onPress, opt.onRelease)
+                local persistKey  = opt.id and (opt.id .. ".keybind") or saveKey
+                local savedNested = persist.stringToKey(persist.get(persistKey, nil))
+                local effectiveK  = savedNested or opt.default
+                if opt.id and effectiveK and effectiveK ~= Enum.KeyCode.Unknown then
+                    keybinds.set(opt.id, effectiveK, opt.onPress, opt.onRelease)
                 end
                 components.KeybindSetter(panel, {
                     label    = opt.name or "Key",
-                    default  = opt.default,
+                    default  = effectiveK,
                     onChange = function(newKey)
                         if opt.id then
                             keybinds.set(opt.id, newKey, opt.onPress, opt.onRelease)
                         end
+                        persist.set(persistKey, persist.keyToString(newKey))
                     end,
                 })
             end
@@ -293,7 +353,25 @@ function Feature.declare(def)
         def        = def,
     }
 
-    applyToggle()
+    -- Apply initial value LAST, after registry[id] exists so dependents that
+    -- ran their cascade earlier (i.e. when WE were the dependency) already
+    -- saw us. The cascade itself is suppressed for the initial value: we
+    -- trust the saved snapshot to already be internally consistent, and
+    -- don't want a default=true child to drag a default=false parent on.
+    do
+        local saved = persist.get(id .. ".enabled")
+        local initial = (saved ~= nil) and saved or (def.default == true)
+        if initial then
+            -- Direct assign + applyToggle (no setEnabled) so we don't run
+            -- the dependency cascade at boot. Pre-existing behavior, kept.
+            enabled = true
+            suppressPersist = true
+            applyToggle()
+            suppressPersist = false
+        else
+            applyToggle()
+        end
+    end
 
     return {
         root       = root,

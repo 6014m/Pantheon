@@ -44,6 +44,10 @@ local self_state = {
     lastBlockedLog = 0,
     weldCheckLast = 0,
     weldCheckResult = false,
+    -- Set true by Shiftlock.destroy() so the previously-installed hook
+    -- becomes a pure pass-through and the hookGuard task exits, letting a
+    -- freshly re-executed Pantheon take over without thrashing.
+    shutdown = false,
     -- After Pantheon is disabled, hold the released state for this many
     -- seconds even though shiftlock_enabled is false. Prevents the half-tick
     -- where the game's shiftlock re-locks before we've finished writing
@@ -213,6 +217,13 @@ local function installMouseBehaviorHook()
     end
 
     local hookFn = function(self, key, value)
+        -- Pass-through after destroy() so a previously-loaded Pantheon
+        -- instance doesn't keep blocking writes when a fresh one is taking
+        -- over (re-execute case).
+        if self_state.shutdown then
+            if realOriginal then return realOriginal(self, key, value) end
+            return
+        end
         -- killForeign behaviour is gated on Pantheon's shiftlock master toggle.
         -- When Pantheon shiftlock is OFF the hook becomes a pass-through and
         -- the game's normal shiftlock works again. During the brief
@@ -286,6 +297,7 @@ local function spawnHookGuard()
     self_state.hookGuardStarted = true
     task.spawn(function()
         while task.wait(1) do
+            if self_state.shutdown then return end
             if state.killForeign then
                 installMouseBehaviorHook()
             end
@@ -369,9 +381,10 @@ function Shiftlock.forceOff()
 end
 
 function Shiftlock.toggle()
-    if not state.shiftlock_enabled then
-        Shiftlock.setEnabled(true)
-    end
+    -- Gated on the feature master toggle so the Shift key only locks the
+    -- cursor when the user has explicitly enabled Pantheon shiftlock.
+    -- Same pattern as target_select / rotation_lock hotkeys.
+    if not state.shiftlock_enabled then return end
     if state.shiftlock_active then
         Shiftlock.forceOff()
     else
@@ -486,9 +499,15 @@ function Shiftlock.init()
 
     self_state.charConn = lp().CharacterAdded:Connect(function(c)
         updateCharRefs(c)
-        Shiftlock.forceOff()
-        if state.shiftlock_enabled and state.killForeign then
-            task.defer(function() sweepForeigns("respawn") end)
+        -- Only intervene on respawn when Pantheon shiftlock is actually enabled.
+        -- When Pantheon shiftlock is OFF the game's shiftlock script (which we
+        -- never disabled) owns the cursor; calling forceOff here races its own
+        -- CharacterAdded and left free movement broken after dying.
+        if state.shiftlock_enabled then
+            Shiftlock.forceOff()
+            if state.killForeign then
+                task.defer(function() sweepForeigns("respawn") end)
+            end
         end
     end)
 
@@ -510,20 +529,33 @@ function Shiftlock.init()
     installMouseBehaviorHook()
     spawnHookGuard()
 
-    -- Boot-time sweep so leftover foreign shiftlocks from previous script
-    -- loads don't make ours "look enabled by default."
-    if state.killForeign then
+    -- Boot-time sweep: only if Pantheon shiftlock is enabled. Otherwise we'd
+    -- destroy the game's still-working shiftlock at load time, leaving the
+    -- player with no shiftlock at all when Pantheon's master toggle is off.
+    -- When persistence loads a saved "enabled = true" later, setEnabled(true)
+    -- runs sweepForeigns("enable") instead.
+    if state.shiftlock_enabled and state.killForeign then
         task.defer(function() sweepForeigns("boot") end)
     end
 end
 
 function Shiftlock.destroy()
+    -- Flips the previously-installed hookmetamethod into pass-through mode
+    -- and stops the hookGuard re-install loop.
+    self_state.shutdown = true
+
     if self_state.bound then
         pcall(function() RunService:UnbindFromRenderStep(RENDER_BIND) end)
         self_state.bound = false
     end
+
     Shiftlock.forceOff()
-    if self_state.gui then self_state.gui:Destroy() end
+
+    if self_state.charConn  then self_state.charConn:Disconnect();  self_state.charConn  = nil end
+    if self_state.humConn   then self_state.humConn:Disconnect();   self_state.humConn   = nil end
+    if self_state.focusConn then self_state.focusConn:Disconnect(); self_state.focusConn = nil end
+
+    if self_state.gui then pcall(function() self_state.gui:Destroy() end) end
     self_state.gui, self_state.vIcon = nil, nil
 end
 
