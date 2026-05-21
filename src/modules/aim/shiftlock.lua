@@ -58,28 +58,13 @@ local self_state = {
     shutdown = false,
 }
 
--- Cached check: are we welded (via Weld/WeldConstraint/Motor6D) to a part on
--- a different character? Battlegrounds-style grab moves weld the attacker to
--- the victim; if we then rotate our own root via shiftlock, the weld drags
--- the victim around too -- which is what the user was seeing.
+-- Cached weld-to-other-character check. Battlegrounds-style grab moves
+-- weld the attacker to the victim; if we then rotate our own root via
+-- shiftlock, the weld drags the victim around too. Wraps the shared helper
+-- in [[modules.aim.state]] with a 50ms cache so the rotation pass isn't
+-- walking the character descendants on every render.
 local function isLocalWeldedToOther()
-    local char = self_state.character
-    if not char then return false end
-
-    for _, d in ipairs(char:GetDescendants()) do
-        if d:IsA("Weld") or d:IsA("WeldConstraint") or d:IsA("Motor6D") then
-            local p0, p1 = d.Part0, d.Part1
-            for _, p in ipairs({ p0, p1 }) do
-                if p and p.Parent and not p:IsDescendantOf(char) then
-                    local m = p:FindFirstAncestorOfClass("Model")
-                    if m and m ~= char and m:FindFirstChildOfClass("Humanoid") then
-                        return true
-                    end
-                end
-            end
-        end
-    end
-    return false
+    return state.isWeldedToOther(self_state.character)
 end
 
 local function weldedToOther()

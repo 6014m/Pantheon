@@ -79,4 +79,27 @@ function state.isFriendly(plr)
     return state.friendlies[plr.UserId] == true
 end
 
+-- True when `character` has a Weld / WeldConstraint / Motor6D whose other
+-- end is on a different character's model (i.e. you're physically attached
+-- to another player, e.g. by a grab move). Shared by shiftlock's rotation
+-- drag-protect (gated by weldSafetyEnabled) and lockon's camera suspension
+-- (unconditional -- when welded the camera pause/resume should be instant).
+function state.isWeldedToOther(character)
+    if not character then return false end
+    for _, d in ipairs(character:GetDescendants()) do
+        if d:IsA("Weld") or d:IsA("WeldConstraint") or d:IsA("Motor6D") then
+            local p0, p1 = d.Part0, d.Part1
+            for _, p in ipairs({ p0, p1 }) do
+                if p and p.Parent and not p:IsDescendantOf(character) then
+                    local m = p:FindFirstAncestorOfClass("Model")
+                    if m and m ~= character and m:FindFirstChildOfClass("Humanoid") then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
 return state

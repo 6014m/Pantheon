@@ -1738,6 +1738,29 @@ function state.isFriendly(plr)
     return state.friendlies[plr.UserId] == true
 end
 
+-- True when `character` has a Weld / WeldConstraint / Motor6D whose other
+-- end is on a different character's model (i.e. you're physically attached
+-- to another player, e.g. by a grab move). Shared by shiftlock's rotation
+-- drag-protect (gated by weldSafetyEnabled) and lockon's camera suspension
+-- (unconditional -- when welded the camera pause/resume should be instant).
+function state.isWeldedToOther(character)
+    if not character then return false end
+    for _, d in ipairs(character:GetDescendants()) do
+        if d:IsA("Weld") or d:IsA("WeldConstraint") or d:IsA("Motor6D") then
+            local p0, p1 = d.Part0, d.Part1
+            for _, p in ipairs({ p0, p1 }) do
+                if p and p.Parent and not p:IsDescendantOf(character) then
+                    local m = p:FindFirstAncestorOfClass("Model")
+                    if m and m ~= character and m:FindFirstChildOfClass("Humanoid") then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
 return state
 end
 
@@ -2006,28 +2029,13 @@ local self_state = {
     shutdown = false,
 }
 
--- Cached check: are we welded (via Weld/WeldConstraint/Motor6D) to a part on
--- a different character? Battlegrounds-style grab moves weld the attacker to
--- the victim; if we then rotate our own root via shiftlock, the weld drags
--- the victim around too -- which is what the user was seeing.
+-- Cached weld-to-other-character check. Battlegrounds-style grab moves
+-- weld the attacker to the victim; if we then rotate our own root via
+-- shiftlock, the weld drags the victim around too. Wraps the shared helper
+-- in [[modules.aim.state]] with a 50ms cache so the rotation pass isn't
+-- walking the character descendants on every render.
 local function isLocalWeldedToOther()
-    local char = self_state.character
-    if not char then return false end
-
-    for _, d in ipairs(char:GetDescendants()) do
-        if d:IsA("Weld") or d:IsA("WeldConstraint") or d:IsA("Motor6D") then
-            local p0, p1 = d.Part0, d.Part1
-            for _, p in ipairs({ p0, p1 }) do
-                if p and p.Parent and not p:IsDescendantOf(char) then
-                    local m = p:FindFirstAncestorOfClass("Model")
-                    if m and m ~= char and m:FindFirstChildOfClass("Humanoid") then
-                        return true
-                    end
-                end
-            end
-        end
-    end
-    return false
+    return state.isWeldedToOther(self_state.character)
 end
 
 local function weldedToOther()
@@ -2860,6 +2868,13 @@ local function cameraStep(dt)
 
     local cam = workspace.CurrentCamera
     if not cam then return end
+
+    -- Suspend the camera-tracking write whenever we're welded to another
+    -- character (grab moves). Checked every frame with no cache so the
+    -- resumption is on the literal next frame after the weld breaks --
+    -- a 50ms cache like shiftlock's would leave the camera frozen for
+    -- up to a render after the user is freed.
+    if state.isWeldedToOther(Players.LocalPlayer.Character) then return end
 
     local tRoot = rootOf(targetCharacter())
     if not tRoot then return end

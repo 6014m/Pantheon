@@ -37,6 +37,13 @@ local function cameraStep(dt)
     local cam = workspace.CurrentCamera
     if not cam then return end
 
+    -- Suspend the camera-tracking write whenever we're welded to another
+    -- character (grab moves). Checked every frame with no cache so the
+    -- resumption is on the literal next frame after the weld breaks --
+    -- a 50ms cache like shiftlock's would leave the camera frozen for
+    -- up to a render after the user is freed.
+    if state.isWeldedToOther(Players.LocalPlayer.Character) then return end
+
     local tRoot = rootOf(targetCharacter())
     if not tRoot then return end
 
