@@ -44,6 +44,13 @@ function module.register()
         settings = {
             { type = "toggle", name = "Kill foreign shiftlock GUIs / loops", default = true,
               onChange = function(v) state.killForeign = v end },
+            -- Off => rotation still fires through grab welds. Lets you keep
+            -- aiming during nerf-style moves that lock your camera by
+            -- welding your HRP to the victim (JJS, etc). On (default) =>
+            -- keep the safety so grab moves don't drag the welded player.
+            { type = "toggle", name = "Skip rotation while welded to enemy",
+              key = "weld_safety", default = true,
+              onChange = function(v) state.weldSafetyEnabled = v end },
         },
     }).root)
 

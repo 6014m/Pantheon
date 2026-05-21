@@ -80,6 +80,12 @@ local function isLocalWeldedToOther()
 end
 
 local function weldedToOther()
+    -- User can opt out of the safety entirely (per-game via persisted
+    -- setting). Used to recover rotation through grab-style welds that
+    -- some games rely on for "nerf" moves -- e.g. JJS locking your aim by
+    -- welding your HRP to the victim. With the safety off, root.CFrame
+    -- writes still go through and the rotation tracks the camera.
+    if not state.weldSafetyEnabled then return false end
     -- 50ms cache so we don't walk descendants every frame.
     local now = os.clock()
     if now - self_state.weldCheckLast > 0.05 then

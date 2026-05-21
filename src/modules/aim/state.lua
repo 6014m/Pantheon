@@ -37,6 +37,11 @@ local state = {
     shiftlock_enabled = false,
     shiftlock_active  = false,
     killForeign       = true,
+    -- When true, the locked-mode rotation pass skips root.CFrame writes when
+    -- we're welded to another character (grab moves) so we don't drag them
+    -- around. Turn off to recover rotation through nerf-style welds, e.g.
+    -- JJS moves that weld your HRP to the victim to lock your aim.
+    weldSafetyEnabled = true,
 
     -- Swap
     swap_enabled = true,

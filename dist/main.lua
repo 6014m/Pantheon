@@ -1694,6 +1694,11 @@ local state = {
     shiftlock_enabled = false,
     shiftlock_active  = false,
     killForeign       = true,
+    -- When true, the locked-mode rotation pass skips root.CFrame writes when
+    -- we're welded to another character (grab moves) so we don't drag them
+    -- around. Turn off to recover rotation through nerf-style welds, e.g.
+    -- JJS moves that weld your HRP to the victim to lock your aim.
+    weldSafetyEnabled = true,
 
     -- Swap
     swap_enabled = true,
@@ -2009,6 +2014,12 @@ local function isLocalWeldedToOther()
 end
 
 local function weldedToOther()
+    -- User can opt out of the safety entirely (per-game via persisted
+    -- setting). Used to recover rotation through grab-style welds that
+    -- some games rely on for "nerf" moves -- e.g. JJS locking your aim by
+    -- welding your HRP to the victim. With the safety off, root.CFrame
+    -- writes still go through and the rotation tracks the camera.
+    if not state.weldSafetyEnabled then return false end
     -- 50ms cache so we don't walk descendants every frame.
     local now = os.clock()
     if now - self_state.weldCheckLast > 0.05 then
@@ -2929,6 +2940,13 @@ function module.register()
         settings = {
             { type = "toggle", name = "Kill foreign shiftlock GUIs / loops", default = true,
               onChange = function(v) state.killForeign = v end },
+            -- Off => rotation still fires through grab welds. Lets you keep
+            -- aiming during nerf-style moves that lock your camera by
+            -- welding your HRP to the victim (JJS, etc). On (default) =>
+            -- keep the safety so grab moves don't drag the welded player.
+            { type = "toggle", name = "Skip rotation while welded to enemy",
+              key = "weld_safety", default = true,
+              onChange = function(v) state.weldSafetyEnabled = v end },
         },
     }).root)
 
