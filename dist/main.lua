@@ -1747,10 +1747,17 @@ function state.isFriendly(plr)
 end
 
 -- True when `character` has a Weld / WeldConstraint / Motor6D whose other
--- end is on a different character's model (i.e. you're physically attached
--- to another player, e.g. by a grab move). Shared by shiftlock's rotation
--- drag-protect (gated by weldSafetyEnabled) and lockon's camera suspension
--- (unconditional -- when welded the camera pause/resume should be instant).
+-- end is on another *player's* character (i.e. you're physically attached
+-- to another player, e.g. by a grab move). Used by shiftlock's rotation
+-- drag-protect (gated by weldSafetyEnabled) and lockon's camera suspension.
+--
+-- Specifically uses Players:GetPlayerFromCharacter, not just "any model
+-- with a Humanoid". The any-humanoid check was tripping permanently in
+-- games where the local character is welded to NPCs / dummies / mounts /
+-- vehicles, leaving lockon paused forever. Only welds to actual player
+-- characters should count for grab-style suspension.
+local PlayersService = game:GetService("Players")
+
 function state.isWeldedToOther(character)
     if not character then return false end
     for _, d in ipairs(character:GetDescendants()) do
@@ -1759,8 +1766,10 @@ function state.isWeldedToOther(character)
             for _, p in ipairs({ p0, p1 }) do
                 if p and p.Parent and not p:IsDescendantOf(character) then
                     local m = p:FindFirstAncestorOfClass("Model")
-                    if m and m ~= character and m:FindFirstChildOfClass("Humanoid") then
-                        return true
+                    if m and m ~= character then
+                        if PlayersService:GetPlayerFromCharacter(m) then
+                            return true
+                        end
                     end
                 end
             end
