@@ -1986,11 +1986,6 @@ local self_state = {
     -- becomes a pure pass-through and the hookGuard task exits, letting a
     -- freshly re-executed Pantheon take over without thrashing.
     shutdown = false,
-    -- After Pantheon is disabled, hold the released state for this many
-    -- seconds even though shiftlock_enabled is false. Prevents the half-tick
-    -- where the game's shiftlock re-locks before we've finished writing
-    -- Default + AutoRotate=true.
-    releaseCooldownUntil = 0,
 }
 
 -- Cached check: are we welded (via Weld/WeldConstraint/Motor6D) to a part on
@@ -2168,15 +2163,15 @@ local function installMouseBehaviorHook()
             if realOriginal then return realOriginal(self, key, value) end
             return
         end
-        -- killForeign behaviour is gated on Pantheon's shiftlock master toggle.
-        -- When Pantheon shiftlock is OFF the hook becomes a pass-through and
-        -- the game's normal shiftlock works again. During the brief
-        -- release-cooldown after disable we still block foreign writes so
-        -- the hand-off doesn't flicker.
-        local inCooldown = os.clock() < self_state.releaseCooldownUntil
-        if state.killForeign
-           and (state.shiftlock_enabled or inCooldown)
-           and self == UserInputService then
+        -- killForeign now gates the hook continuously, independent of
+        -- shiftlock_enabled. The "wanted" state is derived from
+        -- shiftlock_active (false when the feature is off => Default and
+        -- visible cursor), so this also blocks foreign LockCenter writes
+        -- after the user toggles Pantheon shiftlock OFF -- closing the
+        -- post-disable race where a game shiftlock script's CharacterAdded
+        -- or delayed task re-locked the cursor moments after our 0.5s
+        -- release cooldown expired.
+        if state.killForeign and self == UserInputService then
             local block = false
             if key == "MouseBehavior" then
                 local wanted = state.shiftlock_active
@@ -2345,16 +2340,10 @@ function Shiftlock.setEnabled(v)
         if state.killForeign then sweepForeigns("enable") end
     else
         Shiftlock.forceOff()
-        -- Hold the released state for half a second so the game's still-active
-        -- shiftlock script doesn't race us back into locked-state during the
-        -- transition. After the cooldown we hand control fully back -- the
-        -- game's shiftlock script then drives the cursor naturally.
-        --
-        -- DELIBERATELY NOT setting DevEnableMouseLock = true: that re-engages
-        -- Roblox's built-in MouseLockController, which is NOT what the user
-        -- wants. The game's own shiftlock script (which we never disabled)
-        -- is what should run.
-        self_state.releaseCooldownUntil = os.clock() + 0.5
+        -- No release cooldown needed -- when killForeign is on the pin pass
+        -- and hook are already always enforcing free-movement state
+        -- whenever shouldLock is false, so the post-disable transition is
+        -- self-stabilising on every frame.
     end
 end
 
@@ -2370,14 +2359,20 @@ local function step()
 
     -- ===== pin pass =====
     -- Forces all four shiftlock-related properties to our desired state every
-    -- frame so foreign scripts can't ghost-control them. Runs when Pantheon
-    -- is enabled, OR briefly after disable (releaseCooldownUntil) so the
-    -- released state actually holds during the hand-off back to the game.
-    local inCooldown = os.clock() < self_state.releaseCooldownUntil
-    if state.killForeign and (state.shiftlock_enabled or inCooldown) then
+    -- frame so foreign scripts can't ghost-control them. Runs continuously
+    -- whenever killForeign is on -- including when Pantheon shiftlock is off,
+    -- so a game's shiftlock script (its CharacterAdded handler, a delayed
+    -- task, an off-cycle render binding) can't sneak the cursor back into
+    -- LockCenter after the user toggles Pantheon shiftlock off. The user
+    -- turns off killForeign to give the game its shiftlock back.
+    if state.killForeign then
         local hum = self_state.humanoid
+        local rotLockActive = self_state.externalSkipRotation
+            and self_state.externalSkipRotation()
 
-        if hum then
+        -- Skip AutoRotate writes while Rotation Lock is driving the body,
+        -- otherwise we fight it for free-rotate vs locked-rotate.
+        if hum and not rotLockActive then
             local wantedAR = not shouldLock
             if hum.AutoRotate ~= wantedAR then
                 hum.AutoRotate = wantedAR
