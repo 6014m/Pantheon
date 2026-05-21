@@ -43,7 +43,7 @@ function module.register()
         onKey       = function() shiftlock.toggle() end,
         settings = {
             { type = "toggle", name = "Kill foreign shiftlock GUIs / loops", default = true,
-              onChange = function(v) state.killForeign = v end },
+              onChange = function(v) shiftlock.setKillForeign(v) end },
             -- Off (default) => rotation fires through grab welds, matching
             -- the normal-player behavior in games like JJS where Decisive
             -- Strikes welds the victim but the game doesn't lock rotation.

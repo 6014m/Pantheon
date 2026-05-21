@@ -45,6 +45,8 @@ env.hookfunction      = hookfunction
 env.hookmetamethod    = hookmetamethod
 env.getrawmetatable   = getrawmetatable
 env.setreadonly      = setreadonly
+env.newcclosure       = newcclosure
+env.checkcaller       = checkcaller
 env.getconnections    = getconnections
 env.firesignal        = firesignal
 env.fireclickdetector = fireclickdetector
@@ -1957,6 +1959,7 @@ _MODULES["modules.aim.shiftlock"] = function()
 -- Runs on boot, enable, disable, and respawn so foreign code that reconnects
 -- doesn't quietly take back over.
 
+local env      = require("core.env")
 local state    = require("modules.aim.state")
 local log      = require("core.log")
 local keybinds = require("core.keybinds")
@@ -1969,7 +1972,12 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 local Shiftlock = {}
 
 local RENDER_BIND = "PantheonShiftlock"
-local GUI_NAME    = "PantheonShiftLockVGui"
+-- Randomised at script-load so game-side ScreenGui-name scanners can't
+-- pattern-match "PantheonShiftLockVGui" / "ShiftLockVGui". Lives in
+-- self_state once the GUI is built; killForeignGuis(), which only checks
+-- PlayerGui anyway, doesn't need to know it (the GUI is parented to
+-- env.guiParent() = gethui sandbox, not PlayerGui, so scans miss it).
+local GUI_NAME    = "_" .. tostring(math.random(100000, 999999))
 
 local FOREIGN_GUI_NAMES = {
     "ShiftLockVGui", "ShiftLockIcon", "ShiftLockHud", "ShiftLockButton",
@@ -2213,7 +2221,13 @@ local function installMouseBehaviorHook()
         end
     end
 
-    local ok, returned = pcall(hookmetamethod, UserInputService, "__newindex", hookFn)
+    -- Wrap the hook in newcclosure so the metamethod looks like a C function
+    -- when an anticheat reads back UIS's metatable. Without this, the hook
+    -- is a plain Lua closure and a debug.info / typeof comparison can
+    -- separate it from the engine's original native __newindex.
+    local wrapped = (env.newcclosure and env.newcclosure(hookFn)) or hookFn
+
+    local ok, returned = pcall(hookmetamethod, UserInputService, "__newindex", wrapped)
     if not ok or not returned then
         if not self_state.hookInstalled then
             log.warn("shiftlock: hookmetamethod failed:", tostring(returned))
@@ -2234,6 +2248,12 @@ local function installMouseBehaviorHook()
     return true
 end
 
+-- Lazy-install entry points: aliases used by Shiftlock.setEnabled /
+-- Shiftlock.setKillForeign (the upvalues forward-declared further up the
+-- file). Defers the hookmetamethod call past script-load until the user
+-- actually enables the feature.
+installMouseBehaviorHookLazy = installMouseBehaviorHook
+
 -- Periodically re-install the hook. If a game's own script hooks __newindex
 -- AFTER us, their hook wraps ours and a foreign value might leak through.
 -- Re-installing every second puts our hook back on top of theirs.
@@ -2243,12 +2263,14 @@ local function spawnHookGuard()
     task.spawn(function()
         while task.wait(1) do
             if self_state.shutdown then return end
-            if state.killForeign then
+            if state.killForeign and state.shiftlock_enabled then
                 installMouseBehaviorHook()
             end
         end
     end)
 end
+
+spawnHookGuardLazy = spawnHookGuard
 
 local function sweepForeigns(label)
     local g = killForeignGuis()
@@ -2270,14 +2292,18 @@ end
 
 local function buildGui()
     if self_state.gui and self_state.gui.Parent then return end
-    local pg = lp():WaitForChild("PlayerGui")
 
     local gui = Instance.new("ScreenGui")
     gui.Name = GUI_NAME
     gui.ResetOnSpawn = false
     gui.IgnoreGuiInset = true
     gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    gui.Parent = pg
+    -- env.guiParent() = gethui() (or CoreGui fallback). PlayerGui is fully
+    -- enumerable by any game script (TSB-style anticheats scan it for
+    -- unknown ScreenGuis and detach the camera as a punishment); gethui's
+    -- container is hidden from those scans.
+    gui.Parent = env.guiParent()
+    env.protectGui(gui)
 
     local vIcon = Instance.new("ImageLabel")
     vIcon.Name = "VIcon"
@@ -2337,13 +2363,25 @@ function Shiftlock.toggle()
     end
 end
 
+-- Forward declared so Shiftlock.setEnabled / Shiftlock.setKillForeign can
+-- call them; the actual implementations are further down.
+local installMouseBehaviorHookLazy, spawnHookGuardLazy
+
 function Shiftlock.setEnabled(v)
     v = v and true or false
     if state.shiftlock_enabled == v then return end
     state.shiftlock_enabled = v
     if v then
         disableGameShiftLock()
-        if state.killForeign then sweepForeigns("enable") end
+        if state.killForeign then
+            sweepForeigns("enable")
+            -- Lazy hook install: only when the user actually wants enforcement
+            -- (killForeign on + master toggled on). Defers the hookmetamethod
+            -- call past script-load so anticheats scanning UIS metatable at
+            -- execute time (TSB-style) don't see the hook.
+            installMouseBehaviorHookLazy()
+            spawnHookGuardLazy()
+        end
     else
         Shiftlock.forceOff()
         -- No release cooldown needed -- when killForeign is on the pin pass
@@ -2533,25 +2571,29 @@ function Shiftlock.init()
 
     if not self_state.bound then
         -- RenderPriority.Last (= 2000) so we run AFTER every other
-        -- BindToRenderStep callback in the frame. Combined with the
-        -- __newindex hook, this means we're the final writer for
-        -- MouseBehavior even if a foreign script binds at a high priority.
+        -- BindToRenderStep callback in the frame. The pin pass alone is
+        -- enough to keep our wanted state at end-of-frame; the property
+        -- hook is a within-frame extra that's installed lazily on first
+        -- user enable, so anticheats scanning the UIS metatable at
+        -- script-load (TSB-style) don't see it.
         RunService:BindToRenderStep(RENDER_BIND, Enum.RenderPriority.Last.Value, step)
         self_state.bound = true
     end
 
-    -- Property-level hook: blocks foreign writes outright instead of
-    -- racing them in the render pipeline.
-    installMouseBehaviorHook()
-    spawnHookGuard()
+    -- NB: hookmetamethod + hookGuard are no longer installed at boot.
+    -- Deferred to Shiftlock.setEnabled(true) so that simply loading the
+    -- script doesn't write the UIS metatable at all (anticheat surface).
+end
 
-    -- Boot-time sweep: only if Pantheon shiftlock is enabled. Otherwise we'd
-    -- destroy the game's still-working shiftlock at load time, leaving the
-    -- player with no shiftlock at all when Pantheon's master toggle is off.
-    -- When persistence loads a saved "enabled = true" later, setEnabled(true)
-    -- runs sweepForeigns("enable") instead.
-    if state.shiftlock_enabled and state.killForeign then
-        task.defer(function() sweepForeigns("boot") end)
+-- Called by the "Kill foreign shiftlock GUIs / loops" cog toggle. Lazy-
+-- installs the hook + guard if the user toggles killForeign on while
+-- Pantheon shiftlock is already enabled (otherwise the hook was deferred
+-- and would never install in that direction).
+function Shiftlock.setKillForeign(v)
+    state.killForeign = v and true or false
+    if state.killForeign and state.shiftlock_enabled then
+        installMouseBehaviorHookLazy()
+        spawnHookGuardLazy()
     end
 end
 
@@ -3015,7 +3057,7 @@ function module.register()
         onKey       = function() shiftlock.toggle() end,
         settings = {
             { type = "toggle", name = "Kill foreign shiftlock GUIs / loops", default = true,
-              onChange = function(v) state.killForeign = v end },
+              onChange = function(v) shiftlock.setKillForeign(v) end },
             -- Off (default) => rotation fires through grab welds, matching
             -- the normal-player behavior in games like JJS where Decisive
             -- Strikes welds the victim but the game doesn't lock rotation.
