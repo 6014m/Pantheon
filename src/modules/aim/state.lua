@@ -46,6 +46,14 @@ local state = {
     -- Turn ON in Battlegrounds-style games where the welded victim follows
     -- your rotation and that's not what you want.
     weldSafetyEnabled = false,
+    -- When true AND Pantheon shiftlock is OFF, the pin pass + hook yield so
+    -- the game's base shiftlock (custom in-game script and/or Roblox's
+    -- vanilla MouseLockController) can drive the cursor. Pantheon still
+    -- fully owns cursor state while its own shiftlock is on. Default OFF
+    -- because the default expectation is "Pantheon shiftlock off = no
+    -- shiftlock"; turn ON per-game when you want the game's shiftlock as
+    -- a fallback.
+    allowGameShiftlock = false,
 
     -- Swap
     swap_enabled = true,

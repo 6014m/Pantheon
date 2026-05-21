@@ -54,6 +54,15 @@ function module.register()
             { type = "toggle", name = "Skip rotation while welded to enemy",
               key = "weld_safety", default = false,
               onChange = function(v) state.weldSafetyEnabled = v end },
+            -- On => when Pantheon shiftlock is off, yield the pin pass +
+            -- hook so the game's own shiftlock (custom in-game script or
+            -- Roblox's vanilla MouseLockController) can drive the cursor.
+            -- Pantheon still fully owns cursor state while its own
+            -- shiftlock is on. Off (default) => Pantheon enforces free
+            -- movement when its shiftlock is off; no game shiftlock.
+            { type = "toggle", name = "Allow game shiftlock when Pantheon off",
+              key = "allow_game", default = false,
+              onChange = function(v) shiftlock.setAllowGameShiftlock(v) end },
         },
     }).root)
 

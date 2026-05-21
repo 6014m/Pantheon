@@ -1703,6 +1703,14 @@ local state = {
     -- Turn ON in Battlegrounds-style games where the welded victim follows
     -- your rotation and that's not what you want.
     weldSafetyEnabled = false,
+    -- When true AND Pantheon shiftlock is OFF, the pin pass + hook yield so
+    -- the game's base shiftlock (custom in-game script and/or Roblox's
+    -- vanilla MouseLockController) can drive the cursor. Pantheon still
+    -- fully owns cursor state while its own shiftlock is on. Default OFF
+    -- because the default expectation is "Pantheon shiftlock off = no
+    -- shiftlock"; turn ON per-game when you want the game's shiftlock as
+    -- a fallback.
+    allowGameShiftlock = false,
 
     -- Swap
     swap_enabled = true,
@@ -2163,15 +2171,11 @@ local function installMouseBehaviorHook()
             if realOriginal then return realOriginal(self, key, value) end
             return
         end
-        -- killForeign now gates the hook continuously, independent of
-        -- shiftlock_enabled. The "wanted" state is derived from
-        -- shiftlock_active (false when the feature is off => Default and
-        -- visible cursor), so this also blocks foreign LockCenter writes
-        -- after the user toggles Pantheon shiftlock OFF -- closing the
-        -- post-disable race where a game shiftlock script's CharacterAdded
-        -- or delayed task re-locked the cursor moments after our 0.5s
-        -- release cooldown expired.
-        if state.killForeign and self == UserInputService then
+        -- shouldEnforce() gates the hook the same way as the pin pass:
+        -- always when killForeign is on, EXCEPT when allowGameShiftlock is
+        -- on AND Pantheon shiftlock is off (so the game's shiftlock script
+        -- can write LockCenter freely as a fallback when the user wants it).
+        if shouldEnforce() and self == UserInputService then
             local block = false
             if key == "MouseBehavior" then
                 local wanted = state.shiftlock_active
@@ -2341,10 +2345,36 @@ function Shiftlock.setEnabled(v)
     else
         Shiftlock.forceOff()
         -- No release cooldown needed -- when killForeign is on the pin pass
-        -- and hook are already always enforcing free-movement state
-        -- whenever shouldLock is false, so the post-disable transition is
+        -- and hook are always enforcing free-movement state whenever
+        -- shouldLock is false, so the post-disable transition is
         -- self-stabilising on every frame.
+        -- If the user wants the game's vanilla MouseLockController as their
+        -- shiftlock fallback, restore DevEnableMouseLock so it can engage.
+        -- (Custom in-game shiftlock scripts don't care about DevEnableMouseLock,
+        -- but the pin-pass + hook gate handles them via shouldEnforce()).
+        if state.allowGameShiftlock then
+            pcall(function() lp().DevEnableMouseLock = true end)
+        end
     end
+end
+
+function Shiftlock.setAllowGameShiftlock(v)
+    state.allowGameShiftlock = v and true or false
+    -- Wake Roblox's vanilla MouseLockController if the user just opted in
+    -- and Pantheon's master is off. The shouldEnforce() gate is what
+    -- actually lets foreign LockCenter writes through; this is just the
+    -- DevEnableMouseLock side of the same intent.
+    if state.allowGameShiftlock and not state.shiftlock_enabled then
+        pcall(function() lp().DevEnableMouseLock = true end)
+    end
+end
+
+-- Pin pass + hook enforce when this is true. Returns false to fully yield
+-- (cursor management is whatever the game scripts and Roblox engine want).
+local function shouldEnforce()
+    if not state.killForeign then return false end
+    if state.allowGameShiftlock and not state.shiftlock_enabled then return false end
+    return true
 end
 
 function Shiftlock.setExternalSkipRotation(fn)
@@ -2360,12 +2390,13 @@ local function step()
     -- ===== pin pass =====
     -- Forces all four shiftlock-related properties to our desired state every
     -- frame so foreign scripts can't ghost-control them. Runs continuously
-    -- whenever killForeign is on -- including when Pantheon shiftlock is off,
-    -- so a game's shiftlock script (its CharacterAdded handler, a delayed
-    -- task, an off-cycle render binding) can't sneak the cursor back into
-    -- LockCenter after the user toggles Pantheon shiftlock off. The user
-    -- turns off killForeign to give the game its shiftlock back.
-    if state.killForeign then
+    -- whenever shouldEnforce() is true -- including when Pantheon shiftlock
+    -- is off (so a game shiftlock script's CharacterAdded handler / delayed
+    -- task / off-cycle render binding can't sneak the cursor back into
+    -- LockCenter after the user toggles Pantheon shiftlock off). The
+    -- allowGameShiftlock toggle yields this enforcement when Pantheon
+    -- shiftlock is off, so the game's base shiftlock can drive the cursor.
+    if shouldEnforce() then
         local hum = self_state.humanoid
         local rotLockActive = self_state.externalSkipRotation
             and self_state.externalSkipRotation()
@@ -2949,6 +2980,15 @@ function module.register()
             { type = "toggle", name = "Skip rotation while welded to enemy",
               key = "weld_safety", default = false,
               onChange = function(v) state.weldSafetyEnabled = v end },
+            -- On => when Pantheon shiftlock is off, yield the pin pass +
+            -- hook so the game's own shiftlock (custom in-game script or
+            -- Roblox's vanilla MouseLockController) can drive the cursor.
+            -- Pantheon still fully owns cursor state while its own
+            -- shiftlock is on. Off (default) => Pantheon enforces free
+            -- movement when its shiftlock is off; no game shiftlock.
+            { type = "toggle", name = "Allow game shiftlock when Pantheon off",
+              key = "allow_game", default = false,
+              onChange = function(v) shiftlock.setAllowGameShiftlock(v) end },
         },
     }).root)
 
