@@ -72,6 +72,13 @@ local state = {
     -- compensation a battlegrounds-style game needs.
     predictionTime = 0.1,
 
+    -- Ping-adaptive prediction. When predictionAuto is on, getLeadTime() derives
+    -- the lead from live ping (ping * factor, capped) so it self-tunes per
+    -- server; predictionTime above becomes the manual value used when auto off.
+    predictionAuto   = true,
+    predictionFactor = 1.0,   -- multiplier on the ping-derived lead
+    predictionCap    = 0.3,   -- hard cap (seconds) on the lead
+
     -- Signals
     onTargetChanged = Signal.new(),
 }
@@ -100,6 +107,23 @@ end
 -- vehicles, leaving lockon paused forever. Only welds to actual player
 -- characters should count for grab-style suspension.
 local PlayersService = game:GetService("Players")
+local StatsService   = game:GetService("Stats")
+
+-- Effective aim lead (seconds), shared by lockon (camera) and rotation_lock
+-- (body). Ping-adaptive when predictionAuto: a target's replicated position is
+-- ~ping behind, so leading by velocity * ping faces where they actually are
+-- now -- this self-tunes per server instead of a fixed guess. Falls back to the
+-- manual predictionTime slider when auto is off.
+function state.getLeadTime()
+    if state.predictionAuto then
+        local ok, ms = pcall(function()
+            return StatsService.Network.ServerStatsItem["Data Ping"]:GetValue()
+        end)
+        local ping = (ok and ms or 100) / 1000
+        return math.min(ping * (state.predictionFactor or 1), state.predictionCap or 0.3)
+    end
+    return state.predictionTime or 0
+end
 
 function state.isWeldedToOther(character)
     if not character then return false end

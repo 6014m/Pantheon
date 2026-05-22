@@ -56,7 +56,7 @@ local function cameraStep(dt)
     -- right velocity source for a HumanoidRootPart in a movable assembly.
     local tVel = tRoot.AssemblyLinearVelocity
     local lookPos = tRoot.Position
-        + (tVel * (state.predictionTime or 0))
+        + (tVel * state.getLeadTime())
         + Vector3.new(0, state.lockHeightOffset or 0, 0)
     local desired = lookPos - camPos
     if desired.Magnitude < 0.5 then

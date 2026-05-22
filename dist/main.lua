@@ -1731,6 +1731,13 @@ local state = {
     -- compensation a battlegrounds-style game needs.
     predictionTime = 0.1,
 
+    -- Ping-adaptive prediction. When predictionAuto is on, getLeadTime() derives
+    -- the lead from live ping (ping * factor, capped) so it self-tunes per
+    -- server; predictionTime above becomes the manual value used when auto off.
+    predictionAuto   = true,
+    predictionFactor = 1.0,   -- multiplier on the ping-derived lead
+    predictionCap    = 0.3,   -- hard cap (seconds) on the lead
+
     -- Signals
     onTargetChanged = Signal.new(),
 }
@@ -1759,6 +1766,23 @@ end
 -- vehicles, leaving lockon paused forever. Only welds to actual player
 -- characters should count for grab-style suspension.
 local PlayersService = game:GetService("Players")
+local StatsService   = game:GetService("Stats")
+
+-- Effective aim lead (seconds), shared by lockon (camera) and rotation_lock
+-- (body). Ping-adaptive when predictionAuto: a target's replicated position is
+-- ~ping behind, so leading by velocity * ping faces where they actually are
+-- now -- this self-tunes per server instead of a fixed guess. Falls back to the
+-- manual predictionTime slider when auto is off.
+function state.getLeadTime()
+    if state.predictionAuto then
+        local ok, ms = pcall(function()
+            return StatsService.Network.ServerStatsItem["Data Ping"]:GetValue()
+        end)
+        local ping = (ok and ms or 100) / 1000
+        return math.min(ping * (state.predictionFactor or 1), state.predictionCap or 0.3)
+    end
+    return state.predictionTime or 0
+end
 
 function state.isWeldedToOther(character)
     if not character then return false end
@@ -2684,6 +2708,7 @@ local s = {
     bound      = false,
     holdMode   = true,   -- default: hold-to-engage
     holdActive = false,  -- unified flag: true when rotation should engage
+    wasActive  = false,  -- active->inactive edge, so we hand AutoRotate back once
 }
 
 local function rootOf(charOrModel)
@@ -2750,9 +2775,23 @@ local function disableAlign()
     if s.align then s.align.Enabled = false end
 end
 
+-- Disengage: drop the constraint and, on the active->inactive edge only, hand
+-- AutoRotate back to the humanoid so the body can turn normally again. The
+-- one-shot guard (s.wasActive) means we DON'T set AutoRotate every idle frame
+-- and fight shiftlock's per-frame pin: if shiftlock is on it re-takes AutoRotate
+-- next frame; if it's off, AutoRotate correctly stays true.
+local function deactivate()
+    disableAlign()
+    if s.wasActive then
+        local myHum = getHumanoids()
+        if myHum then myHum.AutoRotate = true end
+        s.wasActive = false
+    end
+end
+
 local function step()
     if not shouldRotate() then
-        disableAlign()
+        deactivate()
         return
     end
 
@@ -2761,12 +2800,13 @@ local function step()
     local myRoot = rootOf(myChar)
     local myHum  = myChar:FindFirstChildOfClass("Humanoid")
     if not myRoot or not myHum then return end
+    if myHum.Health <= 0 then deactivate(); return end  -- never rotate a dead body
 
     local tRoot = rootOf(targetCharacter())
     if not tRoot then return end
 
     if bgSuppressed() then
-        disableAlign()
+        deactivate()
         return
     end
 
@@ -2774,7 +2814,7 @@ local function step()
     -- faces where they'll be at impact, not where they were on the last
     -- network update. Critical for block timing on fast-moving attackers.
     local tVel = tRoot.AssemblyLinearVelocity
-    local predicted = tRoot.Position + (tVel * (state.predictionTime or 0))
+    local predicted = tRoot.Position + (tVel * state.getLeadTime())
     local dir = predicted - myRoot.Position
     local flat = Vector3.new(dir.X, 0, dir.Z)
     -- Only skip when the target is genuinely co-located with us (a 0.1
@@ -2783,6 +2823,7 @@ local function step()
     if flat.Magnitude < 0.001 then return end
 
     myHum.AutoRotate = false
+    s.wasActive = true
     ensureConstraint(myRoot)
     if s.align then
         s.align.Enabled = true
@@ -2824,7 +2865,7 @@ function RotationLock.setEnabled(v)
     state.rotationLockEnabled = v and true or false
     if not v then
         s.holdActive = false
-        disableAlign()
+        deactivate()
     end
 end
 
@@ -2853,6 +2894,12 @@ function RotationLock.destroy()
         pcall(function() RunService:UnbindFromRenderStep(BIND) end)
         if s.steppedConn then s.steppedConn:Disconnect(); s.steppedConn = nil end
         s.bound = false
+    end
+    -- hand the body back to the humanoid on teardown / re-exec
+    if s.wasActive then
+        local myHum = getHumanoids()
+        if myHum then pcall(function() myHum.AutoRotate = true end) end
+        s.wasActive = false
     end
     if s.align then pcall(function() s.align:Destroy() end); s.align = nil end
     if s.attachment then pcall(function() s.attachment:Destroy() end); s.attachment = nil end
@@ -2920,7 +2967,7 @@ local function cameraStep(dt)
     -- right velocity source for a HumanoidRootPart in a movable assembly.
     local tVel = tRoot.AssemblyLinearVelocity
     local lookPos = tRoot.Position
-        + (tVel * (state.predictionTime or 0))
+        + (tVel * state.getLeadTime())
         + Vector3.new(0, state.lockHeightOffset or 0, 0)
     local desired = lookPos - camPos
     if desired.Magnitude < 0.5 then
@@ -3193,7 +3240,12 @@ function module.register()
             -- (aim at last replicated position, what you'd get on a
             -- stationary target); 0.1 leads a 50-stud/s sprinter by ~5
             -- studs. Crank up to 0.2 for laggy servers / very fast games.
-            { type = "slider", name = "Aim prediction (s)",
+            -- Ping-adaptive lead: ON by default, self-tunes from live ping so
+            -- you face where a dashing target actually is. The slider below is
+            -- the manual fallback, used only when this is off.
+            { type = "toggle", name = "Auto prediction (ping-based)", default = true,
+              onChange = function(v) state.predictionAuto = v end },
+            { type = "slider", name = "Aim prediction (s, manual)",
               key = "prediction", min = 0, max = 0.3, step = 0.01, default = 0.1,
               onChange = function(v) state.predictionTime = v end },
 

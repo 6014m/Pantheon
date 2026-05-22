@@ -34,6 +34,7 @@ local s = {
     bound      = false,
     holdMode   = true,   -- default: hold-to-engage
     holdActive = false,  -- unified flag: true when rotation should engage
+    wasActive  = false,  -- active->inactive edge, so we hand AutoRotate back once
 }
 
 local function rootOf(charOrModel)
@@ -100,9 +101,23 @@ local function disableAlign()
     if s.align then s.align.Enabled = false end
 end
 
+-- Disengage: drop the constraint and, on the active->inactive edge only, hand
+-- AutoRotate back to the humanoid so the body can turn normally again. The
+-- one-shot guard (s.wasActive) means we DON'T set AutoRotate every idle frame
+-- and fight shiftlock's per-frame pin: if shiftlock is on it re-takes AutoRotate
+-- next frame; if it's off, AutoRotate correctly stays true.
+local function deactivate()
+    disableAlign()
+    if s.wasActive then
+        local myHum = getHumanoids()
+        if myHum then myHum.AutoRotate = true end
+        s.wasActive = false
+    end
+end
+
 local function step()
     if not shouldRotate() then
-        disableAlign()
+        deactivate()
         return
     end
 
@@ -111,12 +126,13 @@ local function step()
     local myRoot = rootOf(myChar)
     local myHum  = myChar:FindFirstChildOfClass("Humanoid")
     if not myRoot or not myHum then return end
+    if myHum.Health <= 0 then deactivate(); return end  -- never rotate a dead body
 
     local tRoot = rootOf(targetCharacter())
     if not tRoot then return end
 
     if bgSuppressed() then
-        disableAlign()
+        deactivate()
         return
     end
 
@@ -124,7 +140,7 @@ local function step()
     -- faces where they'll be at impact, not where they were on the last
     -- network update. Critical for block timing on fast-moving attackers.
     local tVel = tRoot.AssemblyLinearVelocity
-    local predicted = tRoot.Position + (tVel * (state.predictionTime or 0))
+    local predicted = tRoot.Position + (tVel * state.getLeadTime())
     local dir = predicted - myRoot.Position
     local flat = Vector3.new(dir.X, 0, dir.Z)
     -- Only skip when the target is genuinely co-located with us (a 0.1
@@ -133,6 +149,7 @@ local function step()
     if flat.Magnitude < 0.001 then return end
 
     myHum.AutoRotate = false
+    s.wasActive = true
     ensureConstraint(myRoot)
     if s.align then
         s.align.Enabled = true
@@ -174,7 +191,7 @@ function RotationLock.setEnabled(v)
     state.rotationLockEnabled = v and true or false
     if not v then
         s.holdActive = false
-        disableAlign()
+        deactivate()
     end
 end
 
@@ -203,6 +220,12 @@ function RotationLock.destroy()
         pcall(function() RunService:UnbindFromRenderStep(BIND) end)
         if s.steppedConn then s.steppedConn:Disconnect(); s.steppedConn = nil end
         s.bound = false
+    end
+    -- hand the body back to the humanoid on teardown / re-exec
+    if s.wasActive then
+        local myHum = getHumanoids()
+        if myHum then pcall(function() myHum.AutoRotate = true end) end
+        s.wasActive = false
     end
     if s.align then pcall(function() s.align:Destroy() end); s.align = nil end
     if s.attachment then pcall(function() s.attachment:Destroy() end); s.attachment = nil end
