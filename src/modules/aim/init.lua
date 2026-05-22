@@ -164,24 +164,26 @@ function module.register()
         onKey        = function() targetSelect.swapTarget() end,
     }).root)
 
-    -- Dash Flank: when YOU forward-dash at an enemy, curve the dash to their
-    -- side/back and turn to face them. Self-targets nearest if Target Select
-    -- isn't picking someone, so it works on its own.
+    -- Dash Flank: when YOU forward-dash, curve the dash AROUND the Target Select
+    -- target to hug their side/back and turn to face them. Depends on Target
+    -- Select for who to flank.
     combat:add(feature.declare({
-        id          = "aim.dash_flank",
-        name        = "Dash Flank",
-        description = "Detects your forward dash and steers it to the opponent's side or back (your pick), then turns you to face them -- so the follow-up lands where a front block won't save them. Redirects the dash's own momentum, not just facing. Only acts during the dash; normal movement is untouched.",
-        default     = false,
-        onToggle    = function(v) dashFlank.setEnabled(v) end,
+        id           = "aim.dash_flank",
+        name         = "Dash Flank",
+        description  = "Detects your forward dash (by its sudden velocity burst -- not WalkSpeed) and curves it AROUND the target, hugging their side or back in an oval, turning you to face them -- so the follow-up lands where a front block won't save them. If it can't reach the flank in time it still rotates as if it had. Goes around, not through. Uninterruptable by Rotation Lock; flanks Target Select's target.",
+        default      = false,
+        dependencies = { "aim.target_select" },
+        onToggle     = function(v) dashFlank.setEnabled(v) end,
         settings = {
             { type = "toggle", name = "Aim for back (off = side)", default = true,
               onChange = function(v) dashFlank.setMode(v and "back" or "side") end },
-            { type = "slider", name = "Target range (studs)",
-              min = 10, max = 80, step = 5, default = 45,
-              onChange = function(v) dashFlank.setRange(v) end },
-            { type = "slider", name = "Dash detect (x WalkSpeed)",
-              key = "dashmult", min = 1.5, max = 4, step = 0.1, default = 2.2,
-              onChange = function(v) dashFlank.setDashMult(v) end },
+            { type = "slider", name = "Hug distance (studs)",
+              min = 2, max = 10, step = 0.5, default = 3,
+              onChange = function(v) dashFlank.setMinRadius(v) end },
+            -- forward acceleration spike that counts as a dash; lower = more sensitive
+            { type = "slider", name = "Dash burst threshold",
+              key = "spike", min = 100, max = 700, step = 25, default = 250,
+              onChange = function(v) dashFlank.setSpike(v) end },
             { type = "slider", name = "Steer strength",
               min = 0.1, max = 1, step = 0.05, default = 1,
               onChange = function(v) dashFlank.setSteer(v) end },
