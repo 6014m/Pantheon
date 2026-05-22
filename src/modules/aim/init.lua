@@ -24,7 +24,12 @@ function module.register()
     lockon.init()
     targetSelect.init()
     dashFlank.init()
-    shiftlock.setExternalSkipRotation(rotationLock.isActive)
+    -- Dash Flank owns the body during a flank dash: both shiftlock's rotation
+    -- pin and Rotation Lock yield to it so neither can interrupt the maneuver.
+    shiftlock.setExternalSkipRotation(function()
+        return rotationLock.isActive() or dashFlank.isDashing()
+    end)
+    rotationLock.setExternalSuppress(dashFlank.isDashing)
 
     local parent = window.parent()
 

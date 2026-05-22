@@ -2731,6 +2731,9 @@ local function getHumanoids()
 end
 
 local function shouldRotate()
+    -- Dash Flank takes priority: while it's steering a forward-dash flank, yield
+    -- so we can't snap the body back to the enemy's front mid-maneuver.
+    if s.externalSuppress and s.externalSuppress() then return false end
     if not state.lockon_enabled then return false end
     if not state.rotationLockEnabled then return false end
     if not state.target then return false end
@@ -2873,6 +2876,12 @@ end
 -- to yield: when Rotation Lock is active, shiftlock skips its own rotation.
 function RotationLock.isActive()
     return shouldRotate() and not bgSuppressed()
+end
+
+-- Register a predicate; while it returns true, Rotation Lock fully yields (used
+-- so Dash Flank can own the body uninterrupted during a flank dash).
+function RotationLock.setExternalSuppress(fn)
+    s.externalSuppress = fn
 end
 
 function RotationLock.init()
@@ -3115,17 +3124,20 @@ return TargetSelect
 end
 
 _MODULES["modules.aim.dash_flank"] = function()
--- Dash Flank: detect the local player's FORWARD dash and steer it to the
--- target's side / back so the follow-up lands where a front block won't help.
+-- Dash Flank: detect the local player's FORWARD dash and curve it AROUND the
+-- target to their side / back -- never straight through them -- so the
+-- follow-up lands where a front block won't help.
 --
--- Mechanism (game-agnostic): a dash shows up as a sudden horizontal velocity
--- spike aligned with our facing. While that's happening we
---   (a) redirect the horizontal velocity toward a flank point beside/behind the
---       target, PRESERVING the dash's speed -- so an impulse dash is curved, not
---       just re-faced (rotation alone can't redirect existing momentum), and
---   (b) yaw the body to face the target so the attack cone catches their flank.
--- It ONLY acts during the dash window (the velocity spike); normal walking,
--- sprinting, and non-forward dashes are left untouched.
+-- "Around, not through": while dashing we steer the horizontal velocity along a
+-- tangent that orbits the target at a set radius, biased toward the rear (or
+-- side). The path arcs around the enemy instead of driving into their center;
+-- only once we've reached the flank bearing do we home onto the exact point. We
+-- preserve the dash's speed (so an impulse dash is curved, not just re-faced)
+-- and yaw to face the target so the strike connects.
+--
+-- Priority over Rotation Lock / shiftlock: while a flank dash is in progress,
+-- both yield (wired via isDashing() in init) so they can't snap the body back
+-- to the enemy's front and interrupt the maneuver.
 
 local state = require("modules.aim.state")
 
@@ -3136,18 +3148,18 @@ local DashFlank = {}
 local LP = Players.LocalPlayer
 
 local cfg = {
-    mode       = "back", -- "back" or "side"
-    range      = 45,     -- only flank a target within this many studs
-    backOffset = 4,      -- studs behind the target to aim
-    sideOffset = 6,      -- studs to the side (wrap distance)
-    dashMult   = 2.2,    -- horizontal speed >= WalkSpeed*dashMult counts as a dash
-    dashMin    = 36,     -- ...but never treat below this as a dash (studs/s)
-    forwardDot = 0.5,    -- velocity must align with facing this much (=> forward dash)
-    steer      = 1.0,    -- 0..1: how hard to redirect the dash velocity each frame
-    rotateBody = true,   -- also turn to face the target
+    mode         = "back", -- "back" or "side"
+    range        = 45,     -- only flank a target within this many studs
+    orbitRadius  = 6,      -- studs: how far off the target we arc (close, no collide)
+    radialWeight = 0.7,    -- converge-on-radius pull vs going tangential (0..1-ish)
+    dashMult     = 2.2,    -- horizontal speed >= WalkSpeed*dashMult counts as a dash
+    dashMin      = 36,     -- ...but never treat below this as a dash (studs/s)
+    forwardDot   = 0.5,    -- velocity must align with facing this much (=> forward dash)
+    steer        = 1.0,    -- 0..1: how hard to redirect the dash velocity each frame
+    rotateBody   = true,   -- also turn to face the target
 }
 
-local s = { enabled = false, bound = false, conns = {}, dashing = false }
+local s = { enabled = false, bound = false, conns = {}, dashing = false, wasActive = false }
 
 local function rootOf(c) return c and c:FindFirstChild("HumanoidRootPart") end
 local function humOf(c)  return c and c:FindFirstChildOfClass("Humanoid") end
@@ -3175,25 +3187,57 @@ local function targetRoot()
     return best
 end
 
--- the point we want the dash to carry us to
-local function flankPoint(myRoot, tRoot)
-    local ePos  = tRoot.Position
+-- Steering direction that ARCS AROUND the target toward the flank bearing and
+-- never points straight at their center (so we go around players, not through).
+local function steerDir(myRoot, tRoot)
+    local ePos = flat(tRoot.Position)
+    local mPos = flat(myRoot.Position)
+    local toMe = mPos - ePos
+    local dist = toMe.Magnitude
+    if dist < 0.01 then return nil end
+    local radial = toMe / dist                                   -- enemy -> me
     local eLookV = flat(tRoot.CFrame.LookVector)
-    local eLook  = (eLookV.Magnitude > 0.01) and eLookV.Unit or Vector3.new(0, 0, -1)
-    local eRight = Vector3.new(eLook.Z, 0, -eLook.X)        -- the target's right, flattened
-    local toMe   = flat(myRoot.Position - ePos)
-    local sideSign = (toMe:Dot(eRight) >= 0) and 1 or -1    -- wrap via the side we're already on
+    local eLook  = (eLookV.Magnitude > 0.01) and eLookV.Unit or radial
+
+    -- where (as a bearing from the enemy) we want to end up
+    local goalDir
     if cfg.mode == "back" then
-        -- rear quarter: behind them, biased toward our side so we curve around, not into, them
-        return ePos - eLook * cfg.backOffset + eRight * (sideSign * cfg.sideOffset * 0.5)
+        goalDir = eLook * -1                                     -- behind them
+    else
+        local eRight = Vector3.new(eLook.Z, 0, -eLook.X)
+        goalDir = eRight * ((radial:Dot(eRight) >= 0) and 1 or -1)  -- nearer side
     end
-    return ePos + eRight * (sideSign * cfg.sideOffset)
+
+    local R = cfg.orbitRadius
+    local aligned = radial:Dot(goalDir)                          -- 1 => at the flank bearing
+    if aligned > 0.8 then
+        -- on the flank: home onto the exact point at radius R behind/beside them
+        local d = (ePos + goalDir * R) - mPos
+        return (d.Magnitude > 0.01) and d.Unit or nil
+    end
+
+    -- otherwise circle around: tangent (perpendicular to radial) toward the goal,
+    -- plus a CLAMPED radial pull so we converge on radius R without aiming at center
+    local tangent = Vector3.new(-radial.Z, 0, radial.X)
+    if tangent:Dot(goalDir) < 0 then tangent = tangent * -1 end
+    local radialErr = math.clamp((R - dist) / R, -1, 1)         -- clamp so tangent dominates
+    local dir = tangent + radial * (radialErr * cfg.radialWeight)
+    return (dir.Magnitude > 0.01) and dir.Unit or nil
+end
+
+local function stopDash()
+    s.dashing = false
+    if s.wasActive then
+        local hum = humOf(myChar())
+        if hum then hum.AutoRotate = true end
+        s.wasActive = false
+    end
 end
 
 local function step()
-    if not s.enabled then s.dashing = false; return end
+    if not s.enabled then return stopDash() end
     local char = myChar(); local root = rootOf(char); local hum = humOf(char)
-    if not (root and hum) or hum.Health <= 0 then s.dashing = false; return end
+    if not (root and hum) or hum.Health <= 0 then return stopDash() end
 
     local vel  = root.AssemblyLinearVelocity
     local hv   = flat(vel)
@@ -3202,25 +3246,24 @@ local function step()
     local threshold = math.max(hum.WalkSpeed * cfg.dashMult, cfg.dashMin)
     local fdot = (hs > 0.01 and look.Magnitude > 0.01) and hv.Unit:Dot(look.Unit) or 0
 
-    -- gate: only a fast, forward-aligned movement counts as a forward dash
-    if hs < threshold or fdot < cfg.forwardDot then s.dashing = false; return end
+    -- only a fast, forward-aligned movement counts as a forward dash
+    if hs < threshold or fdot < cfg.forwardDot then return stopDash() end
 
     local tRoot = targetRoot()
-    if not tRoot then s.dashing = false; return end
+    if not tRoot then return stopDash() end
     s.dashing = true
 
-    local fp  = flankPoint(root, tRoot)
-    local dir = flat(fp - root.Position)
-    if dir.Magnitude < 0.01 then return end
-    dir = dir.Unit
+    local dir = steerDir(root, tRoot)
+    if not dir then return end
 
-    -- redirect the dash: keep its horizontal speed, point it at the flank
-    local desired = dir * hs
-    local blended = hv:Lerp(desired, cfg.steer)
+    -- redirect the dash AROUND the target, keeping its horizontal speed
+    local blended = hv:Lerp(dir * hs, cfg.steer)
     root.AssemblyLinearVelocity = Vector3.new(blended.X, vel.Y, blended.Z)
 
-    -- face the target so the strike lands on their side/back
+    -- face the target so the strike lands on their flank
     if cfg.rotateBody then
+        hum.AutoRotate = false
+        s.wasActive = true
         local fd = flat(tRoot.Position - root.Position)
         if fd.Magnitude > 0.01 then
             local cf = CFrame.lookAt(root.Position, root.Position + fd)
@@ -3230,20 +3273,21 @@ local function step()
     end
 end
 
-function DashFlank.setEnabled(v) s.enabled = v and true or false; if not v then s.dashing = false end end
+function DashFlank.setEnabled(v) s.enabled = v and true or false; if not v then stopDash() end end
 function DashFlank.setMode(m)     cfg.mode = (m == "side") and "side" or "back" end
 function DashFlank.setRange(v)    cfg.range = tonumber(v) or cfg.range end
 function DashFlank.setDashMult(v) cfg.dashMult = tonumber(v) or cfg.dashMult end
 function DashFlank.setSteer(v)    cfg.steer = math.clamp(tonumber(v) or cfg.steer, 0, 1) end
 function DashFlank.setRotate(v)   cfg.rotateBody = v and true or false end
 
--- True while we're actively steering a forward dash (handy for other modules).
+-- True while we're actively steering a forward dash. Rotation Lock and shiftlock
+-- read this and yield so neither can interrupt the flank.
 function DashFlank.isDashing() return s.dashing end
 
 function DashFlank.init()
     if s.bound then return end
     -- Heartbeat: set velocity after the frame's physics so it carries into the
-    -- next step -- the reliable point for velocity redirection.
+    -- next step, and lands LAST in the frame so it overrides earlier rotators.
     s.conns[#s.conns + 1] = RunService.Heartbeat:Connect(step)
     s.bound = true
 end
@@ -3252,7 +3296,7 @@ function DashFlank.destroy()
     for _, c in ipairs(s.conns) do pcall(function() c:Disconnect() end) end
     s.conns = {}
     s.bound = false
-    s.dashing = false
+    stopDash()
 end
 
 return DashFlank
@@ -3285,7 +3329,12 @@ function module.register()
     lockon.init()
     targetSelect.init()
     dashFlank.init()
-    shiftlock.setExternalSkipRotation(rotationLock.isActive)
+    -- Dash Flank owns the body during a flank dash: both shiftlock's rotation
+    -- pin and Rotation Lock yield to it so neither can interrupt the maneuver.
+    shiftlock.setExternalSkipRotation(function()
+        return rotationLock.isActive() or dashFlank.isDashing()
+    end)
+    rotationLock.setExternalSuppress(dashFlank.isDashing)
 
     local parent = window.parent()
 
