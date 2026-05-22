@@ -2218,58 +2218,59 @@ end
 -- real engine setter at the end of the chain (not theirs).
 local realOriginal = nil
 
+-- Forward declarations. These are referenced by closures defined ABOVE their
+-- real definitions: the hook closure uses shouldEnforce(), and Shiftlock.setEnabled
+-- uses the lazy aliases. Declaring them as locals here means those references
+-- capture the right upvalue instead of resolving to a nil global -- the previous
+-- ordering made the hook error on every write and setEnabled error on every
+-- enable/respawn.
+local shouldEnforce
+local installMouseBehaviorHookLazy, spawnHookGuardLazy
+
 local function installMouseBehaviorHook()
     if type(hookmetamethod) ~= "function" then
         log.debug("shiftlock: hookmetamethod unavailable; relying on connection sweep")
         return false
     end
 
-    local hookFn = function(self, key, value)
-        -- Pass-through after destroy() so a previously-loaded Pantheon
-        -- instance doesn't keep blocking writes when a fresh one is taking
-        -- over (re-execute case).
-        if self_state.shutdown then
-            if realOriginal then return realOriginal(self, key, value) end
-            return
+    -- Decides whether to swallow a write. Run via pcall in hookFn below so a bug
+    -- in here can never error on -- or crash -- the game's property writes (this
+    -- runs on EVERY Instance __newindex, since they share one metatable).
+    local function shouldBlock(self, key, value)
+        if self_state.shutdown then return false end
+        -- shouldEnforce() gates the hook the same as the pin pass: on while
+        -- killForeign is on, EXCEPT when allowGameShiftlock is on AND Pantheon
+        -- shiftlock is off (so the game's shiftlock can drive the cursor).
+        if not (shouldEnforce() and self == UserInputService) then return false end
+        local block = false
+        if key == "MouseBehavior" then
+            local wanted = state.shiftlock_active
+                and Enum.MouseBehavior.LockCenter
+                or Enum.MouseBehavior.Default
+            if value ~= wanted then block = true end
+        elseif key == "MouseIconEnabled" then
+            if value ~= (not state.shiftlock_active) then block = true end
+        elseif key == "MouseIcon" then
+            if value ~= "" then block = true end
         end
-        -- shouldEnforce() gates the hook the same way as the pin pass:
-        -- always when killForeign is on, EXCEPT when allowGameShiftlock is
-        -- on AND Pantheon shiftlock is off (so the game's shiftlock script
-        -- can write LockCenter freely as a fallback when the user wants it).
-        if shouldEnforce() and self == UserInputService then
-            local block = false
-            if key == "MouseBehavior" then
-                local wanted = state.shiftlock_active
-                    and Enum.MouseBehavior.LockCenter
-                    or Enum.MouseBehavior.Default
-                if value ~= wanted then block = true end
-            elseif key == "MouseIconEnabled" then
-                -- Hidden cursor while locked, visible otherwise.
-                local wanted = not state.shiftlock_active
-                if value ~= wanted then block = true end
-            elseif key == "MouseIcon" then
-                -- Foreign scripts swap the cursor image. We want the default
-                -- (empty string) - block any non-empty write.
-                if value ~= "" then block = true end
+        if block then
+            self_state.blockedWrites = self_state.blockedWrites + 1
+            local now = os.clock()
+            if now - self_state.lastBlockedLog > 2 then
+                log.info(string.format(
+                    "shiftlock: blocked %d foreign UIS write(s) (last %s)",
+                    self_state.blockedWrites, tostring(key)))
+                self_state.blockedWrites = 0
+                self_state.lastBlockedLog = now
             end
+        end
+        return block
+    end
 
-            if block then
-                self_state.blockedWrites = self_state.blockedWrites + 1
-                local now = os.clock()
-                if now - self_state.lastBlockedLog > 2 then
-                    log.info(string.format(
-                        "shiftlock: blocked %d foreign UIS write(s) (last %s = %s)",
-                        self_state.blockedWrites, tostring(key), tostring(value)
-                    ))
-                    self_state.blockedWrites = 0
-                    self_state.lastBlockedLog = now
-                end
-                return
-            end
-        end
-        if realOriginal then
-            return realOriginal(self, key, value)
-        end
+    local hookFn = function(self, key, value)
+        local ok, blocked = pcall(shouldBlock, self, key, value)
+        if ok and blocked then return end   -- swallow the foreign write
+        if realOriginal then return realOriginal(self, key, value) end
     end
 
     -- Wrap the hook in newcclosure so the metamethod looks like a C function
@@ -2414,9 +2415,9 @@ function Shiftlock.toggle()
     end
 end
 
--- Forward declared so Shiftlock.setEnabled / Shiftlock.setKillForeign can
--- call them; the actual implementations are further down.
-local installMouseBehaviorHookLazy, spawnHookGuardLazy
+-- (installMouseBehaviorHookLazy / spawnHookGuardLazy are forward-declared at the
+-- top of the file and assigned right after their implementations above, so the
+-- functions below see the real functions instead of nil.)
 
 function Shiftlock.setEnabled(v)
     v = v and true or false
@@ -2462,7 +2463,9 @@ end
 
 -- Pin pass + hook enforce when this is true. Returns false to fully yield
 -- (cursor management is whatever the game scripts and Roblox engine want).
-local function shouldEnforce()
+-- NOTE: assigns the forward-declared upvalue (no `local`) so the hook closure
+-- defined earlier captures it instead of a nil global.
+function shouldEnforce()
     if not state.killForeign then return false end
     if state.allowGameShiftlock and not state.shiftlock_enabled then return false end
     return true
@@ -3218,7 +3221,13 @@ local function steerDir(myRoot, tRoot)
     local hug = cfg.minRadius + math.max(0, amInFront) * cfg.frontExtra
     local radialBias = radial * ((dist > hug) and -cfg.hugStrength or cfg.hugStrength)
 
-    local dir = tangent + radialBias
+    -- Fade the orbit as we reach the goal bearing so we SETTLE on the back
+    -- (the primary focus) instead of orbiting straight past it to the far side.
+    -- aligned = 1 directly on the bearing -> no tangent (hug there); behind/front
+    -- -> full tangent to keep wrapping around toward the back.
+    local aligned = radial:Dot(goalDir)
+    local tangentScale = math.clamp(1 - aligned, 0, 1)
+    local dir = tangent * tangentScale + radialBias
     return (dir.Magnitude > 0.01) and dir.Unit or nil
 end
 

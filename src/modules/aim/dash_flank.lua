@@ -92,7 +92,13 @@ local function steerDir(myRoot, tRoot)
     local hug = cfg.minRadius + math.max(0, amInFront) * cfg.frontExtra
     local radialBias = radial * ((dist > hug) and -cfg.hugStrength or cfg.hugStrength)
 
-    local dir = tangent + radialBias
+    -- Fade the orbit as we reach the goal bearing so we SETTLE on the back
+    -- (the primary focus) instead of orbiting straight past it to the far side.
+    -- aligned = 1 directly on the bearing -> no tangent (hug there); behind/front
+    -- -> full tangent to keep wrapping around toward the back.
+    local aligned = radial:Dot(goalDir)
+    local tangentScale = math.clamp(1 - aligned, 0, 1)
+    local dir = tangent * tangentScale + radialBias
     return (dir.Magnitude > 0.01) and dir.Unit or nil
 end
 
