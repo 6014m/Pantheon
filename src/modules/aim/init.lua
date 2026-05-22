@@ -180,10 +180,8 @@ function module.register()
             { type = "slider", name = "Hug distance (studs)",
               min = 2, max = 10, step = 0.5, default = 3,
               onChange = function(v) dashFlank.setMinRadius(v) end },
-            -- forward acceleration spike that counts as a dash; lower = more sensitive
-            { type = "slider", name = "Dash burst threshold",
-              key = "spike", min = 100, max = 700, step = 25, default = 250,
-              onChange = function(v) dashFlank.setSpike(v) end },
+            -- (no dash-detection knob: it reads the game's own dash flag
+            -- (attribute/animation); the velocity burst is an internal fallback.)
             { type = "slider", name = "Steer strength",
               min = 0.1, max = 1, step = 0.05, default = 1,
               onChange = function(v) dashFlank.setSteer(v) end },

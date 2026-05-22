@@ -43,10 +43,14 @@ local det = {
     learnedAnim = nil,     -- auto-found dash animation id
     animCounts = {},       -- anim id -> times it co-occurred with a velocity dash
     lastAnim = nil, lastAnimT = 0,
-    animDashUntil = 0,     -- window opened when the learned anim plays
-    velDashUntil = 0,      -- window opened by a velocity burst
+    animDashUntil = 0,     -- end of the dash-anim window (= its real Length)
+    animStopConn = nil,    -- ends the anim window exactly when the dash anim Stops
+    velDashing = false,    -- currently in a velocity-detected dash
+    velPeak = 0,           -- peak speed of the current velocity dash (for decay-end)
+    velDashUntil = 0,      -- hard safety cap for a velocity dash
     prevHs = math.huge,
     animConn = nil,
+    attrConn = nil,        -- watches AttributeChanged to grab the dash flag instantly
 }
 
 local BAD_STATES = {
@@ -73,6 +77,7 @@ end
 -- Keeps anything already learned -- this just refreshes per-character hooks.
 local function hookChar(char)
     if det.animConn then det.animConn:Disconnect(); det.animConn = nil end
+    if det.attrConn then det.attrConn:Disconnect(); det.attrConn = nil end
     det.prevHs = math.huge
     if not det.attr then
         for name, val in pairs(char:GetAttributes()) do
@@ -82,6 +87,15 @@ local function hookChar(char)
             end
         end
     end
+    -- grab the dash flag the instant the game sets it -- no velocity burst needed
+    det.attrConn = char.AttributeChanged:Connect(function(attr)
+        if det.attr then return end
+        local v = char:GetAttribute(attr)
+        if tostring(attr):lower():find("dash")
+           or (type(v) == "string" and v:lower():find("dash")) then
+            det.attr = attr
+        end
+    end)
     local hum = humOf(char)
     if hum then
         det.animConn = hum.AnimationPlayed:Connect(function(t)
@@ -89,7 +103,13 @@ local function hookChar(char)
             if not (a and a.AnimationId ~= "") then return end
             det.lastAnim, det.lastAnimT = a.AnimationId, os.clock()
             if det.learnedAnim and a.AnimationId == det.learnedAnim then
-                det.animDashUntil = os.clock() + cfg.dashWindow
+                -- end with the animation itself, not a fixed timer
+                local len = t.Length
+                det.animDashUntil = os.clock() + ((len and len > 0.05) and len or cfg.dashWindow)
+                if det.animStopConn then det.animStopConn:Disconnect() end
+                det.animStopConn = t.Stopped:Connect(function()
+                    det.animDashUntil = 0   -- dash anim ended -> dash is over now
+                end)
             end
         end)
     end
@@ -129,6 +149,7 @@ end
 
 local function stopDash()
     s.dashing = false
+    det.velDashing = false
     if s.wasActive then
         local hum = humOf(myChar())
         if hum then hum.AutoRotate = true end
@@ -150,26 +171,38 @@ local function dashingNow(char, root, hs, fdot, dt)
     -- 2. learned dash animation window
     if not dashing and det.learnedAnim and now < det.animDashUntil then dashing = true end
 
-    -- 3. velocity burst (bootstrap + teacher)
+    -- 3. velocity burst -- internal fallback + teacher only. Starts on a forward
+    --    burst and ENDS when the burst decays (speed back below half its peak),
+    --    so the dash ends with the actual movement, not a fixed timer.
     local accel = (hs - det.prevHs) / math.max(dt or (1 / 60), 1 / 240)
     det.prevHs = hs
-    if accel >= cfg.spikeAccel and hs >= cfg.dashFloor and fdot >= cfg.forwardDot then
-        det.velDashUntil = now + cfg.dashWindow
-        -- learn the game's dash flag from this confirmed dash
-        if not det.attr then
-            for name, val in pairs(char:GetAttributes()) do
-                if tostring(name):lower():find("dash")
-                   or (type(val) == "string" and val:lower():find("dash")) then
-                    det.attr = name; break
+    if not det.velDashing then
+        if accel >= cfg.spikeAccel and hs >= cfg.dashFloor and fdot >= cfg.forwardDot then
+            det.velDashing   = true
+            det.velPeak      = hs
+            det.velDashUntil = now + 1.5   -- hard safety cap only
+            -- teach ourselves the game's real dash signal from this dash
+            if not det.attr then
+                for name, val in pairs(char:GetAttributes()) do
+                    if tostring(name):lower():find("dash")
+                       or (type(val) == "string" and val:lower():find("dash")) then
+                        det.attr = name; break
+                    end
                 end
             end
+            if not det.learnedAnim and det.lastAnim and (now - det.lastAnimT) < 0.25 then
+                det.animCounts[det.lastAnim] = (det.animCounts[det.lastAnim] or 0) + 1
+                if det.animCounts[det.lastAnim] >= 3 then det.learnedAnim = det.lastAnim end
+            end
         end
-        if not det.learnedAnim and det.lastAnim and (now - det.lastAnimT) < 0.25 then
-            det.animCounts[det.lastAnim] = (det.animCounts[det.lastAnim] or 0) + 1
-            if det.animCounts[det.lastAnim] >= 3 then det.learnedAnim = det.lastAnim end
+    else
+        det.velPeak = math.max(det.velPeak, hs)
+        if hs < det.velPeak * 0.5 or hs < cfg.dashFloor
+           or fdot < cfg.forwardDot or now > det.velDashUntil then
+            det.velDashing = false
         end
     end
-    if now < det.velDashUntil then dashing = true end
+    if det.velDashing then dashing = true end
 
     return dashing
 end
@@ -236,7 +269,9 @@ end
 
 function DashFlank.destroy()
     for _, c in ipairs(s.conns) do pcall(function() c:Disconnect() end) end
-    if det.animConn then pcall(function() det.animConn:Disconnect() end); det.animConn = nil end
+    if det.animConn     then pcall(function() det.animConn:Disconnect() end);     det.animConn = nil end
+    if det.attrConn     then pcall(function() det.attrConn:Disconnect() end);     det.attrConn = nil end
+    if det.animStopConn then pcall(function() det.animStopConn:Disconnect() end); det.animStopConn = nil end
     s.conns = {}
     s.bound = false
     stopDash()
