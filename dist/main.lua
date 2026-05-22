@@ -3128,24 +3128,20 @@ end
 
 _MODULES["modules.aim.dash_flank"] = function()
 -- Dash Flank: detect the local player's FORWARD dash and curve it AROUND the
--- Target Select target to their side / back -- hugging as close as possible --
--- so the follow-up lands where a front block won't help.
+-- Target Select target to their side / back -- hugging close -- so the follow-up
+-- lands where a front block won't help.
 --
--- Dash detection: a dash is a sudden FORWARD velocity BURST, so we trigger on a
--- forward-aligned acceleration spike (NOT a WalkSpeed multiple), then keep
--- steering for a short window. Works regardless of the game's walk/sprint speed.
+-- DETECTION is self-learning (no manual setup, no remote logging): a velocity
+-- burst bootstraps it, and the first few dashes auto-grab the game's OWN dash
+-- signal -- a "dash"-named/valued character Attribute and/or the dash Animation
+-- that co-occurs -- then it reads those directly (precise + instant). Falls back
+-- to the velocity heuristic on games that expose neither.
 --
--- Around, not through (oval, not circle): we steer the horizontal velocity along
--- a tangent that wraps around the target, with a soft pull toward a hug distance
--- that is TIGHT at the flank and looser while still in front -- that asymmetry
--- makes an oval, gives room to swing around, and avoids a rigid circle. We never
--- point at the target's center.
---
--- Rotate regardless: we ALWAYS yaw to face the target during the dash, even if
--- it can't physically reach a flank point -- so we rotate "as if" on the flank.
---
--- Adheres to Target Select (state.target only) and is uninterruptable: Rotation
--- Lock + shiftlock yield to it (via isDashing(), wired in init).
+-- Around, not through (oval): steers velocity along a tangent that wraps the
+-- target, hugging tight at the flank and looser in front, settling on the back.
+-- Always yaw-faces the target during the dash (even if it can't reach the
+-- flank). Adheres to Target Select (state.target only). Uninterruptable:
+-- Rotation Lock + shiftlock yield to isDashing().
 
 local state = require("modules.aim.state")
 
@@ -3156,27 +3152,32 @@ local DashFlank = {}
 local LP = Players.LocalPlayer
 
 local cfg = {
-    mode        = "back", -- "back" or "side"
-    minRadius   = 3,      -- studs: how tight we hug at the flank (as close as possible, no collide)
-    frontExtra  = 4,      -- extra hug while still in front => OVAL (tight flank, room up front)
-    hugStrength = 0.6,    -- soft pull toward the (dynamic) hug distance; tangent stays dominant
-    spikeAccel  = 250,    -- studs/s^2: a forward burst this sharp = a dash (NOT walkspeed-based)
-    dashFloor   = 24,     -- ...and it must actually reach at least this speed (studs/s)
-    dashWindow  = 0.4,    -- keep steering up to this long after the burst (s)
-    forwardDot  = 0.5,    -- velocity must align with facing this much (=> forward dash)
-    steer       = 1.0,    -- 0..1: how hard to redirect the dash velocity each frame
-    rotateBody  = true,   -- yaw to face the target
+    mode        = "back",
+    minRadius   = 3,
+    frontExtra  = 4,
+    hugStrength = 0.6,
+    spikeAccel  = 250,   -- studs/s^2 forward burst => bootstrap dash (also used to auto-learn)
+    dashFloor   = 24,    -- min speed to count (studs/s)
+    dashWindow  = 0.4,   -- how long a detected dash stays "active" (s)
+    forwardDot  = 0.5,   -- velocity must align with facing this much
+    steer       = 1.0,
+    rotateBody  = true,
 }
 
-local s = { enabled = false, bound = false, conns = {}, dashing = false,
-            wasActive = false, prevHs = math.huge, dashUntil = 0 }
+local s = { enabled = false, bound = false, conns = {}, dashing = false, wasActive = false }
 
-local function rootOf(c) return c and c:FindFirstChild("HumanoidRootPart") end
-local function humOf(c)  return c and c:FindFirstChildOfClass("Humanoid") end
-local function myChar()  return LP.Character end
-local function flat(v)   return Vector3.new(v.X, 0, v.Z) end
+-- self-learned dash signal (persists across respawns within a session)
+local det = {
+    attr = nil,            -- auto-found character attribute that flags a dash
+    learnedAnim = nil,     -- auto-found dash animation id
+    animCounts = {},       -- anim id -> times it co-occurred with a velocity dash
+    lastAnim = nil, lastAnimT = 0,
+    animDashUntil = 0,     -- window opened when the learned anim plays
+    velDashUntil = 0,      -- window opened by a velocity burst
+    prevHs = math.huge,
+    animConn = nil,
+}
 
--- physics states where touching velocity/CFrame is unsafe (can crash the client)
 local BAD_STATES = {
     [Enum.HumanoidStateType.Physics]          = true,
     [Enum.HumanoidStateType.FallingDown]      = true,
@@ -3185,22 +3186,52 @@ local BAD_STATES = {
     [Enum.HumanoidStateType.PlatformStanding] = true,
 }
 
--- ADHERE to Target Select: only ever the target it picked. No nearest fallback.
+local function rootOf(c) return c and c:FindFirstChild("HumanoidRootPart") end
+local function humOf(c)  return c and c:FindFirstChildOfClass("Humanoid") end
+local function myChar()  return LP.Character end
+local function flat(v)   return Vector3.new(v.X, 0, v.Z) end
+
+-- ADHERE to Target Select: only ever the target it picked.
 local function targetRoot()
     if not state.target then return nil end
     local c = (state.target_type == "player") and state.target.Character or state.target
     return rootOf(c)
 end
 
--- Steering direction that arcs AROUND the target and hugs close in an oval --
--- never points at their center.
+-- Re-scan attributes / re-bind the animation listener for a (re)spawned char.
+-- Keeps anything already learned -- this just refreshes per-character hooks.
+local function hookChar(char)
+    if det.animConn then det.animConn:Disconnect(); det.animConn = nil end
+    det.prevHs = math.huge
+    if not det.attr then
+        for name, val in pairs(char:GetAttributes()) do
+            if tostring(name):lower():find("dash")
+               or (type(val) == "string" and val:lower():find("dash")) then
+                det.attr = name; break
+            end
+        end
+    end
+    local hum = humOf(char)
+    if hum then
+        det.animConn = hum.AnimationPlayed:Connect(function(t)
+            local a = t.Animation
+            if not (a and a.AnimationId ~= "") then return end
+            det.lastAnim, det.lastAnimT = a.AnimationId, os.clock()
+            if det.learnedAnim and a.AnimationId == det.learnedAnim then
+                det.animDashUntil = os.clock() + cfg.dashWindow
+            end
+        end)
+    end
+end
+
+-- Steering direction that arcs AROUND the target and hugs close in an oval.
 local function steerDir(myRoot, tRoot)
     local ePos = flat(tRoot.Position)
     local mPos = flat(myRoot.Position)
     local toMe = mPos - ePos
     local dist = toMe.Magnitude
     if dist < 0.01 then return nil end
-    local radial = toMe / dist                                   -- enemy -> me
+    local radial = toMe / dist
     local eLookV = flat(tRoot.CFrame.LookVector)
     local eLook  = (eLookV.Magnitude > 0.01) and eLookV.Unit or radial
 
@@ -3212,21 +3243,15 @@ local function steerDir(myRoot, tRoot)
         goalDir = eRight * ((radial:Dot(eRight) >= 0) and 1 or -1)
     end
 
-    -- tangent (perpendicular to radial) toward the goal => go around, not through
     local tangent = Vector3.new(-radial.Z, 0, radial.X)
     if tangent:Dot(goalDir) < 0 then tangent = tangent * -1 end
 
-    -- OVAL hug: tight at the flank, looser while still in front (room to swing in)
-    local amInFront = radial:Dot(eLook)                          -- +1 front, -1 back
+    local amInFront = radial:Dot(eLook)
     local hug = cfg.minRadius + math.max(0, amInFront) * cfg.frontExtra
     local radialBias = radial * ((dist > hug) and -cfg.hugStrength or cfg.hugStrength)
 
-    -- Fade the orbit as we reach the goal bearing so we SETTLE on the back
-    -- (the primary focus) instead of orbiting straight past it to the far side.
-    -- aligned = 1 directly on the bearing -> no tangent (hug there); behind/front
-    -- -> full tangent to keep wrapping around toward the back.
     local aligned = radial:Dot(goalDir)
-    local tangentScale = math.clamp(1 - aligned, 0, 1)
+    local tangentScale = math.clamp(1 - aligned, 0, 1)   -- fade orbit -> settle on the back
     local dir = tangent * tangentScale + radialBias
     return (dir.Magnitude > 0.01) and dir.Unit or nil
 end
@@ -3240,43 +3265,64 @@ local function stopDash()
     end
 end
 
-local function step(dt)
-    if not s.enabled then s.prevHs = math.huge; return stopDash() end
-    local char = myChar(); local root = rootOf(char); local hum = humOf(char)
-    if not (root and hum) or hum.Health <= 0 then s.prevHs = math.huge; return stopDash() end
+-- True if the game currently flags us as dashing, via the best signal we have.
+-- Also auto-learns the attribute/animation the first few velocity-dashes.
+local function dashingNow(char, root, hs, fdot, dt)
+    local now = os.clock()
+    local dashing = false
 
-    -- safety: never steer while ragdolled / knocked / platform-standing or while
-    -- welded to another character (grab) -- writing velocity/CFrame to a complex
-    -- or two-character assembly can destabilise physics and crash the client.
-    if hum.PlatformStand or BAD_STATES[hum:GetState()] then s.prevHs = math.huge; return stopDash() end
-    if state.isWeldedToOther(char) then s.prevHs = math.huge; return stopDash() end
+    -- 1. learned attribute (precise, read straight from the game's own state)
+    if det.attr then
+        local v = char:GetAttribute(det.attr)
+        if v == true or (type(v) == "string" and v:lower():find("dash")) then dashing = true end
+    end
+    -- 2. learned dash animation window
+    if not dashing and det.learnedAnim and now < det.animDashUntil then dashing = true end
+
+    -- 3. velocity burst (bootstrap + teacher)
+    local accel = (hs - det.prevHs) / math.max(dt or (1 / 60), 1 / 240)
+    det.prevHs = hs
+    if accel >= cfg.spikeAccel and hs >= cfg.dashFloor and fdot >= cfg.forwardDot then
+        det.velDashUntil = now + cfg.dashWindow
+        -- learn the game's dash flag from this confirmed dash
+        if not det.attr then
+            for name, val in pairs(char:GetAttributes()) do
+                if tostring(name):lower():find("dash")
+                   or (type(val) == "string" and val:lower():find("dash")) then
+                    det.attr = name; break
+                end
+            end
+        end
+        if not det.learnedAnim and det.lastAnim and (now - det.lastAnimT) < 0.25 then
+            det.animCounts[det.lastAnim] = (det.animCounts[det.lastAnim] or 0) + 1
+            if det.animCounts[det.lastAnim] >= 3 then det.learnedAnim = det.lastAnim end
+        end
+    end
+    if now < det.velDashUntil then dashing = true end
+
+    return dashing
+end
+
+local function step(dt)
+    if not s.enabled then det.prevHs = math.huge; return stopDash() end
+    local char = myChar(); local root = rootOf(char); local hum = humOf(char)
+    if not (root and hum) or hum.Health <= 0 then det.prevHs = math.huge; return stopDash() end
+    if hum.PlatformStand or BAD_STATES[hum:GetState()] then det.prevHs = math.huge; return stopDash() end
+    if state.isWeldedToOther(char) then det.prevHs = math.huge; return stopDash() end
 
     local vel  = root.AssemblyLinearVelocity
     local hv   = flat(vel)
     local hs   = hv.Magnitude
     local look = flat(root.CFrame.LookVector)
     local fdot = (hs > 0.01 and look.Magnitude > 0.01) and hv.Unit:Dot(look.Unit) or 0
-    local accel = (hs - s.prevHs) / math.max(dt or (1 / 60), 1 / 240)
-    s.prevHs = hs
-    local now = os.clock()
 
-    -- forward-burst dash detection (no WalkSpeed): rising-edge spike, then hold
-    if not s.dashing then
-        if accel >= cfg.spikeAccel and hs >= cfg.dashFloor and fdot >= cfg.forwardDot then
-            s.dashing   = true
-            s.dashUntil = now + cfg.dashWindow
-        else
-            return stopDash()
-        end
-    elseif now > s.dashUntil or hs < cfg.dashFloor or fdot < cfg.forwardDot then
-        return stopDash()
-    end
-
+    -- only flank a FORWARD dash with a target
+    if not (dashingNow(char, root, hs, fdot, dt) and fdot >= cfg.forwardDot) then return stopDash() end
     local tRoot = targetRoot()
     if not tRoot then return stopDash() end
+    s.dashing = true
 
-    -- ALWAYS face the target while dashing -- even if we can't reach the flank,
-    -- we rotate as if we were on it, so the strike still aims at them.
+    -- ALWAYS face the target while dashing (rotate as if on the flank even if we can't reach it)
     if cfg.rotateBody then
         hum.AutoRotate = false
         s.wasActive = true
@@ -3290,11 +3336,10 @@ local function step(dt)
         end
     end
 
-    -- steer the dash around to the flank (best-effort; facing already handled)
+    -- steer the dash around to the flank
     local dir = steerDir(root, tRoot)
     if dir then
         local blended = hv:Lerp(dir * hs, cfg.steer)
-        -- NaN / absurd-magnitude guard before writing to the physics solver
         if blended.X == blended.X and blended.Z == blended.Z and blended.Magnitude < 1e4 then
             root.AssemblyLinearVelocity = Vector3.new(blended.X, vel.Y, blended.Z)
         end
@@ -3308,18 +3353,19 @@ function DashFlank.setSpike(v)      cfg.spikeAccel = tonumber(v) or cfg.spikeAcc
 function DashFlank.setSteer(v)      cfg.steer = math.clamp(tonumber(v) or cfg.steer, 0, 1) end
 function DashFlank.setRotate(v)     cfg.rotateBody = v and true or false end
 
--- True while actively steering a forward dash; Rotation Lock + shiftlock yield to this.
 function DashFlank.isDashing() return s.dashing end
 
 function DashFlank.init()
     if s.bound then return end
-    -- Heartbeat: lands LAST in the frame so our velocity/facing override earlier rotators.
+    if LP.Character then hookChar(LP.Character) end
+    s.conns[#s.conns + 1] = LP.CharacterAdded:Connect(hookChar)
     s.conns[#s.conns + 1] = RunService.Heartbeat:Connect(function(dt) step(dt) end)
     s.bound = true
 end
 
 function DashFlank.destroy()
     for _, c in ipairs(s.conns) do pcall(function() c:Disconnect() end) end
+    if det.animConn then pcall(function() det.animConn:Disconnect() end); det.animConn = nil end
     s.conns = {}
     s.bound = false
     stopDash()
