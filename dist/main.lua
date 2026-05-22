@@ -3166,12 +3166,21 @@ local cfg = {
 }
 
 local s = { enabled = false, bound = false, conns = {}, dashing = false,
-            wasActive = false, prevHs = 0, dashUntil = 0 }
+            wasActive = false, prevHs = math.huge, dashUntil = 0 }
 
 local function rootOf(c) return c and c:FindFirstChild("HumanoidRootPart") end
 local function humOf(c)  return c and c:FindFirstChildOfClass("Humanoid") end
 local function myChar()  return LP.Character end
 local function flat(v)   return Vector3.new(v.X, 0, v.Z) end
+
+-- physics states where touching velocity/CFrame is unsafe (can crash the client)
+local BAD_STATES = {
+    [Enum.HumanoidStateType.Physics]          = true,
+    [Enum.HumanoidStateType.FallingDown]      = true,
+    [Enum.HumanoidStateType.Ragdoll]          = true,
+    [Enum.HumanoidStateType.Seated]           = true,
+    [Enum.HumanoidStateType.PlatformStanding] = true,
+}
 
 -- ADHERE to Target Select: only ever the target it picked. No nearest fallback.
 local function targetRoot()
@@ -3223,9 +3232,15 @@ local function stopDash()
 end
 
 local function step(dt)
-    if not s.enabled then s.prevHs = 0; return stopDash() end
+    if not s.enabled then s.prevHs = math.huge; return stopDash() end
     local char = myChar(); local root = rootOf(char); local hum = humOf(char)
-    if not (root and hum) or hum.Health <= 0 then s.prevHs = 0; return stopDash() end
+    if not (root and hum) or hum.Health <= 0 then s.prevHs = math.huge; return stopDash() end
+
+    -- safety: never steer while ragdolled / knocked / platform-standing or while
+    -- welded to another character (grab) -- writing velocity/CFrame to a complex
+    -- or two-character assembly can destabilise physics and crash the client.
+    if hum.PlatformStand or BAD_STATES[hum:GetState()] then s.prevHs = math.huge; return stopDash() end
+    if state.isWeldedToOther(char) then s.prevHs = math.huge; return stopDash() end
 
     local vel  = root.AssemblyLinearVelocity
     local hv   = flat(vel)
@@ -3260,7 +3275,9 @@ local function step(dt)
         if fd.Magnitude > 0.01 then
             local cf = CFrame.lookAt(root.Position, root.Position + fd)
             local _, y = cf:ToEulerAnglesYXZ()
-            root.CFrame = CFrame.new(root.Position) * CFrame.Angles(0, y, 0)
+            if y == y then  -- NaN guard
+                root.CFrame = CFrame.new(root.Position) * CFrame.Angles(0, y, 0)
+            end
         end
     end
 
@@ -3268,7 +3285,10 @@ local function step(dt)
     local dir = steerDir(root, tRoot)
     if dir then
         local blended = hv:Lerp(dir * hs, cfg.steer)
-        root.AssemblyLinearVelocity = Vector3.new(blended.X, vel.Y, blended.Z)
+        -- NaN / absurd-magnitude guard before writing to the physics solver
+        if blended.X == blended.X and blended.Z == blended.Z and blended.Magnitude < 1e4 then
+            root.AssemblyLinearVelocity = Vector3.new(blended.X, vel.Y, blended.Z)
+        end
     end
 end
 
