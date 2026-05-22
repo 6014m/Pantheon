@@ -54,6 +54,7 @@ local files = {
     { "modules.aim.rotation_lock", "modules/aim/rotation_lock.lua" },
     { "modules.aim.lockon",        "modules/aim/lockon.lua" },
     { "modules.aim.target_select", "modules/aim/target_select.lua" },
+    { "modules.aim.dash_flank",    "modules/aim/dash_flank.lua" },
     { "modules.aim.init",          "modules/aim/init.lua" },
     { "init",                      "init.lua" },
 }

@@ -11,6 +11,7 @@ local shiftlock    = require("modules.aim.shiftlock")
 local rotationLock = require("modules.aim.rotation_lock")
 local lockon       = require("modules.aim.lockon")
 local targetSelect = require("modules.aim.target_select")
+local dashFlank    = require("modules.aim.dash_flank")
 local log          = require("core.log")
 
 local module = {}
@@ -22,6 +23,7 @@ function module.register()
     rotationLock.init()
     lockon.init()
     targetSelect.init()
+    dashFlank.init()
     shiftlock.setExternalSkipRotation(rotationLock.isActive)
 
     local parent = window.parent()
@@ -157,6 +159,32 @@ function module.register()
         onKey        = function() targetSelect.swapTarget() end,
     }).root)
 
+    -- Dash Flank: when YOU forward-dash at an enemy, curve the dash to their
+    -- side/back and turn to face them. Self-targets nearest if Target Select
+    -- isn't picking someone, so it works on its own.
+    combat:add(feature.declare({
+        id          = "aim.dash_flank",
+        name        = "Dash Flank",
+        description = "Detects your forward dash and steers it to the opponent's side or back (your pick), then turns you to face them -- so the follow-up lands where a front block won't save them. Redirects the dash's own momentum, not just facing. Only acts during the dash; normal movement is untouched.",
+        default     = false,
+        onToggle    = function(v) dashFlank.setEnabled(v) end,
+        settings = {
+            { type = "toggle", name = "Aim for back (off = side)", default = true,
+              onChange = function(v) dashFlank.setMode(v and "back" or "side") end },
+            { type = "slider", name = "Target range (studs)",
+              min = 10, max = 80, step = 5, default = 45,
+              onChange = function(v) dashFlank.setRange(v) end },
+            { type = "slider", name = "Dash detect (x WalkSpeed)",
+              key = "dashmult", min = 1.5, max = 4, step = 0.1, default = 2.2,
+              onChange = function(v) dashFlank.setDashMult(v) end },
+            { type = "slider", name = "Steer strength",
+              min = 0.1, max = 1, step = 0.05, default = 1,
+              onChange = function(v) dashFlank.setSteer(v) end },
+            { type = "toggle", name = "Turn to face target", default = true,
+              onChange = function(v) dashFlank.setRotate(v) end },
+        },
+    }).root)
+
     -- 3. Visuals --------------------------------------------------------------
     -- Highlight depends on Target Select (renders nothing without a target).
     local vis = container.new(parent, "Visuals")
@@ -181,6 +209,7 @@ end
 function module.destroy()
     pcall(function() if targetSelect.destroy then targetSelect.destroy() end end)
     pcall(function() if rotationLock.destroy then rotationLock.destroy() end end)
+    pcall(function() if dashFlank.destroy    then dashFlank.destroy()    end end)
     pcall(function() if lockon.destroy       then lockon.destroy()       end end)
     pcall(function() if shiftlock.destroy    then shiftlock.destroy()    end end)
     pcall(function() if highlight.destroy    then highlight.destroy()    end end)
