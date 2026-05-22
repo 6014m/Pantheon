@@ -3158,6 +3158,7 @@ local cfg = {
     hugStrength = 0.6,
     spikeAccel  = 250,   -- studs/s^2 forward burst => bootstrap dash (also used to auto-learn)
     dashFloor   = 24,    -- min speed to count (studs/s)
+    maxDashSpeed = 140,  -- ABOVE this it's a FLING, not a dash -- never redirect it
     dashWindow  = 0.4,   -- how long a detected dash stays "active" (s)
     forwardDot  = 0.5,   -- velocity must align with facing this much
     steer       = 1.0,
@@ -3300,6 +3301,10 @@ local function dashingNow(char, root, hs, fdot, dt)
     -- 2. learned dash animation window
     if not dashing and det.learnedAnim and now < det.animDashUntil then dashing = true end
 
+    -- Once we know the game's real dash flag, IGNORE velocity entirely -- a fling
+    -- (which never sets that flag) must not be mistaken for a dash and redirected.
+    if det.attr or det.learnedAnim then return dashing end
+
     -- 3. velocity burst -- internal fallback + teacher only. Starts on a forward
     --    burst and ENDS when the burst decays (speed back below half its peak),
     --    so the dash ends with the actual movement, not a fixed timer.
@@ -3348,6 +3353,10 @@ local function step(dt)
     local hs   = hv.Magnitude
     local look = flat(root.CFrame.LookVector)
     local fdot = (hs > 0.01 and look.Magnitude > 0.01) and hv.Unit:Dot(look.Unit) or 0
+
+    -- never touch a FLING: at speeds well above a dash, leave velocity alone --
+    -- redirecting it would cancel/curve the fling (the user flings on purpose).
+    if hs > cfg.maxDashSpeed then det.prevHs = math.huge; return stopDash() end
 
     -- only flank a FORWARD dash with a target
     if not (dashingNow(char, root, hs, fdot, dt) and fdot >= cfg.forwardDot) then return stopDash() end
