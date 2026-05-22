@@ -3207,25 +3207,7 @@ end
 -- Keeps anything already learned -- this just refreshes per-character hooks.
 local function hookChar(char)
     if det.animConn then det.animConn:Disconnect(); det.animConn = nil end
-    if det.attrConn then det.attrConn:Disconnect(); det.attrConn = nil end
     det.prevHs = math.huge
-    if not det.attr then
-        for name, val in pairs(char:GetAttributes()) do
-            if tostring(name):lower():find("dash")
-               or (type(val) == "string" and val:lower():find("dash")) then
-                det.attr = name; break
-            end
-        end
-    end
-    -- grab the dash flag the instant the game sets it -- no velocity burst needed
-    det.attrConn = char.AttributeChanged:Connect(function(attr)
-        if det.attr then return end
-        local v = char:GetAttribute(attr)
-        if tostring(attr):lower():find("dash")
-           or (type(v) == "string" and v:lower():find("dash")) then
-            det.attr = attr
-        end
-    end)
     local hum = humOf(char)
     if hum then
         det.animConn = hum.AnimationPlayed:Connect(function(t)
@@ -3293,17 +3275,12 @@ local function dashingNow(char, root, hs, fdot, dt)
     local now = os.clock()
     local dashing = false
 
-    -- 1. learned attribute (precise, read straight from the game's own state)
-    if det.attr then
-        local v = char:GetAttribute(det.attr)
-        if v == true or (type(v) == "string" and v:lower():find("dash")) then dashing = true end
-    end
-    -- 2. learned dash animation window
-    if not dashing and det.learnedAnim and now < det.animDashUntil then dashing = true end
+    -- learned dash ANIMATION window (the game's own dash signal)
+    if det.learnedAnim and now < det.animDashUntil then dashing = true end
 
-    -- Once we know the game's real dash flag, IGNORE velocity entirely -- a fling
-    -- (which never sets that flag) must not be mistaken for a dash and redirected.
-    if det.attr or det.learnedAnim then return dashing end
+    -- Once we've learned the dash animation, ignore velocity entirely -- a fling
+    -- never plays the dash anim, so it can't be mistaken for a dash.
+    if det.learnedAnim then return dashing end
 
     -- 3. velocity burst -- internal fallback + teacher only. Starts on a forward
     --    burst and ENDS when the burst decays (speed back below half its peak),
@@ -3315,15 +3292,7 @@ local function dashingNow(char, root, hs, fdot, dt)
             det.velDashing   = true
             det.velPeak      = hs
             det.velDashUntil = now + 1.5   -- hard safety cap only
-            -- teach ourselves the game's real dash signal from this dash
-            if not det.attr then
-                for name, val in pairs(char:GetAttributes()) do
-                    if tostring(name):lower():find("dash")
-                       or (type(val) == "string" and val:lower():find("dash")) then
-                        det.attr = name; break
-                    end
-                end
-            end
+            -- teach ourselves the dash ANIMATION from this confirmed dash
             if not det.learnedAnim and det.lastAnim and (now - det.lastAnimT) < 0.25 then
                 det.animCounts[det.lastAnim] = (det.animCounts[det.lastAnim] or 0) + 1
                 if det.animCounts[det.lastAnim] >= 3 then det.learnedAnim = det.lastAnim end
@@ -3354,10 +3323,6 @@ local function step(dt)
     local look = flat(root.CFrame.LookVector)
     local fdot = (hs > 0.01 and look.Magnitude > 0.01) and hv.Unit:Dot(look.Unit) or 0
 
-    -- never touch a FLING: at speeds well above a dash, leave velocity alone --
-    -- redirecting it would cancel/curve the fling (the user flings on purpose).
-    if hs > cfg.maxDashSpeed then det.prevHs = math.huge; return stopDash() end
-
     -- only flank a FORWARD dash with a target
     if not (dashingNow(char, root, hs, fdot, dt) and fdot >= cfg.forwardDot) then return stopDash() end
     local tRoot = targetRoot()
@@ -3378,8 +3343,9 @@ local function step(dt)
         end
     end
 
-    -- steer the dash around to the flank
-    local dir = steerDir(root, tRoot)
+    -- steer the dash around to the flank -- but NEVER redirect fling-speed
+    -- velocity (that would cancel the fling); detection + facing still ran.
+    local dir = (hs <= cfg.maxDashSpeed) and steerDir(root, tRoot) or nil
     if dir then
         local blended = hv:Lerp(dir * hs, cfg.steer)
         if blended.X == blended.X and blended.Z == blended.Z and blended.Magnitude < 1e4 then
