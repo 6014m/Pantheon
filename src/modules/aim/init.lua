@@ -170,18 +170,23 @@ function module.register()
     combat:add(feature.declare({
         id           = "aim.dash_flank",
         name         = "Dash Flank",
-        description  = "Detects your forward dash (by its sudden velocity burst -- not WalkSpeed) and curves it AROUND the target, hugging their side or back in an oval, turning you to face them -- so the follow-up lands where a front block won't save them. If it can't reach the flank in time it still rotates as if it had. Goes around, not through. Uninterruptable by Rotation Lock; flanks Target Select's target.",
+        description  = "Bind your game's dash key (default Q). Pressing it while moving forward is detected as a dash, and the dash is curved AROUND the target -- hugging their side or back in an oval, turning you to face them -- so the follow-up lands where a front block won't save them. INPUT-based, so flings / sprints / knockback are never mistaken for a dash. Goes around, not through. Uninterruptable by Rotation Lock; flanks Target Select's target.",
         default      = false,
         dependencies = { "aim.target_select" },
         onToggle     = function(v) dashFlank.setEnabled(v) end,
         settings = {
+            -- Bind YOUR game's dash key (default Q). Clear it (Backspace) for
+            -- keyless-dash games to fall back to velocity detection.
+            { type = "keybind", name = "Dash key", id = "aim.dash_flank.key",
+              default = Enum.KeyCode.Q },
             { type = "toggle", name = "Aim for back (off = side)", default = true,
               onChange = function(v) dashFlank.setMode(v and "back" or "side") end },
+            { type = "slider", name = "Dash length (s)",
+              key = "dashlen", min = 0.2, max = 1, step = 0.05, default = 0.45,
+              onChange = function(v) dashFlank.setDashLength(v) end },
             { type = "slider", name = "Hug distance (studs)",
               min = 2, max = 10, step = 0.5, default = 3,
               onChange = function(v) dashFlank.setMinRadius(v) end },
-            -- (no dash-detection knob: it reads the game's own dash flag
-            -- (attribute/animation); the velocity burst is an internal fallback.)
             { type = "slider", name = "Steer strength",
               min = 0.1, max = 1, step = 0.05, default = 1,
               onChange = function(v) dashFlank.setSteer(v) end },
