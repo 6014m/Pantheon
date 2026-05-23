@@ -96,10 +96,10 @@ function state.isFriendly(plr)
     return state.friendlies[plr.UserId] == true
 end
 
--- True when `character` has a Weld / WeldConstraint / Motor6D whose other
--- end is on another *player's* character (i.e. you're physically attached
--- to another player, e.g. by a grab move). Used by shiftlock's rotation
--- drag-protect (gated by weldSafetyEnabled) and lockon's camera suspension.
+-- True when `character` is rigidly attached (Weld / WeldConstraint / Motor6D)
+-- to another *player's* character -- i.e. a grab move has stuck you to them.
+-- Used by shiftlock's rotation drag-protect (gated by weldSafetyEnabled) and
+-- lockon's camera suspension.
 --
 -- Specifically uses Players:GetPlayerFromCharacter, not just "any model
 -- with a Humanoid". The any-humanoid check was tripping permanently in
@@ -127,19 +127,40 @@ end
 
 function state.isWeldedToOther(character)
     if not character then return false end
+
+    -- A part that belongs to a different *player's* character (not ours, and
+    -- not an NPC / dummy / mount).
+    local function foreignPlayerPart(p)
+        if not p or not p.Parent then return false end
+        if p:IsDescendantOf(character) then return false end
+        local m = p:FindFirstAncestorOfClass("Model")
+        return m ~= nil and m ~= character
+            and PlayersService:GetPlayerFromCharacter(m) ~= nil
+    end
+
+    local function joinsToForeign(j)
+        return (j:IsA("Weld") or j:IsA("WeldConstraint") or j:IsA("Motor6D"))
+            and (foreignPlayerPart(j.Part0) or foreignPlayerPart(j.Part1))
+    end
+
     for _, d in ipairs(character:GetDescendants()) do
-        if d:IsA("Weld") or d:IsA("WeldConstraint") or d:IsA("Motor6D") then
-            local p0, p1 = d.Part0, d.Part1
-            for _, p in ipairs({ p0, p1 }) do
-                if p and p.Parent and not p:IsDescendantOf(character) then
-                    local m = p:FindFirstAncestorOfClass("Model")
-                    if m and m ~= character then
-                        if PlayersService:GetPlayerFromCharacter(m) then
-                            return true
-                        end
-                    end
+        if d:IsA("BasePart") then
+            -- GetJoints() finds joints by their Part0/Part1 references no matter
+            -- where the joint instance is *parented*. Grab moves frequently
+            -- parent the weld on the VICTIM's character (or in workspace) so it
+            -- replicates with them -- a walk that only inspects our own
+            -- descendants misses those entirely, which is why we still dragged
+            -- enemies around. Parent-agnostic lookup catches both sides.
+            local ok, joints = pcall(function() return d:GetJoints() end)
+            if ok and joints then
+                for _, j in ipairs(joints) do
+                    if joinsToForeign(j) then return true end
                 end
             end
+        elseif d:IsA("Weld") or d:IsA("WeldConstraint") or d:IsA("Motor6D") then
+            -- Fallback: a weld instance parented inside our own character, in
+            -- case GetJoints under-reports WeldConstraints on this executor.
+            if joinsToForeign(d) then return true end
         end
     end
     return false
