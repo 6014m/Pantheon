@@ -57,9 +57,6 @@ local function getHumanoids()
 end
 
 local function shouldRotate()
-    -- Dash Flank takes priority: while it's steering a forward-dash flank, yield
-    -- so we can't snap the body back to the enemy's front mid-maneuver.
-    if s.externalSuppress and s.externalSuppress() then return false end
     if not state.lockon_enabled then return false end
     if not state.rotationLockEnabled then return false end
     if not state.target then return false end
@@ -202,12 +199,6 @@ end
 -- to yield: when Rotation Lock is active, shiftlock skips its own rotation.
 function RotationLock.isActive()
     return shouldRotate() and not bgSuppressed()
-end
-
--- Register a predicate; while it returns true, Rotation Lock fully yields (used
--- so Dash Flank can own the body uninterrupted during a flank dash).
-function RotationLock.setExternalSuppress(fn)
-    s.externalSuppress = fn
 end
 
 function RotationLock.init()

@@ -31,7 +31,6 @@ BUILD_ORDER = [
     "modules/aim/rotation_lock",
     "modules/aim/lockon",
     "modules/aim/target_select",
-    "modules/aim/dash_flank",
     "modules/aim/init",
     "init",
 ]

@@ -11,7 +11,6 @@ local shiftlock    = require("modules.aim.shiftlock")
 local rotationLock = require("modules.aim.rotation_lock")
 local lockon       = require("modules.aim.lockon")
 local targetSelect = require("modules.aim.target_select")
-local dashFlank    = require("modules.aim.dash_flank")
 local log          = require("core.log")
 
 local module = {}
@@ -23,13 +22,11 @@ function module.register()
     rotationLock.init()
     lockon.init()
     targetSelect.init()
-    dashFlank.init()
-    -- Dash Flank owns the body during a flank dash: both shiftlock's rotation
-    -- pin and Rotation Lock yield to it so neither can interrupt the maneuver.
+    -- Shiftlock's rotation pin yields while Rotation Lock drives the body so
+    -- the two don't fight over the character's facing.
     shiftlock.setExternalSkipRotation(function()
-        return rotationLock.isActive() or dashFlank.isDashing()
+        return rotationLock.isActive()
     end)
-    rotationLock.setExternalSuppress(dashFlank.isDashing)
 
     local parent = window.parent()
 
@@ -164,37 +161,6 @@ function module.register()
         onKey        = function() targetSelect.swapTarget() end,
     }).root)
 
-    -- Dash Flank: when YOU forward-dash, curve the dash AROUND the Target Select
-    -- target to hug their side/back and turn to face them. Depends on Target
-    -- Select for who to flank.
-    combat:add(feature.declare({
-        id           = "aim.dash_flank",
-        name         = "Dash Flank",
-        description  = "Bind your game's dash key (default Q). Pressing it while moving forward is detected as a dash, and the dash is curved AROUND the target -- hugging their side or back in an oval, turning you to face them -- so the follow-up lands where a front block won't save them. INPUT-based, so flings / sprints / knockback are never mistaken for a dash. Goes around, not through. Uninterruptable by Rotation Lock; flanks Target Select's target.",
-        default      = false,
-        dependencies = { "aim.target_select" },
-        onToggle     = function(v) dashFlank.setEnabled(v) end,
-        settings = {
-            -- Bind YOUR game's dash key (default Q). Clear it (Backspace) for
-            -- keyless-dash games to fall back to velocity detection.
-            { type = "keybind", name = "Dash key", id = "aim.dash_flank.key",
-              default = Enum.KeyCode.Q },
-            { type = "toggle", name = "Aim for back (off = side)", default = true,
-              onChange = function(v) dashFlank.setMode(v and "back" or "side") end },
-            { type = "slider", name = "Dash length (s)",
-              key = "dashlen", min = 0.2, max = 1, step = 0.05, default = 0.45,
-              onChange = function(v) dashFlank.setDashLength(v) end },
-            { type = "slider", name = "Hug distance (studs)",
-              min = 2, max = 10, step = 0.5, default = 3,
-              onChange = function(v) dashFlank.setMinRadius(v) end },
-            { type = "slider", name = "Steer strength",
-              min = 0.1, max = 1, step = 0.05, default = 1,
-              onChange = function(v) dashFlank.setSteer(v) end },
-            { type = "toggle", name = "Turn to face target", default = true,
-              onChange = function(v) dashFlank.setRotate(v) end },
-        },
-    }).root)
-
     -- 3. Visuals --------------------------------------------------------------
     -- Highlight depends on Target Select (renders nothing without a target).
     local vis = container.new(parent, "Visuals")
@@ -219,7 +185,6 @@ end
 function module.destroy()
     pcall(function() if targetSelect.destroy then targetSelect.destroy() end end)
     pcall(function() if rotationLock.destroy then rotationLock.destroy() end end)
-    pcall(function() if dashFlank.destroy    then dashFlank.destroy()    end end)
     pcall(function() if lockon.destroy       then lockon.destroy()       end end)
     pcall(function() if shiftlock.destroy    then shiftlock.destroy()    end end)
     pcall(function() if highlight.destroy    then highlight.destroy()    end end)
