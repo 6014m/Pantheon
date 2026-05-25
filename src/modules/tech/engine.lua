@@ -39,6 +39,7 @@ local conns = {}     -- id -> { Connection, ... } (move-trigger listeners)
 local casBound = {}  -- id -> CAS action name (suppress move triggers that sink the key)
 local RENDER_BIND = "PantheonTechHold"
 local bound = false
+local drainConn      -- Heartbeat that runs queued techs off the trigger signal thread
 
 -- held camera/body facings; the render loop enforces these each frame while set.
 local held = { cam = nil, body = nil }   -- each = { yaw, pitch } degrees, target-relative
@@ -400,6 +401,22 @@ local function runTech(tech, hold)
     end)
 end
 
+-- Run a tech FROM A TRIGGER. One-shot techs are queued and dispatched on Heartbeat
+-- (drainPending) instead of run straight from the trigger's signal callback: a
+-- coroutine task.spawn'd inside an RBXScriptSignal handler doesn't reliably get its
+-- task.wait resumed on some executors, which froze a tech at its first Wait. Hold
+-- techs just set a facing instantly (no meaningful wait), so they run immediately
+-- to avoid a 1-frame gap / fast-tap stuck-facing.
+local pendingRuns = {}
+local function queueRun(tech, hold)
+    if hold then runTech(tech, true) else pendingRuns[#pendingRuns + 1] = tech end
+end
+local function drainPending()
+    if #pendingRuns == 0 then return end
+    local q = pendingRuns; pendingRuns = {}
+    for _, t in ipairs(q) do runTech(t, false) end
+end
+
 -- ===== animation triggers + capture =====
 -- One persistent hook on the character's Animator drives ALL "anim" techs (and the
 -- editor's "Capture" button), re-hooking on respawn. Gated on tech.enabled so
@@ -478,7 +495,7 @@ local function onAnimPlayed(track)
             watching = true
             if animIdNum(tr.animId) == id and modifierHeld(tech) and conditionsMet(tech) then
                 log.info("[tech] anim trigger fired: " .. tostring(tech.name) .. " <- " .. id)
-                runTech(tech, false)
+                queueRun(tech, false)
             end
         end
     end
@@ -529,7 +546,7 @@ local function wireKey(tech)
         local action = "PantheonTech_" .. tech.id
         CAS:BindActionAtPriority(action, function(_, inputState)
             if inputState == Enum.UserInputState.Begin then
-                if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then runTech(tech, isHold) end
+                if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then queueRun(tech, isHold) end
             elseif inputState == Enum.UserInputState.End and isHold then
                 releaseHold()
             end
@@ -539,7 +556,7 @@ local function wireKey(tech)
         return
     end
     keybinds.set("tech." .. tech.id, key,
-        function() if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then runTech(tech, isHold) end end,
+        function() if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then queueRun(tech, isHold) end end,
         function() if isHold then releaseHold() end end)
 end
 
@@ -568,7 +585,7 @@ local function wireMove(tech)
         CAS:BindActionAtPriority(action, function(_, inputState)
             if inputState == Enum.UserInputState.Begin
                and tech.enabled and modifierHeld(tech) and conditionsMet(tech) then
-                runTech(tech, false)
+                queueRun(tech, false)
             end
             return Enum.ContextActionResult.Sink
         end, false, 3000, kc)
@@ -576,7 +593,7 @@ local function wireMove(tech)
         return
     end
     keybinds.set("tech." .. tech.id, kc,
-        function() if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then runTech(tech, false) end end,
+        function() if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then queueRun(tech, false) end end,
         nil)
 end
 
@@ -694,7 +711,8 @@ function Engine.get(id) return techs[id] end
 
 -- Run a tech's action sequence once, now, ignoring its trigger/conditions.
 -- Used by the editor's "Test" button to preview a draft against the world.
-function Engine.run(tech) if tech then runTech(tech, false) end end
+-- Queued like a trigger so its Waits resume reliably.
+function Engine.run(tech) if tech then queueRun(tech, false) end end
 
 function Engine.setEnabled(id, v)
     local t = techs[id]; if not t then return end
@@ -726,6 +744,8 @@ end
 function Engine.init()
     if bound then return end
     RunService:BindToRenderStep(RENDER_BIND, Enum.RenderPriority.Camera.Value + 2, renderHold)
+    -- dispatch queued trigger runs from a stable thread so their Waits resume
+    drainConn = RunService.Heartbeat:Connect(drainPending)
     -- persistent Animator hook for "anim" triggers + the editor's Capture, re-hooked
     -- on respawn (Humanoid/Animator aren't there the instant the character spawns).
     hookAnimator()
@@ -751,6 +771,7 @@ end
 
 function Engine.destroy()
     if bound then pcall(function() RunService:UnbindFromRenderStep(RENDER_BIND) end); bound = false end
+    if drainConn then pcall(function() drainConn:Disconnect() end); drainConn = nil end
     for _, list in pairs(conns) do for _, c in ipairs(list) do pcall(function() c:Disconnect() end) end end
     conns = {}
     releaseHold()
