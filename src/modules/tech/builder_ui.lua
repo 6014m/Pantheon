@@ -356,7 +356,7 @@ rebuild = function()
         local res = scanner.cached() or scanner.scan()
         local moveset = res.buttons or {}
         if #moveset == 0 then
-            place(components.Label(formScroll, "No moves detected - click 'Scan Moves' in the menu"))
+            place(components.Label(formScroll, "No moves detected yet (run 'Dump GUI' so I can map your hotbar)"))
         else
             local labels = {}
             for _, b in ipairs(moveset) do
