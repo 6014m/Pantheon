@@ -23,10 +23,10 @@ local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 -- JJS spans multiple places (17016840407 = "Lobby", 9391468976 = experience root)
--- that share one GameId. Registering under both known places covers them now;
--- once the in-game grabber reports game.GameId, add it here (a GameId match covers
--- EVERY place/VIP server in one entry -- registry.current() checks GameId too).
-local JJS_IDS = { 17016840407, 9391468976 }   -- TODO: append the JJS GameId from the grabber
+-- under ONE GameId 3508322461 (grabbed in-game; matches the legacy script's id).
+-- registry.current() checks game.GameId, so the GameId entry covers EVERY place /
+-- VIP server in one go; the place ids are just extra redundancy.
+local JJS_IDS = { 3508322461, 17016840407, 9391468976 }   -- GameId first, then known places
 
 local JJS = {}
 
