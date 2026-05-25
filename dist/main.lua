@@ -3799,6 +3799,7 @@ local RunService = game:GetService("RunService")
 local Workspace  = game:GetService("Workspace")
 local RS         = game:GetService("ReplicatedStorage")
 local VIM        = game:GetService("VirtualInputManager")
+local UIS        = game:GetService("UserInputService")
 
 local Engine = {}
 Engine.changed = Signal.new()   -- fires when the tech set changes (UI list re-reads it)
@@ -3943,6 +3944,15 @@ CONDITIONS.locked_on = function() return state.target ~= nil end
 CONDITIONS.shiftlock = function() return state.shiftlock_active == true end
 Engine.CONDITIONS = CONDITIONS
 
+-- optional modifier key that must be HELD for a key/move trigger to fire
+-- (e.g. hold A + press Q). trigger.modkey is the short key name, or nil.
+local function modifierHeld(tech)
+    local m = tech.trigger and tech.trigger.modkey
+    if not m then return true end
+    local kc = Enum.KeyCode[m]
+    return kc ~= nil and UIS:IsKeyDown(kc)
+end
+
 local function conditionsMet(tech)
     for _, c in ipairs(tech.trigger.conditions or {}) do
         local fn = CONDITIONS[c]
@@ -3972,6 +3982,7 @@ local function runTech(tech, hold)
         local cam = Workspace.CurrentCamera
         startCamLook = cam and cam.CFrame.LookVector or nil
         local releaseAfterWait = false
+        local heldKeys = {}   -- keys pressed by a Hold step, released by a Release (or at the end)
         for _, a in ipairs(tech.actions or {}) do
             if a.type == "during" then
                 -- the preceding Look/Rotate lasts only as long as the NEXT Wait,
@@ -3992,11 +4003,21 @@ local function runTech(tech, hold)
                     if mr and tr and (tr.Position - mr.Position).Magnitude <= studs then break end
                     task.wait(0.05)
                 end
+            elseif a.type == "hold" then
+                -- press the key DOWN and keep it held until the matching Release
+                -- (or the safety release at the end), so steps in between run while held.
+                local kc = a.key and Enum.KeyCode[a.key]
+                if kc then pcall(function() VIM:SendKeyEvent(true, kc, false, game) end); heldKeys[kc] = true end
+            elseif a.type == "release" then
+                local kc = a.key and Enum.KeyCode[a.key]
+                if kc then pcall(function() VIM:SendKeyEvent(false, kc, false, game) end); heldKeys[kc] = nil end
             else
                 local fn = ACTIONS[a.type]
                 if fn then local ok, err = pcall(fn, a); if not ok then log.warn("[tech] action " .. tostring(a.type) .. ": " .. tostring(err)) end end
             end
         end
+        -- safety: release any key a Hold left down without a matching Release
+        for kc in pairs(heldKeys) do pcall(function() VIM:SendKeyEvent(false, kc, false, game) end) end
         -- one-shot triggers auto-clean at the end (in case the tech has no Return).
         -- hold triggers keep the held facing until the key is released.
         if not hold then releaseHold() end
@@ -4010,7 +4031,7 @@ local function wireKey(tech)
     if not key or key == Enum.KeyCode.Unknown then return end
     local isHold = tech.trigger.event == "keyhold"
     keybinds.set("tech." .. tech.id, key,
-        function() if tech.enabled and conditionsMet(tech) then runTech(tech, isHold) end end,
+        function() if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then runTech(tech, isHold) end end,
         function() if isHold then releaseHold() end end)
 end
 
@@ -4028,7 +4049,7 @@ local function wireMove(tech)
         return
     end
     keybinds.set("tech." .. tech.id, kc,
-        function() if tech.enabled and conditionsMet(tech) then runTech(tech, false) end end,
+        function() if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then runTech(tech, false) end end,
         nil)
 end
 
@@ -4067,6 +4088,7 @@ local function serialize(tech)
             key        = persist.keyToString(tech.trigger.key),
             move       = tech.trigger.move,
             movekey    = tech.trigger.movekey,
+            modkey     = tech.trigger.modkey,
             maxRange   = tech.trigger.maxRange,
             conditions = tech.trigger.conditions or {},
         },
@@ -4086,6 +4108,7 @@ local function deserialize(s)
             key        = s.trigger and persist.stringToKey(s.trigger.key),
             move       = s.trigger and s.trigger.move,
             movekey    = s.trigger and s.trigger.movekey,
+            modkey     = s.trigger and s.trigger.modkey,
             maxRange   = s.trigger and s.trigger.maxRange,
             conditions = (s.trigger and s.trigger.conditions) or {},
         },
@@ -4448,9 +4471,11 @@ local CONDITIONS = {
     { id = "locked_on", label = "Locked on"    },
     { id = "shiftlock", label = "Shiftlock on" },
 }
-local ACTION_TYPES = { "look", "rotate", "during", "wait", "within", "return", "feature", "key" }
+-- palette buttons (Release is added automatically with Hold, not its own button)
+local ACTION_TYPES = { "look", "rotate", "during", "wait", "within", "return", "feature", "key", "hold" }
 local STEP_LABEL   = { look = "Look", rotate = "Rotate", wait = "Wait", during = "During",
-                       within = "Within", ["return"] = "Return", feature = "Use", key = "Press" }
+                       within = "Within", ["return"] = "Return", feature = "Use", key = "Press",
+                       hold = "Hold", release = "Release" }
 local YAW_PRESETS  = { 180, 135, 90, 45, 0, -45, -90, -135, -180 }
 
 -- ---------- small helpers ----------
@@ -4530,7 +4555,7 @@ local function draftFromTech(t)
         editId = t.id, name = t.name,
         scope = (t.scope == "universal") and "universal" or "game",
         event = t.trigger.event, key = t.trigger.key, move = t.trigger.move, movekey = t.trigger.movekey,
-        maxRange = t.trigger.maxRange, conditions = conds, actions = actions,
+        modkey = t.trigger.modkey, maxRange = t.trigger.maxRange, conditions = conds, actions = actions,
     }
 end
 local function draftConditions()
@@ -4549,6 +4574,8 @@ local function draftActions()
         elseif a.type == "return" then actions[#actions + 1] = { type = "return" }
         elseif a.type == "feature" then actions[#actions + 1] = { type = "feature", feature = a.feature }
         elseif a.type == "key" then actions[#actions + 1] = { type = "key", key = a.key }
+        elseif a.type == "hold" then actions[#actions + 1] = { type = "hold", key = a.key }
+        elseif a.type == "release" then actions[#actions + 1] = { type = "release", key = a.key }
         end
     end
     return actions
@@ -4558,7 +4585,7 @@ local function buildTechFromDraft(id)
         id = id, name = (draft.name and #draft.name > 0) and draft.name or "Tech", custom = true,
         scope = (draft.scope == "universal") and "universal" or game.GameId, enabled = true,
         trigger = { event = draft.event, key = draft.key, move = draft.move, movekey = draft.movekey,
-                    maxRange = draft.maxRange, conditions = draftConditions() },
+                    modkey = draft.modkey, maxRange = draft.maxRange, conditions = draftConditions() },
         actions = draftActions(),
     }
 end
@@ -4688,7 +4715,7 @@ local function buildChip(parent, i, act)
             if n then act.studs = math.clamp(n, 0, 500) end
             val.Text = tostring(act.studs or 5)
         end)
-    elseif act.type == "key" then
+    elseif act.type == "key" or act.type == "hold" or act.type == "release" then
         val = Instance.new("TextButton"); val.AutoButtonColor = false
         val.Text = act.key and ("key: " .. act.key) or "(click, press a key)"
         val.MouseButton1Click:Connect(function()
@@ -4698,7 +4725,12 @@ local function buildChip(parent, i, act)
                 if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
                 if input.KeyCode == Enum.KeyCode.Unknown then return end
                 if input.KeyCode ~= Enum.KeyCode.Escape then
-                    act.key = (tostring(input.KeyCode):gsub("Enum.KeyCode.", ""))
+                    local kn = (tostring(input.KeyCode):gsub("Enum.KeyCode.", ""))
+                    act.key = kn
+                    -- Hold + Release share one key, so set both halves of the pair
+                    if act.holdId then
+                        for _, o in ipairs(draft.actions) do if o.holdId == act.holdId then o.key = kn end end
+                    end
                 end
                 val.Text = act.key and ("key: " .. act.key) or "(click, press a key)"
                 conn:Disconnect()
@@ -4798,6 +4830,14 @@ rebuild = function()
             components.KeybindSetter(p, { label = "Key", default = draft.key, onChange = function(k) draft.key = k end })
         end))
     end
+    -- optional modifier that must be HELD for the trigger to fire (hold A + press Q)
+    place(wrap(28, function(p)
+        local def = (draft.modkey and Enum.KeyCode[draft.modkey]) or Enum.KeyCode.Unknown
+        components.KeybindSetter(p, { label = "Hold-key (optional)", default = def,
+            onChange = function(k)
+                draft.modkey = (k and k ~= Enum.KeyCode.Unknown) and (tostring(k):gsub("Enum.KeyCode.", "")) or nil
+            end })
+    end))
     place(wrap(30, function(p) components.Toggle(p, { text = "Hold the key (release = return)",
         default = draft.event == "keyhold",
         onChange = function(v)
@@ -4822,6 +4862,13 @@ rebuild = function()
             b.BackgroundColor3 = theme.bgDark; b.AutoButtonColor = true; b.TextColor3 = theme.accent
             b.Font = theme.fontBold; b.TextSize = 12; b.Text = "+ " .. (STEP_LABEL[t] or t); b.LayoutOrder = i; b.Parent = palette
             b.MouseButton1Click:Connect(function()
+                if t == "hold" then
+                    -- add a Hold + Release pair (shared key); put steps between them
+                    local hid = "h" .. tostring(math.floor(os.clock() * 1000))
+                    draft.actions[#draft.actions + 1] = { type = "hold", key = nil, holdId = hid }
+                    draft.actions[#draft.actions + 1] = { type = "release", key = nil, holdId = hid }
+                    rebuild(); return
+                end
                 local a = { type = t }
                 if t == "look" then a.x = 180; a.y = 0
                 elseif t == "rotate" then a.x = 180

@@ -26,6 +26,7 @@ local RunService = game:GetService("RunService")
 local Workspace  = game:GetService("Workspace")
 local RS         = game:GetService("ReplicatedStorage")
 local VIM        = game:GetService("VirtualInputManager")
+local UIS        = game:GetService("UserInputService")
 
 local Engine = {}
 Engine.changed = Signal.new()   -- fires when the tech set changes (UI list re-reads it)
@@ -170,6 +171,15 @@ CONDITIONS.locked_on = function() return state.target ~= nil end
 CONDITIONS.shiftlock = function() return state.shiftlock_active == true end
 Engine.CONDITIONS = CONDITIONS
 
+-- optional modifier key that must be HELD for a key/move trigger to fire
+-- (e.g. hold A + press Q). trigger.modkey is the short key name, or nil.
+local function modifierHeld(tech)
+    local m = tech.trigger and tech.trigger.modkey
+    if not m then return true end
+    local kc = Enum.KeyCode[m]
+    return kc ~= nil and UIS:IsKeyDown(kc)
+end
+
 local function conditionsMet(tech)
     for _, c in ipairs(tech.trigger.conditions or {}) do
         local fn = CONDITIONS[c]
@@ -199,6 +209,7 @@ local function runTech(tech, hold)
         local cam = Workspace.CurrentCamera
         startCamLook = cam and cam.CFrame.LookVector or nil
         local releaseAfterWait = false
+        local heldKeys = {}   -- keys pressed by a Hold step, released by a Release (or at the end)
         for _, a in ipairs(tech.actions or {}) do
             if a.type == "during" then
                 -- the preceding Look/Rotate lasts only as long as the NEXT Wait,
@@ -219,11 +230,21 @@ local function runTech(tech, hold)
                     if mr and tr and (tr.Position - mr.Position).Magnitude <= studs then break end
                     task.wait(0.05)
                 end
+            elseif a.type == "hold" then
+                -- press the key DOWN and keep it held until the matching Release
+                -- (or the safety release at the end), so steps in between run while held.
+                local kc = a.key and Enum.KeyCode[a.key]
+                if kc then pcall(function() VIM:SendKeyEvent(true, kc, false, game) end); heldKeys[kc] = true end
+            elseif a.type == "release" then
+                local kc = a.key and Enum.KeyCode[a.key]
+                if kc then pcall(function() VIM:SendKeyEvent(false, kc, false, game) end); heldKeys[kc] = nil end
             else
                 local fn = ACTIONS[a.type]
                 if fn then local ok, err = pcall(fn, a); if not ok then log.warn("[tech] action " .. tostring(a.type) .. ": " .. tostring(err)) end end
             end
         end
+        -- safety: release any key a Hold left down without a matching Release
+        for kc in pairs(heldKeys) do pcall(function() VIM:SendKeyEvent(false, kc, false, game) end) end
         -- one-shot triggers auto-clean at the end (in case the tech has no Return).
         -- hold triggers keep the held facing until the key is released.
         if not hold then releaseHold() end
@@ -237,7 +258,7 @@ local function wireKey(tech)
     if not key or key == Enum.KeyCode.Unknown then return end
     local isHold = tech.trigger.event == "keyhold"
     keybinds.set("tech." .. tech.id, key,
-        function() if tech.enabled and conditionsMet(tech) then runTech(tech, isHold) end end,
+        function() if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then runTech(tech, isHold) end end,
         function() if isHold then releaseHold() end end)
 end
 
@@ -255,7 +276,7 @@ local function wireMove(tech)
         return
     end
     keybinds.set("tech." .. tech.id, kc,
-        function() if tech.enabled and conditionsMet(tech) then runTech(tech, false) end end,
+        function() if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then runTech(tech, false) end end,
         nil)
 end
 
@@ -294,6 +315,7 @@ local function serialize(tech)
             key        = persist.keyToString(tech.trigger.key),
             move       = tech.trigger.move,
             movekey    = tech.trigger.movekey,
+            modkey     = tech.trigger.modkey,
             maxRange   = tech.trigger.maxRange,
             conditions = tech.trigger.conditions or {},
         },
@@ -313,6 +335,7 @@ local function deserialize(s)
             key        = s.trigger and persist.stringToKey(s.trigger.key),
             move       = s.trigger and s.trigger.move,
             movekey    = s.trigger and s.trigger.movekey,
+            modkey     = s.trigger and s.trigger.modkey,
             maxRange   = s.trigger and s.trigger.maxRange,
             conditions = (s.trigger and s.trigger.conditions) or {},
         },
