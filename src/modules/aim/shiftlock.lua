@@ -346,15 +346,30 @@ local lastIconLog = 0
 local function scanShiftlockIcons()
     local pg = lp():FindFirstChildOfClass("PlayerGui")
     if not pg then return end
+    local cam = workspace.CurrentCamera
+    local center = cam and (cam.ViewportSize / 2) or Vector2.new(960, 540)
     local known = {}
     for _, e in ipairs(hiddenStore) do known[e[1]] = true end
     for _, gobj in ipairs(pg:GetDescendants()) do
-        local isSG = gobj:IsA("ScreenGui")
-        if (isSG or gobj:IsA("GuiObject")) and not known[gobj] then
-            -- match the element's own name OR its parent's name (the icon image
-            -- 'Lock' lives inside a 'ShiftLock' container -- catch both).
-            local hit = (string.find(nameClean(gobj.Name), "shiftlock") ~= nil)
-                or (gobj.Parent and string.find(nameClean(gobj.Parent.Name), "shiftlock") ~= nil)
+        if not known[gobj] then
+            local isSG = gobj:IsA("ScreenGui")
+            local hit = false
+            -- (1) name OR parent name contains "shiftlock" (the 'Lock' image sits
+            --     inside a 'ShiftLock' container)
+            if isSG or gobj:IsA("GuiObject") then
+                hit = (string.find(nameClean(gobj.Name), "shiftlock") ~= nil)
+                    or (gobj.Parent and string.find(nameClean(gobj.Parent.Name), "shiftlock") ~= nil)
+            end
+            -- (2) name-independent: a SMALL image near SCREEN CENTER is the shiftlock
+            --     crosshair/lock indicator whatever it's called. This is the reliable
+            --     catch since JJS's icon name didn't match.
+            if not hit and (gobj:IsA("ImageLabel") or gobj:IsA("ImageButton")) then
+                local sz = gobj.AbsoluteSize
+                if sz.X > 0 and sz.X <= 80 and sz.Y <= 80 then
+                    local c = gobj.AbsolutePosition + sz / 2
+                    if (c - center).Magnitude <= 90 then hit = true end
+                end
+            end
             if hit then
                 local prop = isSG and "Enabled" or "Visible"
                 local ok, cur = pcall(function() return gobj[prop] end)
@@ -362,7 +377,6 @@ local function scanShiftlockIcons()
             end
         end
     end
-    -- diagnostic: confirm whether we're actually finding JJS's icon (F9 console)
     if os.clock() - lastIconLog > 3 then
         lastIconLog = os.clock()
         local names = {}
@@ -612,17 +626,11 @@ local function step()
         -- pair mode doesn't call applyLock(), so drive our shiftlock icon here so it
         -- shows while the paired shiftlock is active...
         if self_state.vIcon then self_state.vIcon.Visible = state.shiftlock_active end
-        -- ...and keep the GAME's own shiftlock icon hidden the WHOLE time Pantheon
-        -- shiftlock is enabled (not just while actively locking) -- some games show
-        -- their shiftlock icon as a persistent indicator even when not in
-        -- LockCenter, so gating on shiftlock_active left it visible.
-        if state.shiftlock_enabled then
-            enforceShiftlockHidden()
-            self_state.iconsHidden = true
-        elseif self_state.iconsHidden then
-            restoreShiftlockIcons()
-            self_state.iconsHidden = false
-        end
+        -- ...and ALWAYS hide the game's own shiftlock icon while in pair mode (i.e.
+        -- the whole time you're in JJS). NOT gated on shiftlock_enabled/active --
+        -- that gate is likely why it kept showing. Pantheon shows its own vIcon.
+        enforceShiftlockHidden()
+        self_state.iconsHidden = true
     elseif self_state.iconsHidden then
         -- left pair mode (or shiftlock off) -> give the game its icon back
         restoreShiftlockIcons()
@@ -683,6 +691,7 @@ local function step()
     if hum and hum.CameraOffset ~= ZERO3 then hum.CameraOffset = ZERO3 end
 
     if not state.shiftlock_active or not self_state.root or not hum then return end
+    if state.techBodyOverride then return end   -- a Tech Builder Rotate step owns the body; don't overwrite it
     if hum.Health <= 0 then return end
 
     local st = hum:GetState()
