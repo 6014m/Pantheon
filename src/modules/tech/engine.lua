@@ -28,6 +28,7 @@ local Workspace  = game:GetService("Workspace")
 local RS         = game:GetService("ReplicatedStorage")
 local VIM        = game:GetService("VirtualInputManager")
 local UIS        = game:GetService("UserInputService")
+local CAS        = game:GetService("ContextActionService")
 
 local Engine = {}
 Engine.changed = Signal.new()   -- fires when the tech set changes (UI list re-reads it)
@@ -35,6 +36,7 @@ local LP = Players.LocalPlayer
 
 local techs = {}     -- id -> tech def
 local conns = {}     -- id -> { Connection, ... } (move-trigger listeners)
+local casBound = {}  -- id -> CAS action name (suppress move triggers that sink the key)
 local RENDER_BIND = "PantheonTechHold"
 local bound = false
 
@@ -490,6 +492,25 @@ local function wireMove(tech)
         log.warn("[tech] '" .. tostring(tech.name) .. "': move trigger has no key set -- pick the move's key")
         return
     end
+    if tech.trigger.suppress then
+        keybinds.clear("tech." .. tech.id)   -- drop any prior UIS bind (mode switch)
+        -- "Cancel the move's normal fire": intercept the key with a high-priority
+        -- ContextActionService bind and SINK it, so the press runs THIS tech and the
+        -- game's own keybind for the move never sees it. The tech fires the move
+        -- itself via a Use Move step. (Sink only blocks lower CAS binds, not raw
+        -- UserInputService listeners -- see notes; applySuppression covers the button
+        -- path too.) This is the "fast filter": key down -> us -> sink.
+        local action = "PantheonTech_" .. tech.id
+        CAS:BindActionAtPriority(action, function(_, inputState)
+            if inputState == Enum.UserInputState.Begin
+               and tech.enabled and modifierHeld(tech) and conditionsMet(tech) then
+                runTech(tech, false)
+            end
+            return Enum.ContextActionResult.Sink
+        end, false, 3000, kc)
+        casBound[tech.id] = action
+        return
+    end
     keybinds.set("tech." .. tech.id, kc,
         function() if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then runTech(tech, false) end end,
         nil)
@@ -498,6 +519,8 @@ end
 function Engine.rewire()
     for _, list in pairs(conns) do for _, c in ipairs(list) do pcall(function() c:Disconnect() end) end end
     conns = {}
+    for _, action in pairs(casBound) do pcall(function() CAS:UnbindAction(action) end) end
+    casBound = {}
     for _, tech in pairs(techs) do
         local ev = tech.trigger and tech.trigger.event
         if ev == "key" or ev == "keyhold" then
