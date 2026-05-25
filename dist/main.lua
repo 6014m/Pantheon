@@ -2575,31 +2575,58 @@ end
 -- and restores it when Pantheon's shiftlock goes inactive.
 -- NOTE: if JJS names its icon something without "shiftlock" in it, this won't
 -- catch it -- grab the icon's instance name (Dex/explorer) and we target it.
-local hiddenStore = {}
-local function setForeignShiftlockHidden(hide)
-    if hide then
-        if #hiddenStore > 0 then return end
-        local pg = lp():FindFirstChildOfClass("PlayerGui")
-        if not pg then return end
-        for _, gobj in ipairs(pg:GetDescendants()) do
-            local isSG = gobj:IsA("ScreenGui")
-            if (isSG or gobj:IsA("GuiObject"))
-               and gobj.Name:lower():gsub("%s", ""):find("shiftlock") then
-                local prop = isSG and "Enabled" or "Visible"
-                local ok, cur = pcall(function() return gobj[prop] end)
-                if ok and cur ~= false then
-                    hiddenStore[#hiddenStore + 1] = { gobj, prop }
-                    pcall(function() gobj[prop] = false end)
-                end
-            end
+local hiddenStore = {}   -- { {inst, prop, originalValue}, ... }
+local iconScanT = 0
+
+-- (re)scan PlayerGui for shiftlock-named GUIs, recording any new ones with their
+-- original value (so we can restore later). Throttled by the caller.
+local function scanShiftlockIcons()
+    local pg = lp():FindFirstChildOfClass("PlayerGui")
+    if not pg then return end
+    local known = {}
+    for _, e in ipairs(hiddenStore) do known[e[1]] = true end
+    for _, gobj in ipairs(pg:GetDescendants()) do
+        local isSG = gobj:IsA("ScreenGui")
+        if (isSG or gobj:IsA("GuiObject"))
+           and string.find(gobj.Name:lower():gsub("%s", ""), "shiftlock")
+           and not known[gobj] then
+            local prop = isSG and "Enabled" or "Visible"
+            local ok, cur = pcall(function() return gobj[prop] end)
+            if ok then hiddenStore[#hiddenStore + 1] = { gobj, prop, cur } end
         end
-    else
-        for _, e in ipairs(hiddenStore) do
-            local gobj, prop = e[1], e[2]
-            if gobj and gobj.Parent then pcall(function() gobj[prop] = true end) end
-        end
-        hiddenStore = {}
     end
+end
+
+-- Keep the game's shiftlock icon hidden. Re-asserts EVERY frame (cheap -- only a
+-- few stored instances) so it stays hidden even if the game's own script re-shows
+-- it each frame, and re-scans periodically to catch icons created later. Called
+-- from step() which runs at RenderPriority.Last, so our hide wins end-of-frame --
+-- a one-shot hide loses to a game that re-shows its icon, which is why the icon
+-- kept reappearing.
+local function enforceShiftlockHidden()
+    if os.clock() - iconScanT > 0.4 then
+        iconScanT = os.clock()
+        scanShiftlockIcons()
+    end
+    for i = #hiddenStore, 1, -1 do
+        local gobj, prop = hiddenStore[i][1], hiddenStore[i][2]
+        if gobj and gobj.Parent then
+            pcall(function() if gobj[prop] ~= false then gobj[prop] = false end end)
+        else
+            table.remove(hiddenStore, i)
+        end
+    end
+end
+
+local function restoreShiftlockIcons()
+    for _, e in ipairs(hiddenStore) do
+        local gobj, prop, orig = e[1], e[2], e[3]
+        if gobj and gobj.Parent then
+            pcall(function() gobj[prop] = (orig == nil) and true or orig end)
+        end
+    end
+    hiddenStore = {}
+    iconScanT = 0
 end
 
 -- ---------- gui ----------------------------------------------------------
@@ -2811,14 +2838,17 @@ local function step()
         -- pair mode doesn't call applyLock(), so drive our shiftlock icon here so it
         -- shows while the paired shiftlock is active...
         if self_state.vIcon then self_state.vIcon.Visible = state.shiftlock_active end
-        -- ...and hide the GAME's own shiftlock icon so only ours shows (still paired).
-        if state.shiftlock_active ~= self_state.iconsHidden then
-            setForeignShiftlockHidden(state.shiftlock_active)
-            self_state.iconsHidden = state.shiftlock_active
+        -- ...and keep the GAME's own shiftlock icon hidden so only ours shows.
+        if state.shiftlock_active then
+            enforceShiftlockHidden()
+            self_state.iconsHidden = true
+        elseif self_state.iconsHidden then
+            restoreShiftlockIcons()
+            self_state.iconsHidden = false
         end
     elseif self_state.iconsHidden then
         -- left pair mode (or shiftlock off) -> give the game its icon back
-        setForeignShiftlockHidden(false)
+        restoreShiftlockIcons()
         self_state.iconsHidden = false
     end
 
@@ -2970,7 +3000,7 @@ function Shiftlock.destroy()
 
     -- restore the game's shiftlock icon if we were hiding it
     if self_state.iconsHidden then
-        setForeignShiftlockHidden(false)
+        restoreShiftlockIcons()
         self_state.iconsHidden = false
     end
 
@@ -4563,7 +4593,12 @@ end
 function Builder.open(existingTech)
     ensureGui()
     draft = existingTech and draftFromTech(existingTech) or newDraft()
-    rebuild()
+    -- Surface a build error instead of silently showing a blank form.
+    local ok, err = pcall(rebuild)
+    if not ok then
+        warn("[Pantheon] Tech Builder rebuild error: " .. tostring(err))
+        pcall(function() notify.warn("Tech Builder error: " .. tostring(err), 6) end)
+    end
     rootFrame.Visible = true
 end
 

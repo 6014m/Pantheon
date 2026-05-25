@@ -543,7 +543,12 @@ end
 function Builder.open(existingTech)
     ensureGui()
     draft = existingTech and draftFromTech(existingTech) or newDraft()
-    rebuild()
+    -- Surface a build error instead of silently showing a blank form.
+    local ok, err = pcall(rebuild)
+    if not ok then
+        warn("[Pantheon] Tech Builder rebuild error: " .. tostring(err))
+        pcall(function() notify.warn("Tech Builder error: " .. tostring(err), 6) end)
+    end
     rootFrame.Visible = true
 end
 
