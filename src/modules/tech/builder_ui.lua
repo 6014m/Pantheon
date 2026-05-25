@@ -181,6 +181,7 @@ local function draftFromTech(t)
         name = t.name,
         scope = (t.scope == "universal") and "universal" or "game",
         event = t.trigger.event, key = t.trigger.key, move = t.trigger.move, movekey = t.trigger.movekey,
+        maxRange = t.trigger.maxRange,
         conditions = conds, actions = actions,
     }
 end
@@ -220,7 +221,8 @@ local function buildTechFromDraft(id)
         custom = true,
         scope = (draft.scope == "universal") and "universal" or game.GameId,
         enabled = true,
-        trigger = { event = draft.event, key = draft.key, move = draft.move, movekey = draft.movekey, conditions = draftConditions() },
+        trigger = { event = draft.event, key = draft.key, move = draft.move, movekey = draft.movekey,
+                    maxRange = draft.maxRange, conditions = draftConditions() },
         actions = draftActions(),
     }
 end
@@ -430,6 +432,10 @@ rebuild = function()
     place(wrap(30, function(p) components.Toggle(p, { text = "Only while locked on",
         default = draft.conditions.locked_on == true,
         onChange = function(v) draft.conditions.locked_on = v or nil end }) end))
+    -- distance gate: only fire within N studs of the target (0 = any range)
+    place(textRow(formScroll, "Within studs (0=any)", tostring(draft.maxRange or 0), function(t)
+        draft.maxRange = tonumber((t:gsub("[^%d%.]", ""))) or 0
+    end))
 
     -- STEPS: tap a palette button to append; each step is a simple chip
     place(components.Section(formScroll, "Steps - tap to add"))

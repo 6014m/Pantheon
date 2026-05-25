@@ -175,6 +175,14 @@ local function conditionsMet(tech)
         local fn = CONDITIONS[c]
         if fn and not fn() then return false end
     end
+    -- distance gate: only fire within maxRange studs of the target (0/nil = any).
+    -- Needs a target (lock-on / target select); fails closed if there's none.
+    local maxR = tonumber(tech.trigger.maxRange)
+    if maxR and maxR > 0 then
+        local mr, tr = myRoot(), targetRoot()
+        if not (mr and tr) then return false end
+        if (tr.Position - mr.Position).Magnitude > maxR then return false end
+    end
     return true
 end
 
@@ -275,6 +283,7 @@ local function serialize(tech)
             key        = persist.keyToString(tech.trigger.key),
             move       = tech.trigger.move,
             movekey    = tech.trigger.movekey,
+            maxRange   = tech.trigger.maxRange,
             conditions = tech.trigger.conditions or {},
         },
         actions = tech.actions or {},
@@ -293,6 +302,7 @@ local function deserialize(s)
             key        = s.trigger and persist.stringToKey(s.trigger.key),
             move       = s.trigger and s.trigger.move,
             movekey    = s.trigger and s.trigger.movekey,
+            maxRange   = s.trigger and s.trigger.maxRange,
             conditions = (s.trigger and s.trigger.conditions) or {},
         },
         actions = s.actions or {},

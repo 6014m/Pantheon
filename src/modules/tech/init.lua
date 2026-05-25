@@ -184,6 +184,9 @@ function module.register()
         place2(components.Section(resultsFrame, "Detected moves (" .. n .. ")"))
         if n == 0 then
             place2(components.Label(resultsFrame, "No move bar found - open/equip your moves, then Scan."))
+            if res.diag and #res.diag > 0 then
+                place2(components.Label(resultsFrame, "clusters: " .. table.concat(res.diag, ", ")))
+            end
         else
             for _, b in ipairs(res.buttons) do
                 local label = (b.text ~= "" and b.text) or b.name

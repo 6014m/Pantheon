@@ -8,6 +8,7 @@
 
 local Players = game:GetService("Players")
 local RS      = game:GetService("ReplicatedStorage")
+local log     = require("core.log")
 
 local Scanner = {}
 local cached = nil
@@ -51,11 +52,27 @@ local function onScreen(d)
     return true
 end
 
--- Detect MOVE-BAR slots from the GUI itself (not service names, which over-match
--- emotes/animations like "conga"): the button is on screen and carries a single
--- capital-letter KEYBIND label (Z / X / C / R / ...), plus a cooldown child or a
--- skill-bar ancestor. Service names are used ONLY to label a match, never to flag.
--- Returns { services = {...}, buttons = { {button, name, text, move, key}, ... } }
+-- a button's keybind letter (single capital) + whether it has a cooldown child
+local function indicators(b)
+    local keyHint, hasCD = nil, false
+    for _, c in ipairs(b:GetDescendants()) do
+        if not keyHint and c:IsA("TextLabel") and c.Text and c.Text:match("^%u$") then keyHint = c.Text end
+        if not hasCD then
+            local cn = clean(c.Name)
+            if cn:find("cooldown") or cn == "cd" then hasCD = true end
+        end
+    end
+    return keyHint, hasCD
+end
+
+-- Game-agnostic move-bar detection (works beyond JJS, e.g. TSB which isn't Knit):
+--   (a) a CLUSTER -- a parent holding 3+ similar on-screen buttons in the lower
+--       part of the screen -- is a skill bar; flag all its buttons. This is the
+--       reliable cross-game signal (skill bars are rows of icon buttons).
+--   (b) plus any solo button with a keybind letter + cooldown (JJS-style).
+-- Skips closed menus (onScreen) so emote lists don't count. Service names only
+-- label a match. If nothing's found, returns the clusters seen so we can tune.
+-- Returns { services, buttons = {{button,name,text,move,key},...}, diag = {...} }
 function Scanner.scan()
     local LP = Players.LocalPlayer
     local pg = LP:FindFirstChildOfClass("PlayerGui")
@@ -66,38 +83,61 @@ function Scanner.scan()
         if #stem >= 3 then stems[stem] = svc end
     end
 
-    local buttons = {}
+    local cam = workspace.CurrentCamera
+    local vh = (cam and cam.ViewportSize.Y) or 1080
+    local picked, diag = {}, {}
+
     if pg then
+        local cand = {}
         for _, d in ipairs(pg:GetDescendants()) do
-            if (d:IsA("TextButton") or d:IsA("ImageButton")) and onScreen(d) then
-                local keyHint, hasCD = nil, false
-                for _, c in ipairs(d:GetDescendants()) do
-                    if not keyHint and c:IsA("TextLabel") then
-                        local t = c.Text
-                        if t and t:match("^%u$") then keyHint = t end   -- single capital = keybind letter
-                    end
-                    if not hasCD then
-                        local cn = clean(c.Name)
-                        if cn:find("cooldown") or cn == "cd" then hasCD = true end
-                    end
-                end
-                if keyHint and (hasCD or ancestorSkill(d)) then
-                    local nm  = clean(d.Name)
-                    local txt = clean((d:IsA("TextButton") and d.Text) or "")
-                    local move
-                    for stem, svc in pairs(stems) do
-                        if nm:find(stem, 1, true) or (txt ~= "" and txt:find(stem, 1, true)) then move = svc; break end
-                    end
-                    buttons[#buttons + 1] = {
-                        button = d, name = d.Name,
-                        text = (d:IsA("TextButton") and d.Text) or "",
-                        move = move, key = keyHint,
-                    }
+            if (d:IsA("ImageButton") or d:IsA("TextButton")) and onScreen(d) then
+                local sz = d.AbsoluteSize
+                if sz.X >= 22 and sz.X <= 180 and sz.Y >= 22 and sz.Y <= 180 then
+                    cand[#cand + 1] = d
                 end
             end
         end
+        -- (a) clusters by parent
+        local byParent = {}
+        for _, b in ipairs(cand) do byParent[b.Parent] = byParent[b.Parent] or {}; table.insert(byParent[b.Parent], b) end
+        for p, list in pairs(byParent) do
+            if #list >= 3 then
+                local sumY = 0
+                for _, b in ipairs(list) do sumY = sumY + (b.AbsolutePosition.Y + b.AbsoluteSize.Y / 2) end
+                diag[#diag + 1] = (p and p.Name or "?") .. " x" .. #list
+                if (sumY / #list) > vh * 0.30 then   -- skip top menus
+                    for _, b in ipairs(list) do picked[b] = true end
+                end
+            end
+        end
+        -- (b) solo keybind+cooldown buttons
+        for _, b in ipairs(cand) do
+            if not picked[b] then
+                local k, cd = indicators(b)
+                if k and cd then picked[b] = true end
+            end
+        end
     end
-    cached = { services = services, buttons = buttons }
+
+    local buttons = {}
+    for b in pairs(picked) do
+        local k = indicators(b)
+        local nm  = clean(b.Name)
+        local txt = clean((b:IsA("TextButton") and b.Text) or "")
+        local move
+        for stem, svc in pairs(stems) do
+            if nm:find(stem, 1, true) or (txt ~= "" and txt:find(stem, 1, true)) then move = svc; break end
+        end
+        buttons[#buttons + 1] = {
+            button = b, name = b.Name,
+            text = (b:IsA("TextButton") and b.Text) or "",
+            move = move, key = k,
+        }
+    end
+    if #buttons == 0 and #diag > 0 then
+        log.info("scan: no move bar picked; clusters seen -> " .. table.concat(diag, ", "))
+    end
+    cached = { services = services, buttons = buttons, diag = diag }
     return cached
 end
 
