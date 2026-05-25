@@ -5154,7 +5154,7 @@ rebuild = function()
     if draft.event == "anim" then
         -- bind to an animation: pick one you've played (click = select + preview),
         -- Capture the next one, or paste an id.
-        place(components.Label(formScroll, "Pick an animation you've played:"))
+        place(components.Label(formScroll, "Click to preview, double-click to select:"))
         local hist = engine.animHistory()
         if #hist == 0 then
             place(components.Label(formScroll, "(none yet - play your moves, or hit Capture below)"))
@@ -5175,10 +5175,15 @@ rebuild = function()
                 row.TextColor3 = theme.fg; row.Font = theme.font; row.TextSize = 11
                 row.TextXAlignment = Enum.TextXAlignment.Left; row.TextTruncate = Enum.TextTruncate.AtEnd
                 row.Text = "  " .. (h.label or tostring(h.id)) .. "  (" .. tostring(h.id) .. ")"; row.Parent = sf
+                -- single click = audition in the preview; double click = fully select
+                local lastClick = 0
                 row.MouseButton1Click:Connect(function()
-                    draft.animId = tostring(h.id)
-                    playAnimOnRig(h.id, true)   -- show it in the preview (looped)
-                    rebuild()
+                    playAnimOnRig(h.id, true)   -- preview (looped) on every click
+                    if os.clock() - lastClick < 0.35 then
+                        draft.animId = tostring(h.id)   -- commit the selection
+                        rebuild()                       -- repaint so this row shows selected
+                    end
+                    lastClick = os.clock()
                 end)
             end
             place(listWrap)
