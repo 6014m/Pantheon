@@ -13,6 +13,7 @@ local env        = require("core.env")
 local theme      = require("ui.theme")
 local components = require("ui.components")
 local engine     = require("modules.tech.engine")
+local scanner    = require("modules.tech.scanner")
 local feature    = require("ui.feature")
 local persist    = require("core.persist")
 local notify     = require("ui.notify")
@@ -377,14 +378,23 @@ rebuild = function()
     -- TRIGGER: key setter (or move picker) + plain toggles -- no event cycle
     place(components.Section(formScroll, "Trigger"))
     if draft.event == "move" then
-        local opts = moveOptions()
-        if #opts == 0 then
-            place(components.Label(formScroll, "No moves found (not a Knit game?)"))
+        -- YOUR equipped moveset = the detected on-screen move buttons (not all
+        -- moves in the game). Click "Scan Moves" in the menu to populate this.
+        local res = scanner.cached() or scanner.scan()
+        local moveset = res.buttons or {}
+        if #moveset == 0 then
+            place(components.Label(formScroll, "No moves detected - click 'Scan Moves' in the menu, then reopen"))
         else
-            if not draft.move then draft.move = opts[1] end
+            local labels = {}
+            for _, b in ipairs(moveset) do
+                local lbl = (b.text ~= "" and b.text) or b.name
+                if b.key then lbl = lbl .. " [" .. b.key .. "]" end
+                labels[#labels + 1] = lbl
+            end
+            if not draft.move then draft.move = moveset[1].name end
             local idx = 1
-            for i, n in ipairs(opts) do if n == draft.move then idx = i end end
-            place(cycleRow(formScroll, "Move", opts, idx, function(i) draft.move = opts[i] end))
+            for i, b in ipairs(moveset) do if b.name == draft.move then idx = i end end
+            place(cycleRow(formScroll, "Move", labels, idx, function(i) draft.move = moveset[i].name end))
         end
     else
         place(wrap(28, function(p)

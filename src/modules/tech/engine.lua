@@ -222,23 +222,16 @@ local function wireKey(tech)
         function() if isHold then releaseHold() end end)
 end
 
-local function wireMove(tech)
-    -- ReplicatedStorage.Knit.Knit.Services.<move>.RE.Effects -- the server's
-    -- broadcast of a move's VFX, which our own client also receives with the
-    -- caster among the args (that's how we detect "I used this move"). Non-
-    -- yielding lookup so toggling a tech never stalls. (Activated is the
-    -- client->server remote, so its OnClientEvent never fires -- don't use it.)
+-- connect the move's Effects broadcast (server fires it to clients with the
+-- caster among the args, so we detect "I used this move" regardless of input).
+local function connectMoveService(tech, svcName)
     local knit     = RS:FindFirstChild("Knit")
     local inner    = knit and knit:FindFirstChild("Knit")
     local services = inner and inner:FindFirstChild("Services")
-    local svc      = services and services:FindFirstChild(tech.trigger.move)
+    local svc      = services and services:FindFirstChild(svcName)
     local re       = svc and svc:FindFirstChild("RE")
     local eff      = re and re:FindFirstChild("Effects")
-    if not eff then
-        log.warn("[tech] '" .. tostring(tech.name) .. "': " .. tostring(tech.trigger.move) ..
-            ".RE.Effects not found -- move trigger won't fire (check the service name)")
-        return
-    end
+    if not eff then return end
     local c = eff.OnClientEvent:Connect(function(...)
         if not tech.enabled then return end
         local ch, mine = myChar(), false
@@ -250,6 +243,34 @@ local function wireMove(tech)
     end)
     conns[tech.id] = conns[tech.id] or {}
     table.insert(conns[tech.id], c)
+end
+
+-- tech.trigger.move = the NAME of one of YOUR equipped move buttons (from the
+-- Scan Moves grabber). Fire the tech when that button is pressed (Activated),
+-- and also when its matched move is actually used (Effects) so any input works.
+local function wireMove(tech)
+    local moveRef = tech.trigger.move
+    if not moveRef then return end
+    local scanner = require("modules.tech.scanner")
+    local res = scanner.cached() or scanner.scan()
+    conns[tech.id] = conns[tech.id] or {}
+    local svcName
+    for _, b in ipairs(res.buttons or {}) do
+        if b.name == moveRef and b.button and b.button.Parent then
+            svcName = svcName or b.move
+            local ok, conn = pcall(function()
+                return b.button.Activated:Connect(function()
+                    if tech.enabled and conditionsMet(tech) then runTech(tech, false) end
+                end)
+            end)
+            if ok and conn then table.insert(conns[tech.id], conn) end
+        end
+    end
+    if svcName then connectMoveService(tech, svcName) end
+    if #conns[tech.id] == 0 then
+        log.warn("[tech] '" .. tostring(tech.name) .. "': move button '" .. tostring(moveRef) ..
+            "' not found -- click Scan Moves, then re-toggle the tech after the move bar is loaded")
+    end
 end
 
 function Engine.rewire()
