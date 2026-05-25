@@ -4023,21 +4023,48 @@ local function unsuppressButton(btn)
     suppressed[btn] = nil
 end
 
+-- Fire the click signal a button ACTUALLY has handlers on -- firing an empty signal
+-- "succeeds" but does nothing, so we must check getconnections first and pick the
+-- live one (Activated / MouseButton1Click / MouseButton1Down+Up). Returns true if
+-- something was actually fired.
+local function fireSignalsOf(b)
+    if typeof(firesignal) ~= "function" then return false end
+    for _, name in ipairs({ "Activated", "MouseButton1Click" }) do
+        local ok, sig = pcall(function() return b[name] end)
+        local cs = ok and sig and getConns(sig)
+        if cs and #cs > 0 then pcall(firesignal, sig); return true end
+    end
+    local down = getConns(b.MouseButton1Down)
+    if down and #down > 0 then
+        pcall(firesignal, b.MouseButton1Down)
+        pcall(firesignal, b.MouseButton1Up)
+        return true
+    end
+    return false
+end
+
 -- Fire a move button as if clicked. If it's currently suppressed, briefly re-enable
 -- its handlers so our fire lands, then re-suppress -- so a tech can be the ONLY
--- thing that fires a move whose key we've cancelled.
+-- thing that fires a move whose key we've cancelled. Tries the button itself, then
+-- any descendant button (the real handler is often on an inner "Base" button), then
+-- a real mouse click as a last resort.
 local function fireButton(btn)
     if not btn then return end
     local supp = suppressed[btn]
     if supp then for _, c in ipairs(supp) do pcall(function() c:Enable() end) end end
-    local fired = false
-    if typeof(firesignal) == "function" then fired = pcall(firesignal, btn.Activated) end
+    local fired = fireSignalsOf(btn)
     if not fired then
-        -- fallback: a real mouse click at the button's center (GuiInset offset)
+        for _, c in ipairs(btn:GetDescendants()) do
+            if (c:IsA("TextButton") or c:IsA("ImageButton")) and fireSignalsOf(c) then fired = true; break end
+        end
+    end
+    if not fired then
+        -- last resort: a real mouse click at the button's center (GuiInset offset)
         local p, s = btn.AbsolutePosition, btn.AbsoluteSize
         local x, y = p.X + s.X / 2, p.Y + s.Y / 2 + 36
         pcall(function()
             VIM:SendMouseButtonEvent(x, y, 0, true, game, 0)
+            task.wait()
             VIM:SendMouseButtonEvent(x, y, 0, false, game, 0)
         end)
     end
@@ -4644,6 +4671,25 @@ local Dumper = {}
 local LP = Players.LocalPlayer
 local hasWrite = (typeof(writefile) == "function")
 
+-- How many handlers are connected to a signal (so we can see what the game ACTUALLY
+-- listens on -- Activated vs MouseButton1Down vs ... -- and fire the right one).
+local function connCount(sig)
+    if typeof(getconnections) ~= "function" then return "?" end
+    local ok, cs = pcall(getconnections, sig)
+    if ok and type(cs) == "table" then return tostring(#cs) end
+    return "?"
+end
+local function btnConns(b)
+    local out = {}
+    pcall(function()
+        out[#out + 1] = "Act=" .. connCount(b.Activated)
+        out[#out + 1] = "MB1Click=" .. connCount(b.MouseButton1Click)
+        out[#out + 1] = "MB1Down=" .. connCount(b.MouseButton1Down)
+        out[#out + 1] = "InputBegan=" .. connCount(b.InputBegan)
+    end)
+    return table.concat(out, " ")
+end
+
 function Dumper.dumpGui()
     local pg = LP:FindFirstChildOfClass("PlayerGui")
     local lines = { "=== Pantheon GUI dump ===" }
@@ -4663,12 +4709,16 @@ function Dumper.dumpGui()
                             local kids = {}
                             for _, c in ipairs(d:GetDescendants()) do
                                 if c:IsA("TextLabel") then kids[#kids + 1] = "Lbl:" .. c.Name .. "='" .. tostring(c.Text) .. "'"
-                                elseif c:IsA("ImageLabel") then kids[#kids + 1] = "Img:" .. c.Name end
+                                elseif c:IsA("ImageLabel") then kids[#kids + 1] = "Img:" .. c.Name
+                                -- nested buttons + what THEY listen on (the real handler may be in here)
+                                elseif c:IsA("TextButton") or c:IsA("ImageButton") then
+                                    kids[#kids + 1] = "BTN:" .. c.ClassName .. ":" .. c.Name .. "{" .. btnConns(c) .. "}"
+                                end
                             end
-                            lines[#lines + 1] = ("  %s '%s' txt='%s' size=%s pos=%s vis=%s img=%s\n      path=%s\n      kids=[%s]")
+                            lines[#lines + 1] = ("  %s '%s' txt='%s' active=%s size=%s pos=%s vis=%s conns={%s}\n      path=%s\n      kids=[%s]")
                                 :format(d.ClassName, d.Name, (d:IsA("TextButton") and d.Text or ""),
-                                    tostring(d.AbsoluteSize), tostring(d.AbsolutePosition), tostring(d.Visible),
-                                    (d:IsA("ImageButton") and d.Image or "-"),
+                                    tostring(d.Active), tostring(d.AbsoluteSize), tostring(d.AbsolutePosition),
+                                    tostring(d.Visible), btnConns(d),
                                     table.concat(parts, "/"), table.concat(kids, ", "))
                         end
                     end
