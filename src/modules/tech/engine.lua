@@ -222,55 +222,22 @@ local function wireKey(tech)
         function() if isHold then releaseHold() end end)
 end
 
--- connect the move's Effects broadcast (server fires it to clients with the
--- caster among the args, so we detect "I used this move" regardless of input).
-local function connectMoveService(tech, svcName)
-    local knit     = RS:FindFirstChild("Knit")
-    local inner    = knit and knit:FindFirstChild("Knit")
-    local services = inner and inner:FindFirstChild("Services")
-    local svc      = services and services:FindFirstChild(svcName)
-    local re       = svc and svc:FindFirstChild("RE")
-    local eff      = re and re:FindFirstChild("Effects")
-    if not eff then return end
-    local c = eff.OnClientEvent:Connect(function(...)
-        if not tech.enabled then return end
-        local ch, mine = myChar(), false
-        for i = 1, select("#", ...) do
-            local arg = select(i, ...)
-            if arg == ch or (typeof(arg) == "Instance" and ch and arg:IsDescendantOf(ch)) then mine = true; break end
-        end
-        if mine and conditionsMet(tech) then runTech(tech, false) end
-    end)
-    conns[tech.id] = conns[tech.id] or {}
-    table.insert(conns[tech.id], c)
-end
-
--- tech.trigger.move = the NAME of one of YOUR equipped move buttons (from the
--- Scan Moves grabber). Fire the tech when that button is pressed (Activated),
--- and also when its matched move is actually used (Effects) so any input works.
+-- The "move" trigger fires the INSTANT the move's KEY is pressed (keydown), so the
+-- tech runs BEFORE the move starts -- NOT on the move's button click or its Effects
+-- broadcast (both happen after the move begins). The move is picked from your
+-- scanned moveset (for the label); trigger.movekey is that move's key (auto-filled
+-- from the scan, editable). Bound through the keybind dispatcher (UIS.InputBegan)
+-- exactly like a key trigger, so it lands on keydown.
 local function wireMove(tech)
-    local moveRef = tech.trigger.move
-    if not moveRef then return end
-    local scanner = require("modules.tech.scanner")
-    local res = scanner.cached() or scanner.scan()
-    conns[tech.id] = conns[tech.id] or {}
-    local svcName
-    for _, b in ipairs(res.buttons or {}) do
-        if b.name == moveRef and b.button and b.button.Parent then
-            svcName = svcName or b.move
-            local ok, conn = pcall(function()
-                return b.button.Activated:Connect(function()
-                    if tech.enabled and conditionsMet(tech) then runTech(tech, false) end
-                end)
-            end)
-            if ok and conn then table.insert(conns[tech.id], conn) end
-        end
+    local keyName = tech.trigger.movekey
+    local kc = keyName and Enum.KeyCode[keyName]
+    if not kc or kc == Enum.KeyCode.Unknown then
+        log.warn("[tech] '" .. tostring(tech.name) .. "': move trigger has no key set -- pick the move's key")
+        return
     end
-    if svcName then connectMoveService(tech, svcName) end
-    if #conns[tech.id] == 0 then
-        log.warn("[tech] '" .. tostring(tech.name) .. "': move button '" .. tostring(moveRef) ..
-            "' not found -- click Scan Moves, then re-toggle the tech after the move bar is loaded")
-    end
+    keybinds.set("tech." .. tech.id, kc,
+        function() if tech.enabled and conditionsMet(tech) then runTech(tech, false) end end,
+        nil)
 end
 
 function Engine.rewire()
@@ -283,8 +250,9 @@ function Engine.rewire()
             -- disabled tech's key is genuinely unbound (can't fire), matching how
             -- move techs are gated.
             if tech.enabled then wireKey(tech) else keybinds.clear("tech." .. tech.id) end
-        elseif ev == "move" and tech.enabled then
-            wireMove(tech)
+        elseif ev == "move" then
+            -- move trigger is keydown on the move's key -> same bind/clear gating
+            if tech.enabled then wireMove(tech) else keybinds.clear("tech." .. tech.id) end
         end
     end
 end
@@ -306,6 +274,7 @@ local function serialize(tech)
             event      = tech.trigger.event,
             key        = persist.keyToString(tech.trigger.key),
             move       = tech.trigger.move,
+            movekey    = tech.trigger.movekey,
             conditions = tech.trigger.conditions or {},
         },
         actions = tech.actions or {},
@@ -323,6 +292,7 @@ local function deserialize(s)
             event      = s.trigger and s.trigger.event,
             key        = s.trigger and persist.stringToKey(s.trigger.key),
             move       = s.trigger and s.trigger.move,
+            movekey    = s.trigger and s.trigger.movekey,
             conditions = (s.trigger and s.trigger.conditions) or {},
         },
         actions = s.actions or {},

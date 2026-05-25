@@ -174,13 +174,13 @@ local function draftFromTech(t)
     for _, c in ipairs(t.trigger.conditions or {}) do conds[c] = true end
     local actions = {}
     for _, a in ipairs(t.actions or {}) do
-        actions[#actions + 1] = { type = a.type, x = a.x, y = a.y, seconds = a.seconds, feature = a.feature }
+        actions[#actions + 1] = { type = a.type, x = a.x, y = a.y, seconds = a.seconds, feature = a.feature, key = a.key }
     end
     return {
         editId = t.id,
         name = t.name,
         scope = (t.scope == "universal") and "universal" or "game",
-        event = t.trigger.event, key = t.trigger.key, move = t.trigger.move,
+        event = t.trigger.event, key = t.trigger.key, move = t.trigger.move, movekey = t.trigger.movekey,
         conditions = conds, actions = actions,
     }
 end
@@ -220,7 +220,7 @@ local function buildTechFromDraft(id)
         custom = true,
         scope = (draft.scope == "universal") and "universal" or game.GameId,
         enabled = true,
-        trigger = { event = draft.event, key = draft.key, move = draft.move, conditions = draftConditions() },
+        trigger = { event = draft.event, key = draft.key, move = draft.move, movekey = draft.movekey, conditions = draftConditions() },
         actions = draftActions(),
     }
 end
@@ -391,10 +391,26 @@ rebuild = function()
                 if b.key then lbl = lbl .. " [" .. b.key .. "]" end
                 labels[#labels + 1] = lbl
             end
-            if not draft.move then draft.move = moveset[1].name end
+            if not draft.move then
+                draft.move = moveset[1].name
+                if moveset[1].key and not draft.movekey then draft.movekey = moveset[1].key end
+            end
             local idx = 1
             for i, b in ipairs(moveset) do if b.name == draft.move then idx = i end end
-            place(cycleRow(formScroll, "Move", labels, idx, function(i) draft.move = moveset[i].name end))
+            place(cycleRow(formScroll, "Move", labels, idx, function(i)
+                draft.move = moveset[i].name
+                if moveset[i].key then draft.movekey = moveset[i].key end
+                rebuild()
+            end))
+            -- the move's KEY: the tech fires the INSTANT this is pressed, before the
+            -- move starts. Auto-filled from the scan; set it if not detected.
+            place(wrap(28, function(p)
+                local def = (draft.movekey and Enum.KeyCode[draft.movekey]) or Enum.KeyCode.Unknown
+                components.KeybindSetter(p, { label = "Move key", default = def,
+                    onChange = function(k)
+                        draft.movekey = (k and k ~= Enum.KeyCode.Unknown) and (tostring(k):gsub("Enum.KeyCode.", "")) or nil
+                    end })
+            end))
         end
     else
         place(wrap(28, function(p)
