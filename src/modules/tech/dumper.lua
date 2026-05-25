@@ -49,35 +49,46 @@ function Dumper.dumpGui()
     return n
 end
 
-local animConn, animLines, animSeen
-function Dumper.animActive() return animConn ~= nil end
-
--- Toggle animation logging. While on, every NEW animation you play is appended to
--- pantheon_anim_dump.txt (id + asset name). Use each move once to capture it.
-function Dumper.toggleAnims()
-    if animConn then pcall(function() animConn:Disconnect() end); animConn = nil; return false end
-    animLines, animSeen = { "=== Pantheon animation dump (use each move once) ===" }, {}
-    local function hook(char)
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
-        local animator = hum and hum:FindFirstChildOfClass("Animator")
-        if not animator then return end
-        animConn = animator.AnimationPlayed:Connect(function(track)
-            local id = track.Animation and track.Animation.AnimationId
-            if not id or id == "" or animSeen[id] then return end
-            animSeen[id] = true
-            local name = ""
-            local num = tonumber(string.match(id, "%d+"))
-            if num then
-                local ok, info = pcall(function() return MPS:GetProductInfo(num) end)
-                if ok and info and info.Name then name = info.Name end
-            end
-            animLines[#animLines + 1] = id .. "   " .. name
-            if hasWrite then pcall(writefile, "pantheon_anim_dump.txt", table.concat(animLines, "\n")) end
-            print("[anim] " .. id .. "  " .. name)
-        end)
+-- Static scan: grab EVERY Animation instance in the game (+ StringValues that
+-- hold an asset id) with its FULL path (name -> parents -> grandparents via
+-- GetFullName), so each animation can be mapped to its move. Immediate, no
+-- play-logging. Writes pantheon_anim_dump.txt.
+function Dumper.dumpAnims()
+    local roots = {}
+    for _, svc in ipairs({ "ReplicatedStorage", "ReplicatedFirst", "StarterPlayer", "Lighting" }) do
+        local ok, s = pcall(function() return game:GetService(svc) end)
+        if ok and s then roots[#roots + 1] = s end
     end
-    hook(LP.Character)
-    return true
+    roots[#roots + 1] = workspace
+    if LP.Character then roots[#roots + 1] = LP.Character end
+
+    local lines, seen, n = { "=== Pantheon animation dump (all Animation instances + asset StringValues) ===" }, {}, 0
+    for _, root in ipairs(roots) do
+        local ok, descs = pcall(function() return root:GetDescendants() end)
+        if ok then
+            for _, d in ipairs(descs) do
+                local id
+                if d:IsA("Animation") then
+                    id = d.AnimationId
+                elseif d:IsA("StringValue") and d.Value and
+                       (string.find(d.Value, "rbxassetid", 1, true) or string.find(d.Value, "/asset", 1, true)) then
+                    id = d.Value
+                end
+                if id and id ~= "" then
+                    local full = d:GetFullName()
+                    local key = full .. "|" .. id
+                    if not seen[key] then
+                        seen[key] = true; n = n + 1
+                        lines[#lines + 1] = id .. "   " .. full
+                    end
+                end
+            end
+        end
+    end
+    local out = table.concat(lines, "\n")
+    if hasWrite then pcall(writefile, "pantheon_anim_dump.txt", out) end
+    print(out)
+    return n
 end
 
 return Dumper

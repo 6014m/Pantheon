@@ -173,11 +173,11 @@ function module.register()
     end })
     dumpGuiBtn.LayoutOrder = 2
 
-    local dumpAnimBtn = components.Button(holder, { text = "Dump Anims (toggle)", onClick = function()
-        local on = dumper.toggleAnims()
+    local dumpAnimBtn = components.Button(holder, { text = "Dump Anims (all)", onClick = function()
+        local n = dumper.dumpAnims()
         status.Visible = true
-        status.Text = on and "Anim dump ON - use each move -> pantheon_anim_dump.txt" or "Anim dump OFF"
-        pcall(function() notify.info(on and "Anim dump ON - use your moves now" or "Anim dump OFF", 4) end)
+        status.Text = "Anims dumped (" .. n .. ") -> pantheon_anim_dump.txt"
+        pcall(function() notify.info("Anims dumped: " .. n, 4) end)
     end })
     dumpAnimBtn.LayoutOrder = 3
 

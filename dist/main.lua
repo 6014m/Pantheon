@@ -4272,13 +4272,34 @@ local function indicators(b)
     return keyHint, hasCD
 end
 
--- Game-agnostic move-bar detection (works beyond JJS, e.g. TSB which isn't Knit):
---   (a) a CLUSTER -- a parent holding 3+ similar on-screen buttons in the lower
---       part of the screen -- is a skill bar; flag all its buttons. This is the
---       reliable cross-game signal (skill bars are rows of icon buttons).
---   (b) plus any solo button with a keybind letter + cooldown (JJS-style).
--- Skips closed menus (onScreen) so emote lists don't count. Service names only
--- label a match. If nothing's found, returns the clusters seen so we can tune.
+-- A NAMED move slot: a button carrying a label like ToolName / MoveName / Name
+-- with a real move name (not "N/A"/empty), plus optionally a Number/keybind label.
+-- Strongest, cleanest signal -- e.g. TSB hotbar slots have ToolName + Number.
+local NAME_KW = { "toolname", "movename", "abilityname", "skillname", "displayname", "ability", "skill", "name" }
+local KEY_KW  = { "number", "keybind", "bind", "input", "key", "slot" }
+local function slotLabels(b)
+    local moveName, keyHint
+    for _, c in ipairs(b:GetDescendants()) do
+        if c:IsA("TextLabel") then
+            local nm, t = clean(c.Name), c.Text
+            if not moveName and t and t ~= "" and string.upper(t) ~= "N/A" then
+                for _, kw in ipairs(NAME_KW) do if string.find(nm, kw, 1, true) then moveName = t; break end end
+            end
+            if not keyHint and t and #t >= 1 and #t <= 3 then
+                for _, kw in ipairs(KEY_KW) do if string.find(nm, kw, 1, true) then keyHint = t; break end end
+            end
+        end
+    end
+    return moveName, keyHint
+end
+
+-- Move-bar detection.
+--   PRIMARY: named slots (a button with a ToolName/MoveName/... label = a hotbar
+--     slot; gives the real move name + keybind -- equipped moves only, works for
+--     TSB). Deduped by move name.
+--   FALLBACK (games without named slots): a CLUSTER of 3+ similar on-screen
+--     buttons in the lower screen, or a solo button with a keybind letter +
+--     cooldown. Service names only label a match. Closed menus skipped (onScreen).
 -- Returns { services, buttons = {{button,name,text,move,key},...}, diag = {...} }
 function Scanner.scan()
     local LP = Players.LocalPlayer
@@ -4290,59 +4311,57 @@ function Scanner.scan()
         if #stem >= 3 then stems[stem] = svc end
     end
 
-    local cam = workspace.CurrentCamera
-    local vh = (cam and cam.ViewportSize.Y) or 1080
-    local picked, diag = {}, {}
-
+    local buttons, diag, cand = {}, {}, {}
     if pg then
-        local cand = {}
         for _, d in ipairs(pg:GetDescendants()) do
-            if (d:IsA("ImageButton") or d:IsA("TextButton")) and onScreen(d) then
-                local sz = d.AbsoluteSize
-                if sz.X >= 22 and sz.X <= 180 and sz.Y >= 22 and sz.Y <= 180 then
-                    cand[#cand + 1] = d
-                end
+            if (d:IsA("ImageButton") or d:IsA("TextButton")) and onScreen(d) then cand[#cand + 1] = d end
+        end
+        -- PRIMARY: named slots (dedup by move name)
+        local seenName = {}
+        for _, b in ipairs(cand) do
+            local moveName, keyHint = slotLabels(b)
+            if moveName and not seenName[string.lower(moveName)] then
+                seenName[string.lower(moveName)] = true
+                buttons[#buttons + 1] = { button = b, name = b.Name, text = moveName, move = nil, key = keyHint }
             end
         end
-        -- (a) clusters by parent
-        local byParent = {}
-        for _, b in ipairs(cand) do byParent[b.Parent] = byParent[b.Parent] or {}; table.insert(byParent[b.Parent], b) end
+    end
+
+    -- FALLBACK: cluster / keybind+cooldown (only if no named slots were found)
+    if #buttons == 0 and pg then
+        local cam = workspace.CurrentCamera
+        local vh = (cam and cam.ViewportSize.Y) or 1080
+        local sized = {}
+        for _, b in ipairs(cand) do
+            local sz = b.AbsoluteSize
+            if sz.X >= 22 and sz.X <= 180 and sz.Y >= 22 and sz.Y <= 180 then sized[#sized + 1] = b end
+        end
+        local picked, byParent = {}, {}
+        for _, b in ipairs(sized) do byParent[b.Parent] = byParent[b.Parent] or {}; table.insert(byParent[b.Parent], b) end
         for p, list in pairs(byParent) do
             if #list >= 3 then
                 local sumY = 0
                 for _, b in ipairs(list) do sumY = sumY + (b.AbsolutePosition.Y + b.AbsoluteSize.Y / 2) end
                 diag[#diag + 1] = (p and p.Name or "?") .. " x" .. #list
-                if (sumY / #list) > vh * 0.30 then   -- skip top menus
-                    for _, b in ipairs(list) do picked[b] = true end
-                end
+                if (sumY / #list) > vh * 0.30 then for _, b in ipairs(list) do picked[b] = true end end
             end
         end
-        -- (b) solo keybind+cooldown buttons
-        for _, b in ipairs(cand) do
-            if not picked[b] then
-                local k, cd = indicators(b)
-                if k and cd then picked[b] = true end
+        for _, b in ipairs(sized) do
+            if not picked[b] then local k, cd = indicators(b); if k and cd then picked[b] = true end end
+        end
+        for b in pairs(picked) do
+            local k = indicators(b)
+            local nm = clean(b.Name); local txt = clean((b:IsA("TextButton") and b.Text) or "")
+            local move
+            for stem, svc in pairs(stems) do
+                if nm:find(stem, 1, true) or (txt ~= "" and txt:find(stem, 1, true)) then move = svc; break end
             end
+            buttons[#buttons + 1] = { button = b, name = b.Name, text = (b:IsA("TextButton") and b.Text) or "", move = move, key = k }
         end
     end
 
-    local buttons = {}
-    for b in pairs(picked) do
-        local k = indicators(b)
-        local nm  = clean(b.Name)
-        local txt = clean((b:IsA("TextButton") and b.Text) or "")
-        local move
-        for stem, svc in pairs(stems) do
-            if nm:find(stem, 1, true) or (txt ~= "" and txt:find(stem, 1, true)) then move = svc; break end
-        end
-        buttons[#buttons + 1] = {
-            button = b, name = b.Name,
-            text = (b:IsA("TextButton") and b.Text) or "",
-            move = move, key = k,
-        }
-    end
     if #buttons == 0 and #diag > 0 then
-        log.info("scan: no move bar picked; clusters seen -> " .. table.concat(diag, ", "))
+        log.info("scan: no move bar; clusters seen -> " .. table.concat(diag, ", "))
     end
     cached = { services = services, buttons = buttons, diag = diag }
     return cached
@@ -4405,35 +4424,46 @@ function Dumper.dumpGui()
     return n
 end
 
-local animConn, animLines, animSeen
-function Dumper.animActive() return animConn ~= nil end
-
--- Toggle animation logging. While on, every NEW animation you play is appended to
--- pantheon_anim_dump.txt (id + asset name). Use each move once to capture it.
-function Dumper.toggleAnims()
-    if animConn then pcall(function() animConn:Disconnect() end); animConn = nil; return false end
-    animLines, animSeen = { "=== Pantheon animation dump (use each move once) ===" }, {}
-    local function hook(char)
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
-        local animator = hum and hum:FindFirstChildOfClass("Animator")
-        if not animator then return end
-        animConn = animator.AnimationPlayed:Connect(function(track)
-            local id = track.Animation and track.Animation.AnimationId
-            if not id or id == "" or animSeen[id] then return end
-            animSeen[id] = true
-            local name = ""
-            local num = tonumber(string.match(id, "%d+"))
-            if num then
-                local ok, info = pcall(function() return MPS:GetProductInfo(num) end)
-                if ok and info and info.Name then name = info.Name end
-            end
-            animLines[#animLines + 1] = id .. "   " .. name
-            if hasWrite then pcall(writefile, "pantheon_anim_dump.txt", table.concat(animLines, "\n")) end
-            print("[anim] " .. id .. "  " .. name)
-        end)
+-- Static scan: grab EVERY Animation instance in the game (+ StringValues that
+-- hold an asset id) with its FULL path (name -> parents -> grandparents via
+-- GetFullName), so each animation can be mapped to its move. Immediate, no
+-- play-logging. Writes pantheon_anim_dump.txt.
+function Dumper.dumpAnims()
+    local roots = {}
+    for _, svc in ipairs({ "ReplicatedStorage", "ReplicatedFirst", "StarterPlayer", "Lighting" }) do
+        local ok, s = pcall(function() return game:GetService(svc) end)
+        if ok and s then roots[#roots + 1] = s end
     end
-    hook(LP.Character)
-    return true
+    roots[#roots + 1] = workspace
+    if LP.Character then roots[#roots + 1] = LP.Character end
+
+    local lines, seen, n = { "=== Pantheon animation dump (all Animation instances + asset StringValues) ===" }, {}, 0
+    for _, root in ipairs(roots) do
+        local ok, descs = pcall(function() return root:GetDescendants() end)
+        if ok then
+            for _, d in ipairs(descs) do
+                local id
+                if d:IsA("Animation") then
+                    id = d.AnimationId
+                elseif d:IsA("StringValue") and d.Value and
+                       (string.find(d.Value, "rbxassetid", 1, true) or string.find(d.Value, "/asset", 1, true)) then
+                    id = d.Value
+                end
+                if id and id ~= "" then
+                    local full = d:GetFullName()
+                    local key = full .. "|" .. id
+                    if not seen[key] then
+                        seen[key] = true; n = n + 1
+                        lines[#lines + 1] = id .. "   " .. full
+                    end
+                end
+            end
+        end
+    end
+    local out = table.concat(lines, "\n")
+    if hasWrite then pcall(writefile, "pantheon_anim_dump.txt", out) end
+    print(out)
+    return n
 end
 
 return Dumper
@@ -5197,11 +5227,11 @@ function module.register()
     end })
     dumpGuiBtn.LayoutOrder = 2
 
-    local dumpAnimBtn = components.Button(holder, { text = "Dump Anims (toggle)", onClick = function()
-        local on = dumper.toggleAnims()
+    local dumpAnimBtn = components.Button(holder, { text = "Dump Anims (all)", onClick = function()
+        local n = dumper.dumpAnims()
         status.Visible = true
-        status.Text = on and "Anim dump ON - use each move -> pantheon_anim_dump.txt" or "Anim dump OFF"
-        pcall(function() notify.info(on and "Anim dump ON - use your moves now" or "Anim dump OFF", 4) end)
+        status.Text = "Anims dumped (" .. n .. ") -> pantheon_anim_dump.txt"
+        pcall(function() notify.info("Anims dumped: " .. n, 4) end)
     end })
     dumpAnimBtn.LayoutOrder = 3
 
