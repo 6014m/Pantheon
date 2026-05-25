@@ -28,6 +28,24 @@ function module.register()
         return rotationLock.isActive()
     end)
 
+    -- Expose Lock-On's sub-toggles to the Tech Builder's "Use" step (they aren't
+    -- standalone feature rows, so feature.all() wouldn't list them otherwise).
+    feature.addInvokable({
+        id   = "aim.rotationlock",
+        name = "Rotation Lock (Lock-On+)",
+        get  = function() return state.rotationLockEnabled and rotationLock.isActive() end,
+        set  = function(v)
+            rotationLock.setEnabled(v)
+            if v then rotationLock.hotkeyPress() else rotationLock.hotkeyRelease() end
+        end,
+    })
+    feature.addInvokable({
+        id   = "aim.cameralock",
+        name = "Camera Lock",
+        get  = function() return state.cameraLockEnabled end,
+        set  = function(v) state.cameraLockEnabled = v and true or false end,
+    })
+
     local parent = window.parent()
 
     -- 1. Movement -------------------------------------------------------------

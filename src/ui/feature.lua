@@ -382,24 +382,47 @@ function Feature.declare(def)
 end
 
 -- ---- Invoke-by-id API (used by the Tech Builder to call features as steps) ----
+-- Besides declared features, modules can register "invokables": toggleable things
+-- that aren't standalone feature rows (e.g. Lock-On's Rotation Lock / Camera Lock
+-- sub-toggles) so the Tech Builder's "Use" step can call them too.
+local invokables = {}   -- [id] = { name, get, set }
+
+function Feature.addInvokable(def)
+    if def and def.id then
+        invokables[def.id] = { name = def.name or def.id, get = def.get, set = def.set }
+    end
+end
+
 function Feature.setEnabled(id, v)
-    local e = registry[id]; if e then e.setEnabled(v) end
+    local e = registry[id]
+    if e then e.setEnabled(v); return end
+    local iv = invokables[id]
+    if iv and iv.set then iv.set(v and true or false) end
 end
 
 function Feature.getEnabled(id)
-    local e = registry[id]; return e ~= nil and e.getEnabled() or false
+    local e = registry[id]
+    if e then return e.getEnabled() end
+    local iv = invokables[id]
+    return (iv and iv.get and iv.get()) and true or false
 end
 
--- Fire a feature's key action (its onKey), or toggle it if it has none.
+-- Fire a feature's key action (its onKey), or toggle the feature / invokable.
 function Feature.fire(id)
-    local e = registry[id]; if not e then return end
-    if e.def and e.def.onKey then pcall(e.def.onKey) else e.setEnabled(not e.getEnabled()) end
+    local e = registry[id]
+    if e then
+        if e.def and e.def.onKey then pcall(e.def.onKey) else e.setEnabled(not e.getEnabled()) end
+        return
+    end
+    local iv = invokables[id]
+    if iv and iv.set then iv.set(not (iv.get and iv.get())) end
 end
 
--- List declared features as { {id=, name=}, ... } for the Tech Builder's action palette.
+-- List declared features + invokables as { {id=, name=}, ... } for the Tech Builder.
 function Feature.all()
     local out = {}
     for id, e in pairs(registry) do out[#out + 1] = { id = id, name = (e.def and e.def.name) or id } end
+    for id, iv in pairs(invokables) do out[#out + 1] = { id = id, name = iv.name } end
     return out
 end
 
