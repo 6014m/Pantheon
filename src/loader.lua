@@ -55,6 +55,8 @@ local files = {
     { "modules.aim.lockon",        "modules/aim/lockon.lua" },
     { "modules.aim.target_select", "modules/aim/target_select.lua" },
     { "modules.aim.init",          "modules/aim/init.lua" },
+    { "modules.tech.engine",       "modules/tech/engine.lua" },
+    { "modules.tech.init",         "modules/tech/init.lua" },
     { "games.jjs",                 "games/jjs.lua" },
     { "init",                      "init.lua" },
 }

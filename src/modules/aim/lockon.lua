@@ -32,6 +32,7 @@ end
 
 local function cameraStep(dt)
     if not state.lockon_enabled then return end
+    if state.techCamOverride then return end   -- a Tech Builder step is driving the camera; yield
     if not state.cameraLockEnabled then return end
     if not state.target then return end
 

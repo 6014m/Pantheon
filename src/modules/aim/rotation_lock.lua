@@ -57,6 +57,7 @@ local function getHumanoids()
 end
 
 local function shouldRotate()
+    if state.techBodyOverride then return false end   -- a Tech Builder step is driving the body; yield
     if not state.lockon_enabled then return false end
     if not state.rotationLockEnabled then return false end
     if not state.target then return false end

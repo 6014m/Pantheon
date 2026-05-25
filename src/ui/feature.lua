@@ -381,4 +381,26 @@ function Feature.declare(def)
     }
 end
 
+-- ---- Invoke-by-id API (used by the Tech Builder to call features as steps) ----
+function Feature.setEnabled(id, v)
+    local e = registry[id]; if e then e.setEnabled(v) end
+end
+
+function Feature.getEnabled(id)
+    local e = registry[id]; return e ~= nil and e.getEnabled() or false
+end
+
+-- Fire a feature's key action (its onKey), or toggle it if it has none.
+function Feature.fire(id)
+    local e = registry[id]; if not e then return end
+    if e.def and e.def.onKey then pcall(e.def.onKey) else e.setEnabled(not e.getEnabled()) end
+end
+
+-- List declared features as { {id=, name=}, ... } for the Tech Builder's action palette.
+function Feature.all()
+    local out = {}
+    for id, e in pairs(registry) do out[#out + 1] = { id = id, name = (e.def and e.def.name) or id } end
+    return out
+end
+
 return Feature

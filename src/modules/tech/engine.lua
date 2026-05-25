@@ -1,0 +1,227 @@
+-- Tech Builder engine.
+--
+-- A "tech" = a TRIGGER (event + conditions) -> an ordered list of ACTIONS. The
+-- engine is data-driven and extensible: EVENTS, CONDITIONS and ACTIONS are open
+-- registries so new types drop in without reworking the runner.
+--
+--   trigger = { event = "key"|"keyhold"|"move", key = KeyCode, move = "ServiceName",
+--               conditions = { "locked_on", ... } }
+--   actions = { {type="look", x=180,y=0,z=0}, {type="wait", seconds=0.5}, {type="return"},
+--               {type="rotate", x=180}, {type="feature", feature="aim.rotation_lock", value=true} }
+--
+-- Look/Rotate are TARGET-RELATIVE (yaw 0 = at the lock target, 180 = facing away),
+-- ported from the lock-on script's reverse-lock. While a Look/Rotate step is held,
+-- the engine sets state.techCamOverride / techBodyOverride so Lock-On / Rotation
+-- Lock yield; Return clears them and hands control back (re-aims at the target).
+
+local state    = require("modules.aim.state")
+local feature  = require("ui.feature")
+local keybinds = require("core.keybinds")
+local log      = require("core.log")
+local Signal   = require("core.signal")
+
+local Players    = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace  = game:GetService("Workspace")
+local RS         = game:GetService("ReplicatedStorage")
+
+local Engine = {}
+Engine.changed = Signal.new()   -- fires when the tech set changes (UI list re-reads it)
+local LP = Players.LocalPlayer
+
+local techs = {}     -- id -> tech def
+local conns = {}     -- id -> { Connection, ... } (move-trigger listeners)
+local RENDER_BIND = "PantheonTechHold"
+local bound = false
+
+-- held camera/body facings; the render loop enforces these each frame while set.
+local held = { cam = nil, body = nil }   -- each = { yaw, pitch } degrees, target-relative
+local startCamLook                        -- camera LookVector at tech start (no-target fallback)
+
+-- ===== geometry =====
+local function myChar() return LP.Character end
+local function myRoot() local c = myChar(); return c and c:FindFirstChild("HumanoidRootPart") end
+local function targetRoot()
+    local t = state.target
+    if not t then return nil end
+    local ch = (state.target_type == "npc") and t or t.Character
+    return ch and ch:FindFirstChild("HumanoidRootPart")
+end
+
+local function offsetDir(baseFlat, yawDeg)
+    if baseFlat.Magnitude < 1e-3 then return baseFlat end
+    return (CFrame.fromAxisAngle(Vector3.yAxis, math.rad(yawDeg or 0)) * baseFlat).Unit
+end
+
+local function camBaseFlat()
+    local cam = Workspace.CurrentCamera
+    local tr = targetRoot()
+    if tr and cam then local d = tr.Position - cam.CFrame.Position; return Vector3.new(d.X, 0, d.Z) end
+    if startCamLook then return Vector3.new(startCamLook.X, 0, startCamLook.Z) end
+    return cam and Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z) or Vector3.zAxis
+end
+
+local function bodyBaseFlat()
+    local r, tr = myRoot(), targetRoot()
+    if r and tr then local d = tr.Position - r.Position; return Vector3.new(d.X, 0, d.Z) end
+    if r then local l = r.CFrame.LookVector; return Vector3.new(l.X, 0, l.Z) end
+    return Vector3.zAxis
+end
+
+local function renderHold()
+    if held.cam then
+        local cam = Workspace.CurrentCamera
+        local base = camBaseFlat()
+        if cam and base.Magnitude > 1e-3 then
+            local dir = offsetDir(base, held.cam.yaw)
+            local pitch = math.rad(held.cam.pitch or 0)
+            local look = Vector3.new(dir.X * math.cos(pitch), math.sin(pitch), dir.Z * math.cos(pitch))
+            cam.CFrame = CFrame.new(cam.CFrame.Position, cam.CFrame.Position + look)
+        end
+    end
+    if held.body then
+        local root = myRoot()
+        local base = bodyBaseFlat()
+        if root and base.Magnitude > 1e-3 then
+            local dir = offsetDir(base, held.body.yaw)
+            root.CFrame = CFrame.lookAt(root.Position, root.Position + dir)
+        end
+    end
+end
+
+local function releaseHold()
+    held.cam, held.body = nil, nil
+    state.techCamOverride = false
+    state.techBodyOverride = false
+    -- no Lock-On to re-aim us? snap the camera back to where we started.
+    if not (state.lockon_enabled and state.target) and startCamLook then
+        local cam = Workspace.CurrentCamera
+        if cam then cam.CFrame = CFrame.new(cam.CFrame.Position, cam.CFrame.Position + startCamLook) end
+    end
+end
+
+-- ===== actions =====
+local ACTIONS = {}
+ACTIONS.look   = function(a) held.cam  = { yaw = a.x or 0, pitch = a.y or 0 }; state.techCamOverride  = true end
+ACTIONS.rotate = function(a) held.body = { yaw = a.x or 0, pitch = a.y or 0 }; state.techBodyOverride = true end
+ACTIONS.wait   = function(a) task.wait(a.seconds or a.x or 0.5) end
+ACTIONS["return"] = function() releaseHold() end
+ACTIONS.feature = function(a)
+    if a.value == nil then feature.fire(a.feature) else feature.setEnabled(a.feature, a.value) end
+end
+Engine.ACTIONS = ACTIONS
+
+-- ===== conditions =====
+local CONDITIONS = {}
+CONDITIONS.locked_on = function() return state.target ~= nil end
+CONDITIONS.shiftlock = function() return state.shiftlock_active == true end
+Engine.CONDITIONS = CONDITIONS
+
+local function conditionsMet(tech)
+    for _, c in ipairs(tech.trigger.conditions or {}) do
+        local fn = CONDITIONS[c]
+        if fn and not fn() then return false end
+    end
+    return true
+end
+
+-- ===== runner =====
+local function runTech(tech, hold)
+    task.spawn(function()
+        local cam = Workspace.CurrentCamera
+        startCamLook = cam and cam.CFrame.LookVector or nil
+        for _, a in ipairs(tech.actions or {}) do
+            local fn = ACTIONS[a.type]
+            if fn then local ok, err = pcall(fn, a); if not ok then log.warn("[tech] action " .. tostring(a.type) .. ": " .. tostring(err)) end end
+        end
+        -- one-shot triggers auto-clean at the end (in case the tech has no Return).
+        -- hold triggers keep the held facing until the key is released.
+        if not hold then releaseHold() end
+    end)
+end
+
+-- ===== trigger wiring =====
+local function wireKey(tech)
+    local key = tech.trigger.key
+    if not key or key == Enum.KeyCode.Unknown then return end
+    local isHold = tech.trigger.event == "keyhold"
+    keybinds.set("tech." .. tech.id, key,
+        function() if tech.enabled and conditionsMet(tech) then runTech(tech, isHold) end end,
+        function() if isHold then releaseHold() end end)
+end
+
+local function wireMove(tech)
+    -- ReplicatedStorage.Knit.Knit.Services.<move>.RE.Effects -- the server's
+    -- broadcast of a move's VFX, which our own client also receives with the
+    -- caster among the args (that's how we detect "I used this move"). Non-
+    -- yielding lookup so toggling a tech never stalls. (Activated is the
+    -- client->server remote, so its OnClientEvent never fires -- don't use it.)
+    local knit     = RS:FindFirstChild("Knit")
+    local inner    = knit and knit:FindFirstChild("Knit")
+    local services = inner and inner:FindFirstChild("Services")
+    local svc      = services and services:FindFirstChild(tech.trigger.move)
+    local re       = svc and svc:FindFirstChild("RE")
+    local eff      = re and re:FindFirstChild("Effects")
+    if not eff then
+        log.warn("[tech] '" .. tostring(tech.name) .. "': " .. tostring(tech.trigger.move) ..
+            ".RE.Effects not found -- move trigger won't fire (check the service name)")
+        return
+    end
+    local c = eff.OnClientEvent:Connect(function(...)
+        if not tech.enabled then return end
+        local ch, mine = myChar(), false
+        for i = 1, select("#", ...) do
+            local arg = select(i, ...)
+            if arg == ch or (typeof(arg) == "Instance" and ch and arg:IsDescendantOf(ch)) then mine = true; break end
+        end
+        if mine and conditionsMet(tech) then runTech(tech, false) end
+    end)
+    conns[tech.id] = conns[tech.id] or {}
+    table.insert(conns[tech.id], c)
+end
+
+function Engine.rewire()
+    for _, list in pairs(conns) do for _, c in ipairs(list) do pcall(function() c:Disconnect() end) end end
+    conns = {}
+    for _, tech in pairs(techs) do
+        local ev = tech.trigger and tech.trigger.event
+        if ev == "key" or ev == "keyhold" then wireKey(tech)          -- onPress re-checks tech.enabled
+        elseif ev == "move" and tech.enabled then wireMove(tech) end
+    end
+end
+
+-- ===== public API =====
+function Engine.add(tech)
+    if not (tech and tech.id) then return end
+    if tech.enabled == nil then tech.enabled = true end
+    techs[tech.id] = tech
+    Engine.rewire()
+    Engine.changed:Fire()
+end
+
+function Engine.all() return techs end
+function Engine.get(id) return techs[id] end
+
+function Engine.setEnabled(id, v)
+    local t = techs[id]; if not t then return end
+    t.enabled = v and true or false
+    Engine.rewire()
+    Engine.changed:Fire()
+end
+
+function Engine.remove(id) techs[id] = nil; Engine.rewire(); Engine.changed:Fire() end
+
+function Engine.init()
+    if bound then return end
+    RunService:BindToRenderStep(RENDER_BIND, Enum.RenderPriority.Camera.Value + 2, renderHold)
+    bound = true
+end
+
+function Engine.destroy()
+    if bound then pcall(function() RunService:UnbindFromRenderStep(RENDER_BIND) end); bound = false end
+    for _, list in pairs(conns) do for _, c in ipairs(list) do pcall(function() c:Disconnect() end) end end
+    conns = {}
+    releaseHold()
+end
+
+return Engine

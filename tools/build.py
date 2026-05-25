@@ -32,6 +32,8 @@ BUILD_ORDER = [
     "modules/aim/lockon",
     "modules/aim/target_select",
     "modules/aim/init",
+    "modules/tech/engine",
+    "modules/tech/init",
     "games/jjs",
     "init",
 ]

@@ -63,6 +63,11 @@ local state = {
     -- Swap
     swap_enabled = true,
 
+    -- Tech Builder: while a tech is driving the camera/body (a Look/Rotate step),
+    -- Lock-On (camera) and Rotation Lock (body) yield so they don't fight it.
+    techCamOverride  = false,
+    techBodyOverride = false,
+
     -- Misc
     lockHeightOffset = 0,
     friendlies       = {},

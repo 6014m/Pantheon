@@ -1540,6 +1540,28 @@ function Feature.declare(def)
     }
 end
 
+-- ---- Invoke-by-id API (used by the Tech Builder to call features as steps) ----
+function Feature.setEnabled(id, v)
+    local e = registry[id]; if e then e.setEnabled(v) end
+end
+
+function Feature.getEnabled(id)
+    local e = registry[id]; return e ~= nil and e.getEnabled() or false
+end
+
+-- Fire a feature's key action (its onKey), or toggle it if it has none.
+function Feature.fire(id)
+    local e = registry[id]; if not e then return end
+    if e.def and e.def.onKey then pcall(e.def.onKey) else e.setEnabled(not e.getEnabled()) end
+end
+
+-- List declared features as { {id=, name=}, ... } for the Tech Builder's action palette.
+function Feature.all()
+    local out = {}
+    for id, e in pairs(registry) do out[#out + 1] = { id = id, name = (e.def and e.def.name) or id } end
+    return out
+end
+
 return Feature
 end
 
@@ -1730,6 +1752,11 @@ local state = {
 
     -- Swap
     swap_enabled = true,
+
+    -- Tech Builder: while a tech is driving the camera/body (a Look/Rotate step),
+    -- Lock-On (camera) and Rotation Lock (body) yield so they don't fight it.
+    techCamOverride  = false,
+    techBodyOverride = false,
 
     -- Misc
     lockHeightOffset = 0,
@@ -2935,6 +2962,7 @@ local function getHumanoids()
 end
 
 local function shouldRotate()
+    if state.techBodyOverride then return false end   -- a Tech Builder step is driving the body; yield
     if not state.lockon_enabled then return false end
     if not state.rotationLockEnabled then return false end
     if not state.target then return false end
@@ -3158,6 +3186,7 @@ end
 
 local function cameraStep(dt)
     if not state.lockon_enabled then return end
+    if state.techCamOverride then return end   -- a Tech Builder step is driving the camera; yield
     if not state.cameraLockEnabled then return end
     if not state.target then return end
 
@@ -3535,6 +3564,400 @@ end
 return module
 end
 
+_MODULES["modules.tech.engine"] = function()
+-- Tech Builder engine.
+--
+-- A "tech" = a TRIGGER (event + conditions) -> an ordered list of ACTIONS. The
+-- engine is data-driven and extensible: EVENTS, CONDITIONS and ACTIONS are open
+-- registries so new types drop in without reworking the runner.
+--
+--   trigger = { event = "key"|"keyhold"|"move", key = KeyCode, move = "ServiceName",
+--               conditions = { "locked_on", ... } }
+--   actions = { {type="look", x=180,y=0,z=0}, {type="wait", seconds=0.5}, {type="return"},
+--               {type="rotate", x=180}, {type="feature", feature="aim.rotation_lock", value=true} }
+--
+-- Look/Rotate are TARGET-RELATIVE (yaw 0 = at the lock target, 180 = facing away),
+-- ported from the lock-on script's reverse-lock. While a Look/Rotate step is held,
+-- the engine sets state.techCamOverride / techBodyOverride so Lock-On / Rotation
+-- Lock yield; Return clears them and hands control back (re-aims at the target).
+
+local state    = require("modules.aim.state")
+local feature  = require("ui.feature")
+local keybinds = require("core.keybinds")
+local log      = require("core.log")
+local Signal   = require("core.signal")
+
+local Players    = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace  = game:GetService("Workspace")
+local RS         = game:GetService("ReplicatedStorage")
+
+local Engine = {}
+Engine.changed = Signal.new()   -- fires when the tech set changes (UI list re-reads it)
+local LP = Players.LocalPlayer
+
+local techs = {}     -- id -> tech def
+local conns = {}     -- id -> { Connection, ... } (move-trigger listeners)
+local RENDER_BIND = "PantheonTechHold"
+local bound = false
+
+-- held camera/body facings; the render loop enforces these each frame while set.
+local held = { cam = nil, body = nil }   -- each = { yaw, pitch } degrees, target-relative
+local startCamLook                        -- camera LookVector at tech start (no-target fallback)
+
+-- ===== geometry =====
+local function myChar() return LP.Character end
+local function myRoot() local c = myChar(); return c and c:FindFirstChild("HumanoidRootPart") end
+local function targetRoot()
+    local t = state.target
+    if not t then return nil end
+    local ch = (state.target_type == "npc") and t or t.Character
+    return ch and ch:FindFirstChild("HumanoidRootPart")
+end
+
+local function offsetDir(baseFlat, yawDeg)
+    if baseFlat.Magnitude < 1e-3 then return baseFlat end
+    return (CFrame.fromAxisAngle(Vector3.yAxis, math.rad(yawDeg or 0)) * baseFlat).Unit
+end
+
+local function camBaseFlat()
+    local cam = Workspace.CurrentCamera
+    local tr = targetRoot()
+    if tr and cam then local d = tr.Position - cam.CFrame.Position; return Vector3.new(d.X, 0, d.Z) end
+    if startCamLook then return Vector3.new(startCamLook.X, 0, startCamLook.Z) end
+    return cam and Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z) or Vector3.zAxis
+end
+
+local function bodyBaseFlat()
+    local r, tr = myRoot(), targetRoot()
+    if r and tr then local d = tr.Position - r.Position; return Vector3.new(d.X, 0, d.Z) end
+    if r then local l = r.CFrame.LookVector; return Vector3.new(l.X, 0, l.Z) end
+    return Vector3.zAxis
+end
+
+local function renderHold()
+    if held.cam then
+        local cam = Workspace.CurrentCamera
+        local base = camBaseFlat()
+        if cam and base.Magnitude > 1e-3 then
+            local dir = offsetDir(base, held.cam.yaw)
+            local pitch = math.rad(held.cam.pitch or 0)
+            local look = Vector3.new(dir.X * math.cos(pitch), math.sin(pitch), dir.Z * math.cos(pitch))
+            cam.CFrame = CFrame.new(cam.CFrame.Position, cam.CFrame.Position + look)
+        end
+    end
+    if held.body then
+        local root = myRoot()
+        local base = bodyBaseFlat()
+        if root and base.Magnitude > 1e-3 then
+            local dir = offsetDir(base, held.body.yaw)
+            root.CFrame = CFrame.lookAt(root.Position, root.Position + dir)
+        end
+    end
+end
+
+local function releaseHold()
+    held.cam, held.body = nil, nil
+    state.techCamOverride = false
+    state.techBodyOverride = false
+    -- no Lock-On to re-aim us? snap the camera back to where we started.
+    if not (state.lockon_enabled and state.target) and startCamLook then
+        local cam = Workspace.CurrentCamera
+        if cam then cam.CFrame = CFrame.new(cam.CFrame.Position, cam.CFrame.Position + startCamLook) end
+    end
+end
+
+-- ===== actions =====
+local ACTIONS = {}
+ACTIONS.look   = function(a) held.cam  = { yaw = a.x or 0, pitch = a.y or 0 }; state.techCamOverride  = true end
+ACTIONS.rotate = function(a) held.body = { yaw = a.x or 0, pitch = a.y or 0 }; state.techBodyOverride = true end
+ACTIONS.wait   = function(a) task.wait(a.seconds or a.x or 0.5) end
+ACTIONS["return"] = function() releaseHold() end
+ACTIONS.feature = function(a)
+    if a.value == nil then feature.fire(a.feature) else feature.setEnabled(a.feature, a.value) end
+end
+Engine.ACTIONS = ACTIONS
+
+-- ===== conditions =====
+local CONDITIONS = {}
+CONDITIONS.locked_on = function() return state.target ~= nil end
+CONDITIONS.shiftlock = function() return state.shiftlock_active == true end
+Engine.CONDITIONS = CONDITIONS
+
+local function conditionsMet(tech)
+    for _, c in ipairs(tech.trigger.conditions or {}) do
+        local fn = CONDITIONS[c]
+        if fn and not fn() then return false end
+    end
+    return true
+end
+
+-- ===== runner =====
+local function runTech(tech, hold)
+    task.spawn(function()
+        local cam = Workspace.CurrentCamera
+        startCamLook = cam and cam.CFrame.LookVector or nil
+        for _, a in ipairs(tech.actions or {}) do
+            local fn = ACTIONS[a.type]
+            if fn then local ok, err = pcall(fn, a); if not ok then log.warn("[tech] action " .. tostring(a.type) .. ": " .. tostring(err)) end end
+        end
+        -- one-shot triggers auto-clean at the end (in case the tech has no Return).
+        -- hold triggers keep the held facing until the key is released.
+        if not hold then releaseHold() end
+    end)
+end
+
+-- ===== trigger wiring =====
+local function wireKey(tech)
+    local key = tech.trigger.key
+    if not key or key == Enum.KeyCode.Unknown then return end
+    local isHold = tech.trigger.event == "keyhold"
+    keybinds.set("tech." .. tech.id, key,
+        function() if tech.enabled and conditionsMet(tech) then runTech(tech, isHold) end end,
+        function() if isHold then releaseHold() end end)
+end
+
+local function wireMove(tech)
+    -- ReplicatedStorage.Knit.Knit.Services.<move>.RE.Effects -- the server's
+    -- broadcast of a move's VFX, which our own client also receives with the
+    -- caster among the args (that's how we detect "I used this move"). Non-
+    -- yielding lookup so toggling a tech never stalls. (Activated is the
+    -- client->server remote, so its OnClientEvent never fires -- don't use it.)
+    local knit     = RS:FindFirstChild("Knit")
+    local inner    = knit and knit:FindFirstChild("Knit")
+    local services = inner and inner:FindFirstChild("Services")
+    local svc      = services and services:FindFirstChild(tech.trigger.move)
+    local re       = svc and svc:FindFirstChild("RE")
+    local eff      = re and re:FindFirstChild("Effects")
+    if not eff then
+        log.warn("[tech] '" .. tostring(tech.name) .. "': " .. tostring(tech.trigger.move) ..
+            ".RE.Effects not found -- move trigger won't fire (check the service name)")
+        return
+    end
+    local c = eff.OnClientEvent:Connect(function(...)
+        if not tech.enabled then return end
+        local ch, mine = myChar(), false
+        for i = 1, select("#", ...) do
+            local arg = select(i, ...)
+            if arg == ch or (typeof(arg) == "Instance" and ch and arg:IsDescendantOf(ch)) then mine = true; break end
+        end
+        if mine and conditionsMet(tech) then runTech(tech, false) end
+    end)
+    conns[tech.id] = conns[tech.id] or {}
+    table.insert(conns[tech.id], c)
+end
+
+function Engine.rewire()
+    for _, list in pairs(conns) do for _, c in ipairs(list) do pcall(function() c:Disconnect() end) end end
+    conns = {}
+    for _, tech in pairs(techs) do
+        local ev = tech.trigger and tech.trigger.event
+        if ev == "key" or ev == "keyhold" then wireKey(tech)          -- onPress re-checks tech.enabled
+        elseif ev == "move" and tech.enabled then wireMove(tech) end
+    end
+end
+
+-- ===== public API =====
+function Engine.add(tech)
+    if not (tech and tech.id) then return end
+    if tech.enabled == nil then tech.enabled = true end
+    techs[tech.id] = tech
+    Engine.rewire()
+    Engine.changed:Fire()
+end
+
+function Engine.all() return techs end
+function Engine.get(id) return techs[id] end
+
+function Engine.setEnabled(id, v)
+    local t = techs[id]; if not t then return end
+    t.enabled = v and true or false
+    Engine.rewire()
+    Engine.changed:Fire()
+end
+
+function Engine.remove(id) techs[id] = nil; Engine.rewire(); Engine.changed:Fire() end
+
+function Engine.init()
+    if bound then return end
+    RunService:BindToRenderStep(RENDER_BIND, Enum.RenderPriority.Camera.Value + 2, renderHold)
+    bound = true
+end
+
+function Engine.destroy()
+    if bound then pcall(function() RunService:UnbindFromRenderStep(RENDER_BIND) end); bound = false end
+    for _, list in pairs(conns) do for _, c in ipairs(list) do pcall(function() c:Disconnect() end) end end
+    conns = {}
+    releaseHold()
+end
+
+return Engine
+end
+
+_MODULES["modules.tech.init"] = function()
+-- Tech Builder UI: the "Tech Builder" container.
+--
+-- Top row  : "Open Tech Builder" -> the avatar+dummy viewport with the timeline
+--            reenactment (stage 2; for now it announces it's coming).
+-- Below    : the saved techs, split into "This Game" (scope matches the current
+--            PlaceId/GameId) and "Universal" (scope == "universal"). Techs built
+--            for OTHER games are hidden. Each row toggles the tech on/off.
+--
+-- The list re-reads [[modules.tech.engine]] on engine.changed, so techs added by
+-- per-game modules (which register AFTER this section is built) appear live.
+
+local window     = require("ui.window")
+local container  = require("ui.container")
+local components = require("ui.components")
+local theme      = require("ui.theme")
+local notify     = require("ui.notify")
+local engine     = require("modules.tech.engine")
+local log        = require("core.log")
+
+local module = {}
+
+local function inThisGame(scope)
+    if scope == "universal" then return true end
+    return scope == game.PlaceId or scope == game.GameId
+end
+
+-- A single tech row: name on the left, an ON/OFF button on the right.
+local function buildRow(parent, tech)
+    local f = Instance.new("Frame")
+    f.Size = UDim2.new(1, 0, 0, 26)
+    f.BackgroundColor3 = theme.bgAlt
+    f.BorderSizePixel = 0
+    f.Parent = parent
+
+    local name = Instance.new("TextLabel")
+    name.Size = UDim2.new(1, -52, 1, 0)
+    name.Position = UDim2.fromOffset(8, 0)
+    name.BackgroundTransparency = 1
+    name.Text = tech.name or tech.id
+    name.TextColor3 = tech.enabled and theme.fg or theme.fgDim
+    name.Font = theme.font
+    name.TextSize = 12
+    name.TextXAlignment = Enum.TextXAlignment.Left
+    name.TextTruncate = Enum.TextTruncate.AtEnd
+    name.Parent = f
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.fromOffset(38, 18)
+    btn.Position = UDim2.new(1, -44, 0.5, -9)
+    btn.AutoButtonColor = false
+    btn.BackgroundColor3 = tech.enabled and theme.on or theme.off
+    btn.TextColor3 = theme.fg
+    btn.Font = theme.fontBold
+    btn.TextSize = 10
+    btn.Text = tech.enabled and "ON" or "OFF"
+    btn.Parent = f
+
+    -- Toggle, then let engine.changed rebuild the whole list (keeps this row in
+    -- sync without per-row state). No paint() here -- the rebuild repaints.
+    btn.MouseButton1Click:Connect(function()
+        engine.setEnabled(tech.id, not tech.enabled)
+    end)
+
+    return f
+end
+
+local function refreshList(listFrame)
+    for _, c in ipairs(listFrame:GetChildren()) do
+        if not c:IsA("UIListLayout") then c:Destroy() end
+    end
+
+    local here, uni = {}, {}
+    for _, t in pairs(engine.all()) do
+        if t.scope == "universal" then
+            uni[#uni + 1] = t
+        elseif inThisGame(t.scope) then
+            here[#here + 1] = t
+        end
+    end
+    local byName = function(a, b) return (a.name or a.id) < (b.name or b.id) end
+    table.sort(here, byName)
+    table.sort(uni, byName)
+
+    local ord = 0
+    local function place(inst) ord = ord + 1; inst.LayoutOrder = ord; return inst end
+
+    if #here > 0 then
+        place(components.Section(listFrame, "This Game"))
+        for _, t in ipairs(here) do place(buildRow(listFrame, t)) end
+    end
+    if #uni > 0 then
+        place(components.Section(listFrame, "Universal"))
+        for _, t in ipairs(uni) do place(buildRow(listFrame, t)) end
+    end
+    if #here == 0 and #uni == 0 then
+        place(components.Label(listFrame, "No techs yet."))
+    end
+end
+
+-- Built-in universal example: hold a key to snap-look 180 off the lock target
+-- and auto-return on release. Demonstrates the look/hold/condition path. Off by
+-- default so it doesn't claim a key until you turn it on.
+local function registerExamples()
+    engine.add({
+        id      = "reverse_look",
+        name    = "Reverse Look (hold)",
+        scope   = "universal",
+        enabled = false,
+        trigger = { event = "keyhold", key = Enum.KeyCode.V, conditions = { "locked_on" } },
+        actions = { { type = "look", x = 180, y = 0 } },
+    })
+end
+
+function module.register()
+    engine.init()
+
+    local box = container.new(window.parent(), "Tech Builder")
+
+    local holder = Instance.new("Frame")
+    holder.Size = UDim2.new(1, 0, 0, 0)
+    holder.AutomaticSize = Enum.AutomaticSize.Y
+    holder.BackgroundTransparency = 1
+    local hl = Instance.new("UIListLayout", holder)
+    hl.SortOrder = Enum.SortOrder.LayoutOrder
+    hl.Padding = UDim.new(0, 2)
+
+    local openBtn = components.Button(holder, {
+        text    = "Open Tech Builder",
+        onClick = function()
+            notify.info("Tech Builder editor + avatar/dummy viewport are coming in the next update. Built-in techs are usable now below.", 5)
+        end,
+    })
+    openBtn.LayoutOrder = 1
+
+    local listFrame = Instance.new("Frame")
+    listFrame.Size = UDim2.new(1, 0, 0, 0)
+    listFrame.AutomaticSize = Enum.AutomaticSize.Y
+    listFrame.BackgroundTransparency = 1
+    listFrame.LayoutOrder = 2
+    listFrame.Parent = holder
+    local ll = Instance.new("UIListLayout", listFrame)
+    ll.SortOrder = Enum.SortOrder.LayoutOrder
+    ll.Padding = UDim.new(0, 1)
+
+    box:add(holder)
+
+    -- Rebuild the list whenever the tech set changes (toggles, or per-game
+    -- modules adding their techs after this point).
+    engine.changed:Connect(function() refreshList(listFrame) end)
+
+    registerExamples()
+    refreshList(listFrame)
+
+    log.info("Tech Builder registered")
+end
+
+function module.destroy()
+    pcall(function() engine.destroy() end)
+end
+
+return module
+end
+
 _MODULES["games.jjs"] = function()
 -- Jujutsu Shenanigans (PlaceId 17016840407) integration.
 --
@@ -3556,6 +3979,7 @@ local feature   = require("ui.feature")
 local state     = require("modules.aim.state")
 local targeting = require("modules.aim.targeting")
 local shiftlock = require("modules.aim.shiftlock")
+local techeng   = require("modules.tech.engine")
 local log       = require("core.log")
 
 local Players           = game:GetService("Players")
@@ -3626,6 +4050,27 @@ function JJS.register()
         onToggle    = function(v) enabled = v and true or false end,
         onKey       = function() ratioPointPerfect() end,
     }).root)
+    -- Tech Builder example (this-game): on Projection Breaker (yours, while locked
+    -- on) snap the camera 180 off the target, hold half a second, then return to
+    -- facing them. Listens to ProjectionBreakerService.RE.Effects and only fires
+    -- when the caster is us. Off by default; toggle it in the Tech Builder list.
+    techeng.add({
+        id      = "jjs.proj_breaker_reverse",
+        name    = "Proj. Breaker -> Look Away",
+        scope   = 3508322461,   -- JJS GameId
+        enabled = false,
+        trigger = {
+            event      = "move",
+            move       = "ProjectionBreakerService",
+            conditions = { "locked_on" },
+        },
+        actions = {
+            { type = "look", x = 180, y = 0 },
+            { type = "wait", seconds = 0.5 },
+            { type = "return" },
+        },
+    })
+
     log.info("JJS module registered -- Nanami Perfect Special (Ratio Point, 70-stud range)")
 end
 
@@ -3670,6 +4115,9 @@ window.init()
 local aim = require("modules.aim.init")
 aim.register()
 
+local tech = require("modules.tech.init")
+tech.register()
+
 -- Per-game modules self-register on require; pull them in so registry.current()
 -- can find one for this PlaceId. (Requiring in a non-matching game just adds to
 -- the registry table; its .register() only runs if the PlaceId matches.)
@@ -3691,6 +4139,7 @@ end
 -- already-torn-down state), then UI, then keybinds, then persist flush.
 genv.Pantheon.shutdown = function()
     pcall(function() if aim.destroy      then aim.destroy()      end end)
+    pcall(function() if tech.destroy     then tech.destroy()     end end)
     pcall(function() if window.destroy   then window.destroy()   end end)
     pcall(function() if notify.destroy   then notify.destroy()   end end)
     pcall(function() if keybinds.destroy then keybinds.destroy() end end)
