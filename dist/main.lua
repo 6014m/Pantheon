@@ -4029,17 +4029,22 @@ end
 -- something was actually fired.
 local function fireSignalsOf(b)
     if typeof(firesignal) ~= "function" then return false end
-    for _, name in ipairs({ "Activated", "MouseButton1Click" }) do
-        local ok, sig = pcall(function() return b[name] end)
-        local cs = ok and sig and getConns(sig)
-        if cs and #cs > 0 then pcall(firesignal, sig); return true end
-    end
+    -- Action move buttons fire on PRESS, and the MouseButton1Down/Up handlers take
+    -- (x, y), so pass the button center. Try down(+up) FIRST (TSB fires here -- a
+    -- prior build fired Click and nothing happened), then click, then activated.
+    local cx = b.AbsolutePosition.X + b.AbsoluteSize.X / 2
+    local cy = b.AbsolutePosition.Y + b.AbsoluteSize.Y / 2
     local down = getConns(b.MouseButton1Down)
     if down and #down > 0 then
-        pcall(firesignal, b.MouseButton1Down)
-        pcall(firesignal, b.MouseButton1Up)
+        pcall(firesignal, b.MouseButton1Down, cx, cy)
+        local up = getConns(b.MouseButton1Up)
+        if up and #up > 0 then pcall(firesignal, b.MouseButton1Up, cx, cy) end
         return true
     end
+    local click = getConns(b.MouseButton1Click)
+    if click and #click > 0 then pcall(firesignal, b.MouseButton1Click); return true end
+    local act = getConns(b.Activated)
+    if act and #act > 0 then pcall(firesignal, b.Activated); return true end
     return false
 end
 
