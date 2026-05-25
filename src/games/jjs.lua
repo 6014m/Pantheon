@@ -71,11 +71,11 @@ local function ratioPointPerfect()
 end
 
 function JJS.register()
-    -- JJS ships its own shiftlock, which fights Pantheon's. Auto-engage mirror mode
-    -- so Pantheon FOLLOWS the game's shiftlock (writes nothing) instead of running a
-    -- competing one -- this is the per-game "register the shiftlock with JJS" fix.
-    -- Runs at load, BEFORE any shiftlock-enable, so the foreign sweep never kills
-    -- the game's shiftlock we want to follow.
+    -- JJS ships its own shiftlock, which overlapped Pantheon's. Auto-engage PAIR mode
+    -- so Pantheon syncs its shiftlock to the game's and keeps rotating in lockstep
+    -- (instead of running a second competing one or fighting it). Per-game patch:
+    -- runs at load, BEFORE any shiftlock-enable, so the foreign sweep never kills
+    -- the game's shiftlock we want to pair with.
     shiftlock.setShiftlockMirror(true)
 
     local box = container.new(window.parent(), "Jujutsu Shenanigans")

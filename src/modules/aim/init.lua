@@ -46,10 +46,12 @@ function module.register()
         -- on while the UI button still showed OFF.
         onKey       = function() shiftlock.toggle() end,
         settings = {
-            -- Follow the game's own shiftlock instead of running a competing one
-            -- (eliminates the overlap/fight). Turn on in games that have their own
-            -- shiftlock, e.g. JJS. Off => Pantheon runs its own shiftlock.
-            { type = "toggle", name = "Follow game's shiftlock (no overlap)",
+            -- Pair WITH the game's own shiftlock instead of running a competing one:
+            -- Pantheon syncs its on/off to the game's and keeps rotating, but lets
+            -- the game own the cursor (no fight). Turn on in games with their own
+            -- shiftlock, e.g. JJS (the JJS module auto-enables it). Off => Pantheon
+            -- runs its own standalone shiftlock.
+            { type = "toggle", name = "Pair with game's shiftlock",
               key = "mirror", default = false,
               onChange = function(v) shiftlock.setShiftlockMirror(v) end },
             { type = "toggle", name = "Kill foreign shiftlock GUIs / loops", default = true,

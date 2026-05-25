@@ -452,10 +452,10 @@ function Shiftlock.setAllowGameShiftlock(v)
     end
 end
 
--- Mirror mode: Pantheon stops running its own shiftlock and instead FOLLOWS the
--- game's (shiftlock_active tracks the game's cursor lock). Kills the overlap where
--- both ran at once. Turning it on releases our writes so the game takes back full
--- control of the cursor + rotation; our combat layers (rotation-lock, lockon) still work.
+-- PAIR mode: Pantheon syncs its shiftlock on/off to the game's own shiftlock and
+-- keeps rotating in lockstep, but lets the game own the CURSOR (no pin/hook fight).
+-- Replaces the old independent toggle that drifted out of sync and overlapped.
+-- Enabling it releases our current cursor writes once so the game takes the cursor.
 function Shiftlock.setShiftlockMirror(v)
     state.shiftlockMirror = v and true or false
     if state.shiftlockMirror then Shiftlock.forceOff() end
@@ -522,20 +522,16 @@ local function autoRepair()
 end
 
 local function step()
-    -- Mirror mode: FOLLOW the game's own shiftlock instead of running ours. Read
-    -- the game's cursor lock and reflect it into shiftlock_active (so the rest of
-    -- Pantheon knows the state), but write NOTHING ourselves -- no cursor pin, no
-    -- rotation -- so we can't overlap/fight the game's shiftlock. The game owns
-    -- the cursor + base rotation; our rotation-lock / lockon still layer on top.
+    -- PAIR mode: instead of toggling our shiftlock independently (which drifts out
+    -- of sync with the game's and overlaps it), SYNC our shiftlock_active to the
+    -- game's own shiftlock by reading its cursor lock. We do NOT pin the cursor
+    -- (shouldEnforce() returns false in pair mode, so the game owns the cursor --
+    -- no fight), but we FALL THROUGH to our own rotation pass below, so Pantheon's
+    -- shiftlock stays ACTIVE (rotating in lockstep) alongside the game's -- paired,
+    -- not replaced. They lock/unlock together because our state tracks the game's.
     if state.shiftlockMirror then
-        if state.shiftlock_enabled then
-            state.shiftlock_active = UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter
-            local hum = self_state.humanoid
-            if hum then hum.CameraOffset = Vector3.new(0, 0, 0) end
-        else
-            state.shiftlock_active = false
-        end
-        return
+        state.shiftlock_active = state.shiftlock_enabled
+            and (UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter) or false
     end
 
     -- "shouldLock" is the SINGLE source of truth for whether the cursor should
