@@ -605,7 +605,9 @@ local function step()
         -- Skip AutoRotate writes while Rotation Lock is driving the body,
         -- otherwise we fight it for free-rotate vs locked-rotate.
         if hum and not rotLockActive then
-            local wantedAR = not shouldLock
+            -- hand AutoRotate back during a grab so the game can turn/move us
+            -- instead of leaving the body frozen ("stuck in place").
+            local wantedAR = (not shouldLock) or state.isGrabbing()
             if hum.AutoRotate ~= wantedAR then
                 hum.AutoRotate = wantedAR
             end
@@ -640,26 +642,23 @@ local function step()
     local st = hum:GetState()
     if st == Enum.HumanoidStateType.Dead then return end
 
-    -- PlatformStand is a HARD game lock (bleedout / downed / seated) -- ALWAYS
-    -- suppress; never rotate through it. (Rotating during bleedout is exactly what
-    -- the user does NOT want, and normal players can't.) The physics-y states
-    -- (knockback during a grab) CAN be rotated through while grabbing (Decisive
-    -- Strikes) unless weld-safety is on.
+    -- Being grabbed (welded to a player, or held by a foreign BodyGyro/Position)
+    -- => never rotate the body: it drags the grabbed player (we're the attacker)
+    -- or fights + glitches their grab of us (we're the victim). Grabs can keep
+    -- the humanoid in the RUNNING state, so check this DIRECTLY, not via state.
+    if state.isGrabbing() then return end
+    -- Hard locks (bleedout / downed / seated) + knockback/ragdoll physics:
+    -- suppress so the body doesn't spin while the game controls us.
     if hum.PlatformStand then return end
-    local physicsy = st == Enum.HumanoidStateType.Ragdoll
-        or st == Enum.HumanoidStateType.FallingDown
-        or st == Enum.HumanoidStateType.Physics
-    if physicsy and not (state.isGrabbing() and not state.weldSafetyEnabled) then
+    if st == Enum.HumanoidStateType.Ragdoll
+       or st == Enum.HumanoidStateType.FallingDown
+       or st == Enum.HumanoidStateType.Physics then
         return
     end
 
     if self_state.externalSkipRotation and self_state.externalSkipRotation() then
         return
     end
-
-    -- Skip the root.CFrame write while welded to another character ONLY if the
-    -- weld-safety opt-in is on (default off, so grabs like Decisive Strikes rotate).
-    if weldedToOther() then return end
 
     local cam = workspace.CurrentCamera
     if not cam then return end

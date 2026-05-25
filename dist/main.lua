@@ -1882,13 +1882,42 @@ end
 -- that toggle decides what to DO with a grab; this just detects it. The rotation
 -- passes use it to keep rotating THROUGH a grab (the game parks you in
 -- PlatformStand/Physics during it, but you still want to aim).
+-- "Am I being body-controlled by another player / the game right now" = a grab.
+-- TRUE when either:
+--   (a) we're rigidly welded to ANY part of another player's character (part-
+--       agnostic -- grabs use HRP<->HRP, arm<->leg, etc., confirmed via the grab
+--       inspector), OR
+--   (b) our HRP carries a FOREIGN body-control constraint (BodyGyro / BodyPosition
+--       / a non-Pantheon AlignOrientation/AlignPosition) -- some grabs hold you
+--       with these instead of a weld.
+-- While this is true, the rotation passes must write NOTHING to our body and must
+-- DISABLE their own AlignOrientation, or we fight the grab: dragging the welded
+-- player (we're the attacker) or glitching their grab of us (we're the victim).
 local grabCacheT, grabCacheV = 0, false
 function state.isGrabbing()
     local now = os.clock()
     if now - grabCacheT > 0.05 then
-        local c = PlayersService.LocalPlayer and PlayersService.LocalPlayer.Character
-        grabCacheV = c ~= nil and state.isWeldedToOther(c)
         grabCacheT = now
+        grabCacheV = false
+        local c = PlayersService.LocalPlayer and PlayersService.LocalPlayer.Character
+        if c then
+            if state.isWeldedToOther(c) then
+                grabCacheV = true
+            else
+                local hrp = c:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    for _, d in ipairs(hrp:GetChildren()) do
+                        local cls = d.ClassName
+                        if cls == "BodyGyro" or cls == "BodyPosition"
+                           or ((cls == "AlignOrientation" or cls == "AlignPosition")
+                               and not string.find(d.Name, "Pantheon")) then
+                            grabCacheV = true
+                            break
+                        end
+                    end
+                end
+            end
+        end
     end
     return grabCacheV
 end
@@ -2815,7 +2844,9 @@ local function step()
         -- Skip AutoRotate writes while Rotation Lock is driving the body,
         -- otherwise we fight it for free-rotate vs locked-rotate.
         if hum and not rotLockActive then
-            local wantedAR = not shouldLock
+            -- hand AutoRotate back during a grab so the game can turn/move us
+            -- instead of leaving the body frozen ("stuck in place").
+            local wantedAR = (not shouldLock) or state.isGrabbing()
             if hum.AutoRotate ~= wantedAR then
                 hum.AutoRotate = wantedAR
             end
@@ -2850,26 +2881,23 @@ local function step()
     local st = hum:GetState()
     if st == Enum.HumanoidStateType.Dead then return end
 
-    -- PlatformStand is a HARD game lock (bleedout / downed / seated) -- ALWAYS
-    -- suppress; never rotate through it. (Rotating during bleedout is exactly what
-    -- the user does NOT want, and normal players can't.) The physics-y states
-    -- (knockback during a grab) CAN be rotated through while grabbing (Decisive
-    -- Strikes) unless weld-safety is on.
+    -- Being grabbed (welded to a player, or held by a foreign BodyGyro/Position)
+    -- => never rotate the body: it drags the grabbed player (we're the attacker)
+    -- or fights + glitches their grab of us (we're the victim). Grabs can keep
+    -- the humanoid in the RUNNING state, so check this DIRECTLY, not via state.
+    if state.isGrabbing() then return end
+    -- Hard locks (bleedout / downed / seated) + knockback/ragdoll physics:
+    -- suppress so the body doesn't spin while the game controls us.
     if hum.PlatformStand then return end
-    local physicsy = st == Enum.HumanoidStateType.Ragdoll
-        or st == Enum.HumanoidStateType.FallingDown
-        or st == Enum.HumanoidStateType.Physics
-    if physicsy and not (state.isGrabbing() and not state.weldSafetyEnabled) then
+    if st == Enum.HumanoidStateType.Ragdoll
+       or st == Enum.HumanoidStateType.FallingDown
+       or st == Enum.HumanoidStateType.Physics then
         return
     end
 
     if self_state.externalSkipRotation and self_state.externalSkipRotation() then
         return
     end
-
-    -- Skip the root.CFrame write while welded to another character ONLY if the
-    -- weld-safety opt-in is on (default off, so grabs like Decisive Strikes rotate).
-    if weldedToOther() then return end
 
     local cam = workspace.CurrentCamera
     if not cam then return end
@@ -3033,28 +3061,31 @@ local function shouldRotate()
 end
 
 local function bgSuppressed()
+    -- A grab (welded to a player, or held by a foreign BodyGyro/BodyPosition)
+    -- can keep the humanoid in the RUNNING state -- the SwingForce throw does
+    -- exactly that (grab inspector: their HRP welded to ours, state=Running). A
+    -- state-only check misses it, so we'd write root.CFrame and either DRAG the
+    -- welded player (we're the attacker) or fight + GLITCH their grab of us
+    -- (we're the victim). So: being grabbed => ALWAYS suppress, regardless of
+    -- state or the weld-safety toggle. Returning true makes step() deactivate(),
+    -- which also disables our AlignOrientation so it stops torquing against the
+    -- grab and hands AutoRotate back.
+    if state.isGrabbing() then return true end
     if not state.bgSafeEnabled then return false end
-    local myHum, _tHum = getHumanoids()
+    local myHum = getHumanoids()
     if myHum then
         local st = myHum:GetState()
-        -- Hard locks (bleedout / downed / seated): ALWAYS suppress, never rotate through.
+        -- Hard locks (bleedout / downed / seated) and knockback/ragdoll physics:
+        -- suppress so the body doesn't spin while the game controls us.
         if myHum.PlatformStand
            or st == Enum.HumanoidStateType.PlatformStanding
-           or st == Enum.HumanoidStateType.Seated then
-            return true
-        end
-        -- Physics-y states (knockback during a grab): rotate through them while
-        -- grabbing (Decisive Strikes), unless weld-safety is on.
-        if SUPPRESS_STATES[st] then
-            if state.isGrabbing() and not state.weldSafetyEnabled then return false end
+           or st == Enum.HumanoidStateType.Seated
+           or SUPPRESS_STATES[st] then
             return true
         end
     end
-    -- Intentionally NOT checking the target's state. Knockback during their
-    -- attacks puts them in Physics state for a moment; if we suppressed
-    -- rotation for that we'd stop tracking right when blocks are about to
-    -- land -- "missing a lot of blocks" feedback. Suppressing on our own
-    -- state is still useful so the body doesn't spin while we're ragdolled.
+    -- Intentionally NOT checking the target's state -- knockback briefly puts
+    -- them in Physics during their attacks and we still want to track for blocks.
     return false
 end
 

@@ -66,28 +66,31 @@ local function shouldRotate()
 end
 
 local function bgSuppressed()
+    -- A grab (welded to a player, or held by a foreign BodyGyro/BodyPosition)
+    -- can keep the humanoid in the RUNNING state -- the SwingForce throw does
+    -- exactly that (grab inspector: their HRP welded to ours, state=Running). A
+    -- state-only check misses it, so we'd write root.CFrame and either DRAG the
+    -- welded player (we're the attacker) or fight + GLITCH their grab of us
+    -- (we're the victim). So: being grabbed => ALWAYS suppress, regardless of
+    -- state or the weld-safety toggle. Returning true makes step() deactivate(),
+    -- which also disables our AlignOrientation so it stops torquing against the
+    -- grab and hands AutoRotate back.
+    if state.isGrabbing() then return true end
     if not state.bgSafeEnabled then return false end
-    local myHum, _tHum = getHumanoids()
+    local myHum = getHumanoids()
     if myHum then
         local st = myHum:GetState()
-        -- Hard locks (bleedout / downed / seated): ALWAYS suppress, never rotate through.
+        -- Hard locks (bleedout / downed / seated) and knockback/ragdoll physics:
+        -- suppress so the body doesn't spin while the game controls us.
         if myHum.PlatformStand
            or st == Enum.HumanoidStateType.PlatformStanding
-           or st == Enum.HumanoidStateType.Seated then
-            return true
-        end
-        -- Physics-y states (knockback during a grab): rotate through them while
-        -- grabbing (Decisive Strikes), unless weld-safety is on.
-        if SUPPRESS_STATES[st] then
-            if state.isGrabbing() and not state.weldSafetyEnabled then return false end
+           or st == Enum.HumanoidStateType.Seated
+           or SUPPRESS_STATES[st] then
             return true
         end
     end
-    -- Intentionally NOT checking the target's state. Knockback during their
-    -- attacks puts them in Physics state for a moment; if we suppressed
-    -- rotation for that we'd stop tracking right when blocks are about to
-    -- land -- "missing a lot of blocks" feedback. Suppressing on our own
-    -- state is still useful so the body doesn't spin while we're ragdolled.
+    -- Intentionally NOT checking the target's state -- knockback briefly puts
+    -- them in Physics during their attacks and we still want to track for blocks.
     return false
 end
 
