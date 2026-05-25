@@ -207,8 +207,14 @@ function Engine.rewire()
     conns = {}
     for _, tech in pairs(techs) do
         local ev = tech.trigger and tech.trigger.event
-        if ev == "key" or ev == "keyhold" then wireKey(tech)          -- onPress re-checks tech.enabled
-        elseif ev == "move" and tech.enabled then wireMove(tech) end
+        if ev == "key" or ev == "keyhold" then
+            -- Only bind the key while the tech is ON; clear it when OFF so a
+            -- disabled tech's key is genuinely unbound (can't fire), matching how
+            -- move techs are gated.
+            if tech.enabled then wireKey(tech) else keybinds.clear("tech." .. tech.id) end
+        elseif ev == "move" and tech.enabled then
+            wireMove(tech)
+        end
     end
 end
 

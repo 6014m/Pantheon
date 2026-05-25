@@ -53,6 +53,8 @@ local self_state = {
     lastBlockedLog = 0,
     weldCheckLast = 0,
     weldCheckResult = false,
+    -- pair mode: are we currently hiding the game's shiftlock icon?
+    iconsHidden = false,
     -- Set true by Shiftlock.destroy() so the previously-installed hook
     -- becomes a pure pass-through and the hookGuard task exits, letting a
     -- freshly re-executed Pantheon take over without thrashing.
@@ -327,6 +329,40 @@ local function sweepForeigns(label)
     end
 end
 
+-- PAIR mode: hide the GAME's own shiftlock icon while Pantheon's shiftlock is
+-- active, so only our icon shows -- WITHOUT destroying it (we still pair with the
+-- game's shiftlock state for sync + rotation). Heuristic: any ScreenGui/GuiObject
+-- under PlayerGui whose name contains "shiftlock". Remembers exactly what it hid
+-- and restores it when Pantheon's shiftlock goes inactive.
+-- NOTE: if JJS names its icon something without "shiftlock" in it, this won't
+-- catch it -- grab the icon's instance name (Dex/explorer) and we target it.
+local hiddenStore = {}
+local function setForeignShiftlockHidden(hide)
+    if hide then
+        if #hiddenStore > 0 then return end
+        local pg = lp():FindFirstChildOfClass("PlayerGui")
+        if not pg then return end
+        for _, gobj in ipairs(pg:GetDescendants()) do
+            local isSG = gobj:IsA("ScreenGui")
+            if (isSG or gobj:IsA("GuiObject"))
+               and gobj.Name:lower():gsub("%s", ""):find("shiftlock") then
+                local prop = isSG and "Enabled" or "Visible"
+                local ok, cur = pcall(function() return gobj[prop] end)
+                if ok and cur ~= false then
+                    hiddenStore[#hiddenStore + 1] = { gobj, prop }
+                    pcall(function() gobj[prop] = false end)
+                end
+            end
+        end
+    else
+        for _, e in ipairs(hiddenStore) do
+            local gobj, prop = e[1], e[2]
+            if gobj and gobj.Parent then pcall(function() gobj[prop] = true end) end
+        end
+        hiddenStore = {}
+    end
+end
+
 -- ---------- gui ----------------------------------------------------------
 
 local function buildGui()
@@ -534,8 +570,17 @@ local function step()
         state.shiftlock_active = state.shiftlock_enabled
             and (UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter) or false
         -- pair mode doesn't call applyLock(), so drive our shiftlock icon here so it
-        -- shows OVER the game's icon while the paired shiftlock is active.
+        -- shows while the paired shiftlock is active...
         if self_state.vIcon then self_state.vIcon.Visible = state.shiftlock_active end
+        -- ...and hide the GAME's own shiftlock icon so only ours shows (still paired).
+        if state.shiftlock_active ~= self_state.iconsHidden then
+            setForeignShiftlockHidden(state.shiftlock_active)
+            self_state.iconsHidden = state.shiftlock_active
+        end
+    elseif self_state.iconsHidden then
+        -- left pair mode (or shiftlock off) -> give the game its icon back
+        setForeignShiftlockHidden(false)
+        self_state.iconsHidden = false
     end
 
     -- "shouldLock" is the SINGLE source of truth for whether the cursor should
@@ -684,6 +729,12 @@ function Shiftlock.destroy()
     -- Flips the previously-installed hookmetamethod into pass-through mode
     -- and stops the hookGuard re-install loop.
     self_state.shutdown = true
+
+    -- restore the game's shiftlock icon if we were hiding it
+    if self_state.iconsHidden then
+        setForeignShiftlockHidden(false)
+        self_state.iconsHidden = false
+    end
 
     if self_state.bound then
         pcall(function() RunService:UnbindFromRenderStep(RENDER_BIND) end)

@@ -333,7 +333,10 @@ rebuild = function()
     end
 
     local ord = 0
-    local function place(inst) ord = ord + 1; inst.LayoutOrder = ord; return inst end
+    -- IMPORTANT: parent here. Rows from wrap()/the footer don't self-parent, so
+    -- without this the keybind setter, condition toggles and Save/Test/Cancel
+    -- buttons are orphaned and the form looks blank.
+    local function place(inst) ord = ord + 1; inst.LayoutOrder = ord; inst.Parent = formScroll; return inst end
 
     place(textRow(formScroll, "Name", draft.name, function(t) draft.name = t end))
 
