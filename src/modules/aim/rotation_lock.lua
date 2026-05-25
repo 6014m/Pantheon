@@ -68,8 +68,13 @@ local function bgSuppressed()
     if not state.bgSafeEnabled then return false end
     local myHum, _tHum = getHumanoids()
     if myHum then
-        if myHum.PlatformStand then return true end
-        if SUPPRESS_STATES[myHum:GetState()] then return true end
+        if myHum.PlatformStand or SUPPRESS_STATES[myHum:GetState()] then
+            -- ...but rotate THROUGH a grab (welded to another player, e.g. JJS
+            -- Decisive Strikes parks us in PlatformStand/Physics) unless weld-safety
+            -- is on. The user wants to keep aiming during their own grab.
+            if state.isGrabbing() and not state.weldSafetyEnabled then return false end
+            return true
+        end
     end
     -- Intentionally NOT checking the target's state. Knockback during their
     -- attacks puts them in Physics state for a moment; if we suppressed

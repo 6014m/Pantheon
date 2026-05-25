@@ -451,10 +451,14 @@ end
 -- (cursor management is whatever the game scripts and Roblox engine want).
 -- NOTE: assigns the forward-declared upvalue (no `local`) so the hook closure
 -- defined earlier captures it instead of a nil global.
+-- Enforce (pin pass + __newindex hook) ONLY while Pantheon is actively locking.
+-- When our lock is off we fully RELEASE so the game's own shiftlock stays in sync
+-- with ours (both react to Shift) and the body free-rotates normally. The old
+-- always-on enforcement dominated the game's shiftlock and left rotation stuck
+-- when toggled off -- the user wants the two paired, not Pantheon winning.
 function shouldEnforce()
     if not state.killForeign then return false end
-    if state.allowGameShiftlock and not state.shiftlock_enabled then return false end
-    return true
+    return state.shiftlock_enabled and state.shiftlock_active
 end
 
 function Shiftlock.setExternalSkipRotation(fn)
@@ -555,13 +559,20 @@ local function step()
     if hum then hum.CameraOffset = Vector3.new(0, 0, 0) end
 
     if not state.shiftlock_active or not self_state.root or not hum then return end
-    if hum.PlatformStand or hum.Health <= 0 then return end
+    if hum.Health <= 0 then return end
 
     local st = hum:GetState()
-    if st == Enum.HumanoidStateType.Ragdoll
-       or st == Enum.HumanoidStateType.FallingDown
-       or st == Enum.HumanoidStateType.Physics
-       or st == Enum.HumanoidStateType.Dead then
+    if st == Enum.HumanoidStateType.Dead then return end
+
+    -- Incapacitation guards. BUT: a grab (welded to another player, e.g. JJS
+    -- Decisive Strikes) parks us in PlatformStand / Physics while we still want
+    -- to rotate to aim it. So skip these guards while grabbing -- unless the user
+    -- opted into weld-safety (don't-drag-the-victim), which keeps the old behavior.
+    local suppressed = hum.PlatformStand
+        or st == Enum.HumanoidStateType.Ragdoll
+        or st == Enum.HumanoidStateType.FallingDown
+        or st == Enum.HumanoidStateType.Physics
+    if suppressed and not (state.isGrabbing() and not state.weldSafetyEnabled) then
         return
     end
 
@@ -569,8 +580,8 @@ local function step()
         return
     end
 
-    -- Skip the root.CFrame write while we're welded to another character
-    -- (grab moves, etc.) so we don't drag them around with us.
+    -- Skip the root.CFrame write while welded to another character ONLY if the
+    -- weld-safety opt-in is on (default off, so grabs like Decisive Strikes rotate).
     if weldedToOther() then return end
 
     local cam = workspace.CurrentCamera

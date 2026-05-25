@@ -1689,7 +1689,8 @@ local state = {
 
     -- Highlight
     highlightEnabled       = true,
-    highlightSecondEnabled = false,
+    highlightSecondEnabled = true,    -- yellow outline on the swap target (next-best) by default
+    targetInfoEnabled      = true,    -- healthbar + username billboard over highlighted targets
     selfFadeEnabled        = false,
 
     -- Shiftlock
@@ -1825,6 +1826,23 @@ function state.isWeldedToOther(character)
     return false
 end
 
+-- Cached "am I welded to another player right now" = a grab is happening (e.g.
+-- JJS Decisive Strikes). 50ms cache so the rotation passes can cheaply ASK
+-- without walking descendants every frame. Independent of weldSafetyEnabled:
+-- that toggle decides what to DO with a grab; this just detects it. The rotation
+-- passes use it to keep rotating THROUGH a grab (the game parks you in
+-- PlatformStand/Physics during it, but you still want to aim).
+local grabCacheT, grabCacheV = 0, false
+function state.isGrabbing()
+    local now = os.clock()
+    if now - grabCacheT > 0.05 then
+        local c = PlayersService.LocalPlayer and PlayersService.LocalPlayer.Character
+        grabCacheV = c ~= nil and state.isWeldedToOther(c)
+        grabCacheT = now
+    end
+    return grabCacheV
+end
+
 return state
 end
 
@@ -1929,65 +1947,174 @@ return Targeting
 end
 
 _MODULES["modules.aim.highlight"] = function()
--- Target highlights + optional self-fade. Ports LockOnVisualModule.
+-- Target visuals: outline highlight + a healthbar/username billboard, plus
+-- optional self-fade. Red on the active target, yellow on the next-best (the
+-- target Swap Target would cycle to). Ports LockOnVisualModule.
 
 local state = require("modules.aim.state")
+local env   = require("core.env")
 
 local Players = game:GetService("Players")
 
 local Highlight = {}
 
-local highlights = {} -- [Player] = Highlight instance
+local RED    = Color3.fromRGB(255, 60, 60)
+local YELLOW = Color3.fromRGB(255, 215, 40)
 
-local function setOne(plr, color, on)
+local highlights = {} -- [Player] = Highlight instance
+local billboards = {} -- [Player] = { gui, accent, name, fill, hptext }
+
+-- outline ---------------------------------------------------------------------
+local function setHighlight(plr, color, on)
     local h = highlights[plr]
     if on then
         local char = plr.Character
         if not char then
-            if h then h:Destroy() end
-            highlights[plr] = nil
-            return
+            if h then h:Destroy() end; highlights[plr] = nil; return
         end
         if not h or not h.Parent then
             h = Instance.new("Highlight")
-            h.Name = "PantheonLockOnHighlight"
+            h.Name = "_" .. math.random(100000, 999999)   -- unnamed: don't fingerprint as Pantheon
+            h.FillTransparency = 0.5
+            h.OutlineTransparency = 0
+            h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
             highlights[plr] = h
         end
         h.Adornee = char
         h.FillColor = color
-        h.FillTransparency = 0.5
         h.OutlineColor = color
-        h.OutlineTransparency = 0
-        h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
         h.Parent = char
     else
-        if h then h:Destroy() end
-        highlights[plr] = nil
+        if h then h:Destroy() end; highlights[plr] = nil
     end
+end
+
+-- healthbar + username billboard ---------------------------------------------
+local function buildBillboard()
+    local gui = Instance.new("BillboardGui")
+    gui.Name = "_" .. math.random(100000, 999999)
+    gui.Size = UDim2.fromOffset(154, 38)
+    gui.StudsOffsetWorldSpace = Vector3.new(0, 3.2, 0)   -- float above the head
+    gui.AlwaysOnTop = true
+    gui.MaxDistance = 1000
+    gui.LightInfluence = 0
+
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.fromScale(1, 1)
+    frame.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
+    frame.BackgroundTransparency = 0.2
+    frame.BorderSizePixel = 0
+    frame.Parent = gui
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 6)
+    local accent = Instance.new("UIStroke", frame)
+    accent.Thickness = 1.5
+
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Position = UDim2.fromOffset(6, 2)
+    nameLabel.Size = UDim2.new(1, -12, 0, 18)
+    nameLabel.Font = Enum.Font.GothamBold
+    nameLabel.TextSize = 13
+    nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+    nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+    nameLabel.Text = ""
+    nameLabel.Parent = frame
+
+    local hpbg = Instance.new("Frame")
+    hpbg.Position = UDim2.new(0, 6, 1, -13)
+    hpbg.Size = UDim2.new(1, -12, 0, 9)
+    hpbg.BackgroundColor3 = Color3.fromRGB(38, 38, 44)
+    hpbg.BorderSizePixel = 0
+    hpbg.Parent = frame
+    Instance.new("UICorner", hpbg).CornerRadius = UDim.new(1, 0)
+
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.fromScale(1, 1)
+    fill.BackgroundColor3 = Color3.fromRGB(40, 220, 60)
+    fill.BorderSizePixel = 0
+    fill.Parent = hpbg
+    Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+
+    local hptext = Instance.new("TextLabel")
+    hptext.BackgroundTransparency = 1
+    hptext.Size = UDim2.fromScale(1, 1)
+    hptext.Font = Enum.Font.GothamBold
+    hptext.TextSize = 9
+    hptext.TextColor3 = Color3.fromRGB(255, 255, 255)
+    hptext.Text = ""
+    hptext.Parent = hpbg
+
+    return { gui = gui, accent = accent, name = nameLabel, fill = fill, hptext = hptext }
+end
+
+local function setBillboard(plr, color, on)
+    local b = billboards[plr]
+    if on and state.targetInfoEnabled then
+        local char = plr.Character
+        local head = char and (char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart"))
+        local hum  = char and char:FindFirstChildOfClass("Humanoid")
+        if not (head and hum) then
+            if b then b.gui:Destroy() end; billboards[plr] = nil; return
+        end
+        if not b or not b.gui.Parent then
+            b = buildBillboard()
+            env.protectGui(b.gui)
+            b.gui.Parent = env.guiParent()             -- gethui sandbox, never PlayerGui
+            billboards[plr] = b
+        end
+        b.gui.Adornee = head
+        b.accent.Color = color
+        b.name.TextColor3 = color
+        local nm = plr.DisplayName
+        b.name.Text = (nm and nm ~= "" and nm) or plr.Name
+        local maxh = math.max(hum.MaxHealth, 1)
+        local pct  = math.clamp(hum.Health / maxh, 0, 1)
+        b.fill.Size = UDim2.fromScale(pct, 1)
+        b.fill.BackgroundColor3 = Color3.fromRGB(            -- green (full) -> red (empty)
+            math.floor((1 - pct) * 225) + 25,
+            math.floor(pct * 200) + 35,
+            45)
+        b.hptext.Text = string.format("%d / %d", math.floor(hum.Health + 0.5), math.floor(hum.MaxHealth + 0.5))
+    else
+        if b then b.gui:Destroy(); billboards[plr] = nil end
+    end
+end
+
+-- combined per-player visual --------------------------------------------------
+local function setOne(plr, color, on)
+    setHighlight(plr, color, on)
+    setBillboard(plr, color, on)
 end
 
 function Highlight.clearAll()
-    for plr in pairs(highlights) do
-        setOne(plr, Color3.new(1, 0, 0), false)
-    end
+    for plr in pairs(highlights) do setHighlight(plr, nil, false) end
+    for plr in pairs(billboards) do setBillboard(plr, nil, false) end
 end
 
+-- Diff-based: reuse instances across frames. The old clear-then-rebuild ran
+-- every frame and would destroy + recreate the billboard ~60x/sec; instead we
+-- compute the desired set, drop the stale ones, then create/update the rest.
 function Highlight.update(currentTarget, getSecondFn)
-    Highlight.clearAll()
-    if not state.highlightEnabled or not currentTarget then return end
-
-    if not state.isFriendly(currentTarget) then
-        setOne(currentTarget, Color3.new(1, 0, 0), true)
+    if not state.highlightEnabled or not currentTarget then
+        Highlight.clearAll()
+        return
     end
 
+    local desired = {}
+    if not state.isFriendly(currentTarget) then desired[currentTarget] = RED end
     if state.highlightSecondEnabled and getSecondFn then
         local second = getSecondFn(currentTarget)
-        if second and not state.isFriendly(second) then
-            setOne(second, Color3.new(1, 1, 0), true)
+        if second and second ~= currentTarget and not state.isFriendly(second) then
+            desired[second] = YELLOW
         end
     end
+
+    for plr in pairs(highlights) do if not desired[plr] then setHighlight(plr, nil, false) end end
+    for plr in pairs(billboards) do if not desired[plr] then setBillboard(plr, nil, false) end end
+    for plr, color in pairs(desired) do setOne(plr, color, true) end
 end
 
+-- self-fade -------------------------------------------------------------------
 local function applySelfFade(char)
     if not char then return end
     for _, d in ipairs(char:GetDescendants()) do
@@ -2011,6 +2138,11 @@ end
 
 function Highlight.setSecondEnabled(v)
     state.highlightSecondEnabled = v and true or false
+end
+
+function Highlight.setTargetInfo(v)
+    state.targetInfoEnabled = v and true or false
+    if not v then for plr in pairs(billboards) do setBillboard(plr, nil, false) end end
 end
 
 local charConn
@@ -2486,10 +2618,14 @@ end
 -- (cursor management is whatever the game scripts and Roblox engine want).
 -- NOTE: assigns the forward-declared upvalue (no `local`) so the hook closure
 -- defined earlier captures it instead of a nil global.
+-- Enforce (pin pass + __newindex hook) ONLY while Pantheon is actively locking.
+-- When our lock is off we fully RELEASE so the game's own shiftlock stays in sync
+-- with ours (both react to Shift) and the body free-rotates normally. The old
+-- always-on enforcement dominated the game's shiftlock and left rotation stuck
+-- when toggled off -- the user wants the two paired, not Pantheon winning.
 function shouldEnforce()
     if not state.killForeign then return false end
-    if state.allowGameShiftlock and not state.shiftlock_enabled then return false end
-    return true
+    return state.shiftlock_enabled and state.shiftlock_active
 end
 
 function Shiftlock.setExternalSkipRotation(fn)
@@ -2590,13 +2726,20 @@ local function step()
     if hum then hum.CameraOffset = Vector3.new(0, 0, 0) end
 
     if not state.shiftlock_active or not self_state.root or not hum then return end
-    if hum.PlatformStand or hum.Health <= 0 then return end
+    if hum.Health <= 0 then return end
 
     local st = hum:GetState()
-    if st == Enum.HumanoidStateType.Ragdoll
-       or st == Enum.HumanoidStateType.FallingDown
-       or st == Enum.HumanoidStateType.Physics
-       or st == Enum.HumanoidStateType.Dead then
+    if st == Enum.HumanoidStateType.Dead then return end
+
+    -- Incapacitation guards. BUT: a grab (welded to another player, e.g. JJS
+    -- Decisive Strikes) parks us in PlatformStand / Physics while we still want
+    -- to rotate to aim it. So skip these guards while grabbing -- unless the user
+    -- opted into weld-safety (don't-drag-the-victim), which keeps the old behavior.
+    local suppressed = hum.PlatformStand
+        or st == Enum.HumanoidStateType.Ragdoll
+        or st == Enum.HumanoidStateType.FallingDown
+        or st == Enum.HumanoidStateType.Physics
+    if suppressed and not (state.isGrabbing() and not state.weldSafetyEnabled) then
         return
     end
 
@@ -2604,8 +2747,8 @@ local function step()
         return
     end
 
-    -- Skip the root.CFrame write while we're welded to another character
-    -- (grab moves, etc.) so we don't drag them around with us.
+    -- Skip the root.CFrame write while welded to another character ONLY if the
+    -- weld-safety opt-in is on (default off, so grabs like Decisive Strikes rotate).
     if weldedToOther() then return end
 
     local cam = workspace.CurrentCamera
@@ -2766,8 +2909,13 @@ local function bgSuppressed()
     if not state.bgSafeEnabled then return false end
     local myHum, _tHum = getHumanoids()
     if myHum then
-        if myHum.PlatformStand then return true end
-        if SUPPRESS_STATES[myHum:GetState()] then return true end
+        if myHum.PlatformStand or SUPPRESS_STATES[myHum:GetState()] then
+            -- ...but rotate THROUGH a grab (welded to another player, e.g. JJS
+            -- Decisive Strikes parks us in PlatformStand/Physics) unless weld-safety
+            -- is on. The user wants to keep aiming during their own grab.
+            if state.isGrabbing() and not state.weldSafetyEnabled then return false end
+            return true
+        end
     end
     -- Intentionally NOT checking the target's state. Knockback during their
     -- attacks puts them in Physics state for a moment; if we suppressed
@@ -3308,13 +3456,15 @@ function module.register()
     vis:add(feature.declare({
         id           = "aim.highlight",
         name         = "Highlight",
-        description  = "Outlines whichever target Target Select picks: red on the active target, optional yellow on the next-best. Self-fade drops your own character's opacity so you don't get blocked by your own back.",
+        description  = "Target visuals: red outline on the active target, yellow on the swap target (the next-best one Swap Target would cycle to), and a billboard over each showing their username + a live health bar. Self-fade drops your own character's opacity so you don't get blocked by your own back.",
         default      = true,
         dependencies = { "aim.target_select" },
         onToggle     = function(v) highlight.setEnabled(v) end,
         settings = {
-            { type = "toggle", name = "Highlight next-best (yellow)", default = false,
+            { type = "toggle", name = "Highlight swap target (yellow)", key = "swap_highlight", default = true,
               onChange = function(v) highlight.setSecondEnabled(v) end },
+            { type = "toggle", name = "Target info (health bar + name)", key = "target_info", default = true,
+              onChange = function(v) highlight.setTargetInfo(v) end },
             { type = "toggle", name = "Self-fade", default = false,
               onChange = function(v) highlight.setSelfFade(v) end },
         },

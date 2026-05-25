@@ -30,7 +30,8 @@ local state = {
 
     -- Highlight
     highlightEnabled       = true,
-    highlightSecondEnabled = false,
+    highlightSecondEnabled = true,    -- yellow outline on the swap target (next-best) by default
+    targetInfoEnabled      = true,    -- healthbar + username billboard over highlighted targets
     selfFadeEnabled        = false,
 
     -- Shiftlock
@@ -164,6 +165,23 @@ function state.isWeldedToOther(character)
         end
     end
     return false
+end
+
+-- Cached "am I welded to another player right now" = a grab is happening (e.g.
+-- JJS Decisive Strikes). 50ms cache so the rotation passes can cheaply ASK
+-- without walking descendants every frame. Independent of weldSafetyEnabled:
+-- that toggle decides what to DO with a grab; this just detects it. The rotation
+-- passes use it to keep rotating THROUGH a grab (the game parks you in
+-- PlatformStand/Physics during it, but you still want to aim).
+local grabCacheT, grabCacheV = 0, false
+function state.isGrabbing()
+    local now = os.clock()
+    if now - grabCacheT > 0.05 then
+        local c = PlayersService.LocalPlayer and PlayersService.LocalPlayer.Character
+        grabCacheV = c ~= nil and state.isWeldedToOther(c)
+        grabCacheT = now
+    end
+    return grabCacheV
 end
 
 return state
