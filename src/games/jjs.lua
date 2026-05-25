@@ -17,6 +17,7 @@ local container = require("ui.container")
 local feature   = require("ui.feature")
 local state     = require("modules.aim.state")
 local targeting = require("modules.aim.targeting")
+local shiftlock = require("modules.aim.shiftlock")
 local log       = require("core.log")
 
 local Players           = game:GetService("Players")
@@ -70,6 +71,13 @@ local function ratioPointPerfect()
 end
 
 function JJS.register()
+    -- JJS ships its own shiftlock, which fights Pantheon's. Auto-engage mirror mode
+    -- so Pantheon FOLLOWS the game's shiftlock (writes nothing) instead of running a
+    -- competing one -- this is the per-game "register the shiftlock with JJS" fix.
+    -- Runs at load, BEFORE any shiftlock-enable, so the foreign sweep never kills
+    -- the game's shiftlock we want to follow.
+    shiftlock.setShiftlockMirror(true)
+
     local box = container.new(window.parent(), "Jujutsu Shenanigans")
     box:add(feature.declare({
         id          = "jjs.nanami_special",
