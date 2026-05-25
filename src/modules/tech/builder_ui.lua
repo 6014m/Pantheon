@@ -425,6 +425,7 @@ rebuild = function()
         -- bind to an animation: pick one you've played (click = select + preview),
         -- Capture the next one, or paste an id.
         place(components.Label(formScroll, "Click to preview, double-click to select:"))
+        place(components.Label(formScroll, draft.animId and ("  -> selected: " .. tostring(draft.animId)) or "  -> none selected yet"))
         local hist = engine.animHistory()
         if #hist == 0 then
             place(components.Label(formScroll, "(none yet - play your moves, or hit Capture below)"))
@@ -507,11 +508,6 @@ rebuild = function()
                         draft.movekey = (k and k ~= Enum.KeyCode.Unknown) and (tostring(k):gsub("Enum.KeyCode.", "")) or nil
                     end })
             end))
-            -- cancel the move's own fire so its key runs ONLY this tech (the tech
-            -- fires the move itself via a "Use Move" step). Best-effort.
-            place(wrap(30, function(p) components.Toggle(p, { text = "Cancel move's normal fire",
-                default = draft.suppress == true,
-                onChange = function(v) draft.suppress = v or nil end }) end))
         end
     else
         place(wrap(28, function(p)
@@ -520,12 +516,20 @@ rebuild = function()
     end
     -- optional modifier that must be HELD for the trigger to fire (hold A + press Q)
     place(wrap(28, function(p)
-        local def = (draft.modkey and Enum.KeyCode[draft.modkey]) or Enum.KeyCode.Unknown
+        local def = toKeyCode(draft.modkey) or Enum.KeyCode.Unknown
         components.KeybindSetter(p, { label = "Hold-key (optional)", default = def,
             onChange = function(k)
                 draft.modkey = (k and k ~= Enum.KeyCode.Unknown) and (tostring(k):gsub("Enum.KeyCode.", "")) or nil
             end })
     end))
+    -- Block this key's normal action (key & move triggers): the engine sinks the
+    -- key so the game can't fire its move -- only this tech runs (which can fire the
+    -- move itself via a Use Move step). Pointless for an anim trigger.
+    if draft.event ~= "anim" then
+        place(wrap(30, function(p) components.Toggle(p, { text = "Block this key's normal action",
+            default = draft.suppress == true,
+            onChange = function(v) draft.suppress = v or nil end }) end))
+    end
     if draft.event == "key" or draft.event == "keyhold" then
         place(wrap(30, function(p) components.Toggle(p, { text = "Hold the key (release = return)",
             default = draft.event == "keyhold",

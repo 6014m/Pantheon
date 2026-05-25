@@ -4244,13 +4244,20 @@ local function onAnimPlayed(track)
     local raw = track and track.Animation and track.Animation.AnimationId
     local id = animIdNum(raw)
     if not id then return end
+    local watching = false
     for _, tech in pairs(techs) do
         local tr = tech.trigger
-        if tech.enabled and tr and tr.event == "anim" and animIdNum(tr.animId) == id
-           and modifierHeld(tech) and conditionsMet(tech) then
-            runTech(tech, false)
+        if tech.enabled and tr and tr.event == "anim" then
+            watching = true
+            if animIdNum(tr.animId) == id and modifierHeld(tech) and conditionsMet(tech) then
+                log.info("[tech] anim trigger fired: " .. tostring(tech.name) .. " <- " .. id)
+                runTech(tech, false)
+            end
         end
     end
+    -- diagnostic: with an anim tech ON, log every id that plays so you can see
+    -- whether the hook catches your move and what id to bind it to.
+    if watching then log.info("[tech] anim played: " .. id .. (animIdNum(raw) ~= id and "" or "")) end
     -- below: moves only -- skip locomotion so the dropdown/Capture stay clean
     if locomotionIds()[id] then return end
     recordAnim(track, id, raw)
@@ -4268,6 +4275,14 @@ local function hookAnimator()
     local animator = hum and hum:FindFirstChildOfClass("Animator")
     if animator then
         animHookConns[#animHookConns + 1] = animator.AnimationPlayed:Connect(onAnimPlayed)
+        log.info("[tech] anim hook connected")
+    elseif hum then
+        log.warn("[tech] anim hook: no Animator yet, waiting")
+        animHookConns[#animHookConns + 1] = hum.ChildAdded:Connect(function(c)
+            if c:IsA("Animator") then hookAnimator() end
+        end)
+    else
+        log.warn("[tech] anim hook: no Humanoid yet")
     end
 end
 -- Arm a one-shot: the next animation you play is delivered to cb(rawId). Editor uses
@@ -4279,6 +4294,23 @@ local function wireKey(tech)
     local key = tech.trigger.key
     if not key or key == Enum.KeyCode.Unknown then return end
     local isHold = tech.trigger.event == "keyhold"
+    if tech.trigger.suppress then
+        -- "Block this key's normal action": intercept the key with a high-priority
+        -- CAS bind + Sink, so the press runs THIS tech and the game never sees the
+        -- key (so it can't fire the move). The tech fires the move via Use Move.
+        keybinds.clear("tech." .. tech.id)
+        local action = "PantheonTech_" .. tech.id
+        CAS:BindActionAtPriority(action, function(_, inputState)
+            if inputState == Enum.UserInputState.Begin then
+                if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then runTech(tech, isHold) end
+            elseif inputState == Enum.UserInputState.End and isHold then
+                releaseHold()
+            end
+            return Enum.ContextActionResult.Sink
+        end, false, 3000, key)
+        casBound[tech.id] = action
+        return
+    end
     keybinds.set("tech." .. tech.id, key,
         function() if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then runTech(tech, isHold) end end,
         function() if isHold then releaseHold() end end)
@@ -4470,6 +4502,16 @@ function Engine.init()
     -- persistent Animator hook for "anim" triggers + the editor's Capture, re-hooked
     -- on respawn (Humanoid/Animator aren't there the instant the character spawns).
     hookAnimator()
+    -- retry for the CURRENT character too (executing mid-game, the Animator may not
+    -- be resolved on the first pass)
+    task.spawn(function()
+        local ch = LP.Character
+        if ch then
+            local hum = ch:FindFirstChildOfClass("Humanoid") or ch:WaitForChild("Humanoid", 10)
+            if hum then hum:WaitForChild("Animator", 10) end
+            hookAnimator()
+        end
+    end)
     LP.CharacterAdded:Connect(function(ch)
         task.spawn(function()
             local hum = ch:WaitForChild("Humanoid", 10)
@@ -5210,6 +5252,7 @@ rebuild = function()
         -- bind to an animation: pick one you've played (click = select + preview),
         -- Capture the next one, or paste an id.
         place(components.Label(formScroll, "Click to preview, double-click to select:"))
+        place(components.Label(formScroll, draft.animId and ("  -> selected: " .. tostring(draft.animId)) or "  -> none selected yet"))
         local hist = engine.animHistory()
         if #hist == 0 then
             place(components.Label(formScroll, "(none yet - play your moves, or hit Capture below)"))
@@ -5292,11 +5335,6 @@ rebuild = function()
                         draft.movekey = (k and k ~= Enum.KeyCode.Unknown) and (tostring(k):gsub("Enum.KeyCode.", "")) or nil
                     end })
             end))
-            -- cancel the move's own fire so its key runs ONLY this tech (the tech
-            -- fires the move itself via a "Use Move" step). Best-effort.
-            place(wrap(30, function(p) components.Toggle(p, { text = "Cancel move's normal fire",
-                default = draft.suppress == true,
-                onChange = function(v) draft.suppress = v or nil end }) end))
         end
     else
         place(wrap(28, function(p)
@@ -5305,12 +5343,20 @@ rebuild = function()
     end
     -- optional modifier that must be HELD for the trigger to fire (hold A + press Q)
     place(wrap(28, function(p)
-        local def = (draft.modkey and Enum.KeyCode[draft.modkey]) or Enum.KeyCode.Unknown
+        local def = toKeyCode(draft.modkey) or Enum.KeyCode.Unknown
         components.KeybindSetter(p, { label = "Hold-key (optional)", default = def,
             onChange = function(k)
                 draft.modkey = (k and k ~= Enum.KeyCode.Unknown) and (tostring(k):gsub("Enum.KeyCode.", "")) or nil
             end })
     end))
+    -- Block this key's normal action (key & move triggers): the engine sinks the
+    -- key so the game can't fire its move -- only this tech runs (which can fire the
+    -- move itself via a Use Move step). Pointless for an anim trigger.
+    if draft.event ~= "anim" then
+        place(wrap(30, function(p) components.Toggle(p, { text = "Block this key's normal action",
+            default = draft.suppress == true,
+            onChange = function(v) draft.suppress = v or nil end }) end))
+    end
     if draft.event == "key" or draft.event == "keyhold" then
         place(wrap(30, function(p) components.Toggle(p, { text = "Hold the key (release = return)",
             default = draft.event == "keyhold",
