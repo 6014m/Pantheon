@@ -3814,6 +3814,7 @@ local bound = false
 -- held camera/body facings; the render loop enforces these each frame while set.
 local held = { cam = nil, body = nil }   -- each = { yaw, pitch } degrees, target-relative
 local startCamLook                        -- camera LookVector at tech start (no-target fallback)
+local startBodyLook                        -- root LookVector at tech start (no-target fallback)
 local bodyARDisabled = false              -- did a Rotate step turn off Humanoid.AutoRotate?
 local techAlign, techAttach               -- rigid AlignOrientation body-rotate (same type as Lock-On+)
 
@@ -3843,6 +3844,9 @@ end
 local function bodyBaseFlat()
     local r, tr = myRoot(), targetRoot()
     if r and tr then local d = tr.Position - r.Position; return Vector3.new(d.X, 0, d.Z) end
+    -- No target: anchor to the facing CAPTURED AT TECH START, not the live LookVector.
+    -- Re-reading the live look each frame compounds the yaw -> the body spins.
+    if startBodyLook then return Vector3.new(startBodyLook.X, 0, startBodyLook.Z) end
     if r then local l = r.CFrame.LookVector; return Vector3.new(l.X, 0, l.Z) end
     return Vector3.zAxis
 end
@@ -4069,6 +4073,8 @@ local function runTech(tech, hold)
     task.spawn(function()
         local cam = Workspace.CurrentCamera
         startCamLook = cam and cam.CFrame.LookVector or nil
+        local r0 = myRoot()
+        startBodyLook = r0 and r0.CFrame.LookVector or nil
         local releaseAfterWait = false
         local heldKeys = {}    -- keys pressed by a Hold step, released by a Release (or at the end)
         local featRestore = {} -- [featureId] = state BEFORE this tech toggled it, for Return/end
