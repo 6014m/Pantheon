@@ -532,6 +532,9 @@ local function step()
     if state.shiftlockMirror then
         state.shiftlock_active = state.shiftlock_enabled
             and (UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter) or false
+        -- pair mode doesn't call applyLock(), so drive our shiftlock icon here so it
+        -- shows OVER the game's icon while the paired shiftlock is active.
+        if self_state.vIcon then self_state.vIcon.Visible = state.shiftlock_active end
     end
 
     -- "shouldLock" is the SINGLE source of truth for whether the cursor should
