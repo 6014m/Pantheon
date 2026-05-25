@@ -3718,7 +3718,14 @@ local function conditionsMet(tech)
 end
 
 -- ===== runner =====
+-- Only one tech sequence drives the camera/body at a time. A second trigger
+-- while one is mid-run (e.g. during a Wait) is ignored, so two techs can't fight
+-- over the held facing. Hold techs run their (instant) actions and finish the
+-- coroutine immediately, so `running` clears right away and re-pressing works.
+local running = false
 local function runTech(tech, hold)
+    if running then return end
+    running = true
     task.spawn(function()
         local cam = Workspace.CurrentCamera
         startCamLook = cam and cam.CFrame.LookVector or nil
@@ -3729,6 +3736,7 @@ local function runTech(tech, hold)
         -- one-shot triggers auto-clean at the end (in case the tech has no Return).
         -- hold triggers keep the held facing until the key is released.
         if not hold then releaseHold() end
+        running = false
     end)
 end
 
@@ -3920,6 +3928,7 @@ local components = require("ui.components")
 local engine     = require("modules.tech.engine")
 local feature    = require("ui.feature")
 local persist    = require("core.persist")
+local notify     = require("ui.notify")
 
 local UIS = game:GetService("UserInputService")
 local RS  = game:GetService("ReplicatedStorage")
@@ -4133,7 +4142,9 @@ local function onSave()
         local n = 2
         while engine.get(id) do id = base .. "_" .. n; n = n + 1 end
     end
-    engine.saveCustom(buildTechFromDraft(id))
+    local tech = buildTechFromDraft(id)
+    engine.saveCustom(tech)
+    notify.success("Tech saved: " .. tech.name)
     Builder.close()
 end
 

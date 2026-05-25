@@ -15,6 +15,7 @@ local components = require("ui.components")
 local engine     = require("modules.tech.engine")
 local feature    = require("ui.feature")
 local persist    = require("core.persist")
+local notify     = require("ui.notify")
 
 local UIS = game:GetService("UserInputService")
 local RS  = game:GetService("ReplicatedStorage")
@@ -228,7 +229,9 @@ local function onSave()
         local n = 2
         while engine.get(id) do id = base .. "_" .. n; n = n + 1 end
     end
-    engine.saveCustom(buildTechFromDraft(id))
+    local tech = buildTechFromDraft(id)
+    engine.saveCustom(tech)
+    notify.success("Tech saved: " .. tech.name)
     Builder.close()
 end
 
