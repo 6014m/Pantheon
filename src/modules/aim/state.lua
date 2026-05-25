@@ -192,42 +192,24 @@ end
 -- that toggle decides what to DO with a grab; this just detects it. The rotation
 -- passes use it to keep rotating THROUGH a grab (the game parks you in
 -- PlatformStand/Physics during it, but you still want to aim).
--- "Am I being body-controlled by another player / the game right now" = a grab.
--- TRUE when either:
---   (a) we're rigidly welded to ANY part of another player's character (part-
---       agnostic -- grabs use HRP<->HRP, arm<->leg, etc., confirmed via the grab
---       inspector), OR
---   (b) our HRP carries a FOREIGN body-control constraint (BodyGyro / BodyPosition
---       / a non-Pantheon AlignOrientation/AlignPosition) -- some grabs hold you
---       with these instead of a weld.
--- While this is true, the rotation passes must write NOTHING to our body and must
--- DISABLE their own AlignOrientation, or we fight the grab: dragging the welded
--- player (we're the attacker) or glitching their grab of us (we're the victim).
+-- "Am I grabbed by / grabbing another PLAYER right now" = a grab.
+-- TRUE only when we're rigidly welded to ANY part of another player's character
+-- (part-agnostic -- grabs use HRP<->HRP, arm<->leg, etc., confirmed via the grab
+-- inspector). While true, the rotation passes write NOTHING to our body and
+-- disable their AlignOrientation so we don't drag the welded player (attacker) or
+-- glitch their grab of us (victim).
+--
+-- Deliberately does NOT count a foreign BodyGyro/BodyPosition/AlignOrientation on
+-- our HRP: SELF-moves (e.g. Naoya's ult) hold you with those WITHOUT welding you
+-- to a player, and those should NOT block lockon. A grab means another player is
+-- involved, which the weld check captures.
 local grabCacheT, grabCacheV = 0, false
 function state.isGrabbing()
     local now = os.clock()
     if now - grabCacheT > 0.05 then
         grabCacheT = now
-        grabCacheV = false
         local c = PlayersService.LocalPlayer and PlayersService.LocalPlayer.Character
-        if c then
-            if state.isWeldedToOther(c) then
-                grabCacheV = true
-            else
-                local hrp = c:FindFirstChild("HumanoidRootPart")
-                if hrp then
-                    for _, d in ipairs(hrp:GetChildren()) do
-                        local cls = d.ClassName
-                        if cls == "BodyGyro" or cls == "BodyPosition"
-                           or ((cls == "AlignOrientation" or cls == "AlignPosition")
-                               and not string.find(d.Name, "Pantheon")) then
-                            grabCacheV = true
-                            break
-                        end
-                    end
-                end
-            end
-        end
+        grabCacheV = c ~= nil and state.isWeldedToOther(c)
     end
     return grabCacheV
 end

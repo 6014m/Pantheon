@@ -149,7 +149,7 @@ end
 local function smallBtn(parent, txt, posX, color)
     local b = Instance.new("TextButton")
     b.Size = UDim2.fromOffset(20, 22)
-    b.Position = UDim2.new(1, posX, 0, 0)
+    b.Position = UDim2.new(1, posX, 0.5, -11)
     b.BackgroundColor3 = color or theme.bgAlt
     b.AutoButtonColor = false
     b.TextColor3 = theme.fg
@@ -244,85 +244,81 @@ end
 -- ---- form (mutually recursive: rebuild builds rows; rows call rebuild) ----
 local rebuild
 
-local function buildActionRow(parent, i, act)
+-- Tap-to-cycle preset values keep steps simple (no sliders -- JJS-node feel).
+local YAW_PRESETS  = { 180, 135, 90, 45, 0, -45, -90, -135, -180 }
+local WAIT_PRESETS = { 0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3 }
+local STEP_LABEL   = { look = "Look", rotate = "Rotate", wait = "Wait", ["return"] = "Return", feature = "Use" }
+
+local function nextPreset(list, cur)
+    for i, v in ipairs(list) do
+        if math.abs(v - (cur or 0)) < 1e-3 then return list[(i % #list) + 1] end
+    end
+    return list[1]
+end
+
+local function featName(id)
+    if not id then return "(pick)" end
+    for _, ft in ipairs(feature.all()) do if ft.id == id then return ft.name end end
+    return id
+end
+
+-- one step in the sequence: "[n] Type   <value>   ^ v X" (value taps to cycle)
+local function buildChip(parent, i, act)
     local f = Instance.new("Frame")
-    f.Size = UDim2.new(1, 0, 0, 0)
-    f.AutomaticSize = Enum.AutomaticSize.Y
-    f.BackgroundColor3 = theme.bgDark
+    f.Size = UDim2.new(1, 0, 0, 30)
+    f.BackgroundColor3 = theme.bgAlt
     f.BorderSizePixel = 0
     f.Parent = parent
 
-    local pad = Instance.new("UIPadding", f)
-    pad.PaddingTop = UDim.new(0, 4); pad.PaddingBottom = UDim.new(0, 4)
-    pad.PaddingLeft = UDim.new(0, 4); pad.PaddingRight = UDim.new(0, 4)
-    local list = Instance.new("UIListLayout", f)
-    list.SortOrder = Enum.SortOrder.LayoutOrder
-    list.Padding = UDim.new(0, 3)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(0, 74, 1, 0); lbl.Position = UDim2.fromOffset(8, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = i .. ".  " .. (STEP_LABEL[act.type] or act.type)
+    lbl.TextColor3 = theme.fg; lbl.Font = theme.fontBold; lbl.TextSize = 12
+    lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Parent = f
 
-    local head = Instance.new("Frame")
-    head.Size = UDim2.new(1, 0, 0, 22)
-    head.BackgroundTransparency = 1
-    head.LayoutOrder = 1
-    head.Parent = f
-
-    local typeBtn = Instance.new("TextButton")
-    typeBtn.Size = UDim2.new(1, -80, 1, 0)
-    typeBtn.BackgroundColor3 = theme.bgAlt
-    typeBtn.AutoButtonColor = false
-    typeBtn.TextColor3 = theme.fg
-    typeBtn.Font = theme.font
-    typeBtn.TextSize = 12
-    typeBtn.TextXAlignment = Enum.TextXAlignment.Left
-    typeBtn.Text = "  " .. i .. ". " .. (ACTION_LABEL[act.type] or act.type)
-    typeBtn.Parent = head
-    local ti = 1
-    for k, t in ipairs(ACTION_TYPES) do if t == act.type then ti = k end end
-    typeBtn.MouseButton1Click:Connect(function()
-        ti = (ti % #ACTION_TYPES) + 1
-        act.type = ACTION_TYPES[ti]
-        rebuild()
-    end)
-
-    local up = smallBtn(head, "^", -76)
-    up.MouseButton1Click:Connect(function()
-        if i > 1 then
-            draft.actions[i], draft.actions[i - 1] = draft.actions[i - 1], draft.actions[i]
-            rebuild()
-        end
-    end)
-    local down = smallBtn(head, "v", -52)
-    down.MouseButton1Click:Connect(function()
-        if i < #draft.actions then
-            draft.actions[i], draft.actions[i + 1] = draft.actions[i + 1], draft.actions[i]
-            rebuild()
-        end
-    end)
-    local rem = smallBtn(head, "X", -24, theme.danger)
-    rem.MouseButton1Click:Connect(function()
-        table.remove(draft.actions, i)
-        rebuild()
-    end)
-
-    local pord = 1
-    local function pplace(inst) pord = pord + 1; inst.LayoutOrder = pord; inst.Parent = f end
-
-    if act.type == "look" then
-        pplace(wrap(42, function(p) components.Slider(p, { text = "Yaw", min = -180, max = 180, step = 5, default = act.x or 0, onChange = function(v) act.x = v end }) end))
-        pplace(wrap(42, function(p) components.Slider(p, { text = "Pitch", min = -80, max = 80, step = 5, default = act.y or 0, onChange = function(v) act.y = v end }) end))
-    elseif act.type == "rotate" then
-        pplace(wrap(42, function(p) components.Slider(p, { text = "Yaw", min = -180, max = 180, step = 5, default = act.x or 0, onChange = function(v) act.x = v end }) end))
-    elseif act.type == "wait" then
-        pplace(wrap(42, function(p) components.Slider(p, { text = "Seconds", min = 0, max = 5, step = 0.1, default = act.seconds or 0.5, onChange = function(v) act.seconds = v end }) end))
-    elseif act.type == "feature" then
-        local feats = featureOptions()
-        local labels = {}
-        for _, ft in ipairs(feats) do labels[#labels + 1] = ft.name end
-        local fi = 1
-        for k, ft in ipairs(feats) do if ft.id == act.feature then fi = k end end
-        if not act.feature and feats[1] then act.feature = feats[1].id end
-        pplace(cycleRow(f, "Feature", labels, fi, function(idx) act.feature = feats[idx].id end))
+    local val = Instance.new("TextButton")
+    val.Size = UDim2.new(1, -154, 1, -8); val.Position = UDim2.new(0, 84, 0, 4)
+    val.BackgroundColor3 = theme.bgDark; val.AutoButtonColor = false
+    val.TextColor3 = theme.fg; val.Font = theme.font; val.TextSize = 12; val.Parent = f
+    local function valText()
+        if act.type == "look" or act.type == "rotate" then return tostring(act.x or 0) .. "\u{00B0}"
+        elseif act.type == "wait" then return tostring(act.seconds or 0.5) .. "s"
+        elseif act.type == "feature" then return featName(act.feature)
+        else return "re-face target" end
     end
-    -- "return" has no params
+    val.Text = valText()
+    if act.type == "return" then
+        val.TextColor3 = theme.fgDim
+    else
+        val.MouseButton1Click:Connect(function()
+            if act.type == "look" or act.type == "rotate" then
+                act.x = nextPreset(YAW_PRESETS, act.x)
+            elseif act.type == "wait" then
+                act.seconds = nextPreset(WAIT_PRESETS, act.seconds)
+            elseif act.type == "feature" then
+                local feats = feature.all()
+                table.sort(feats, function(a, b) return (a.name or a.id) < (b.name or b.id) end)
+                if #feats > 0 then
+                    local idx = 0
+                    for k, ft in ipairs(feats) do if ft.id == act.feature then idx = k end end
+                    act.feature = feats[(idx % #feats) + 1].id
+                end
+            end
+            val.Text = valText()
+        end)
+    end
+
+    local up = smallBtn(f, "^", -70)
+    up.MouseButton1Click:Connect(function()
+        if i > 1 then draft.actions[i], draft.actions[i-1] = draft.actions[i-1], draft.actions[i]; rebuild() end
+    end)
+    local down = smallBtn(f, "v", -46)
+    down.MouseButton1Click:Connect(function()
+        if i < #draft.actions then draft.actions[i], draft.actions[i+1] = draft.actions[i+1], draft.actions[i]; rebuild() end
+    end)
+    local rem = smallBtn(f, "X", -22, theme.danger)
+    rem.MouseButton1Click:Connect(function() table.remove(draft.actions, i); rebuild() end)
 
     return f
 end
@@ -338,27 +334,18 @@ rebuild = function()
     -- buttons are orphaned and the form looks blank.
     local function place(inst) ord = ord + 1; inst.LayoutOrder = ord; inst.Parent = formScroll; return inst end
 
+    -- name + a single compact "universal" toggle (scope picker removed)
     place(textRow(formScroll, "Name", draft.name, function(t) draft.name = t end))
+    place(wrap(30, function(p) components.Toggle(p, { text = "Use in all games (universal)",
+        default = draft.scope == "universal",
+        onChange = function(v) draft.scope = v and "universal" or "game" end }) end))
 
-    do
-        local scopeOpts = { "This Game", "Universal" }
-        local idx = (draft.scope == "universal") and 2 or 1
-        place(cycleRow(formScroll, "Scope", scopeOpts, idx, function(i) draft.scope = (i == 2) and "universal" or "game" end))
-    end
-
+    -- TRIGGER: key setter (or move picker) + plain toggles -- no event cycle
     place(components.Section(formScroll, "Trigger"))
-    do
-        local labels = {}
-        for _, e in ipairs(EVENTS) do labels[#labels + 1] = e.label end
-        local idx = 1
-        for i, e in ipairs(EVENTS) do if e.id == draft.event then idx = i end end
-        place(cycleRow(formScroll, "Event", labels, idx, function(i) draft.event = EVENTS[i].id; rebuild() end))
-    end
-
     if draft.event == "move" then
         local opts = moveOptions()
         if #opts == 0 then
-            place(components.Label(formScroll, "No move services found (are you in a Knit game?)"))
+            place(components.Label(formScroll, "No moves found (not a Knit game?)"))
         else
             if not draft.move then draft.move = opts[1] end
             local idx = 1
@@ -370,27 +357,64 @@ rebuild = function()
             components.KeybindSetter(p, { label = "Key", default = draft.key, onChange = function(k) draft.key = k end })
         end))
     end
+    place(wrap(30, function(p) components.Toggle(p, { text = "Hold the key (release = return)",
+        default = draft.event == "keyhold",
+        onChange = function(v)
+            if v then draft.event = "keyhold"
+            elseif draft.event == "keyhold" then draft.event = "key" end
+            rebuild()
+        end }) end))
+    place(wrap(30, function(p) components.Toggle(p, { text = "Trigger on a move instead",
+        default = draft.event == "move",
+        onChange = function(v) draft.event = v and "move" or "key"; rebuild() end }) end))
+    place(wrap(30, function(p) components.Toggle(p, { text = "Only while locked on",
+        default = draft.conditions.locked_on == true,
+        onChange = function(v) draft.conditions.locked_on = v or nil end }) end))
 
-    place(components.Section(formScroll, "Conditions (all must be true)"))
-    for _, cond in ipairs(CONDITIONS) do
-        place(wrap(30, function(p)
-            components.Toggle(p, { text = cond.label, default = draft.conditions[cond.id] == true,
-                onChange = function(v) draft.conditions[cond.id] = v or nil end })
-        end))
+    -- STEPS: tap a palette button to append; each step is a simple chip
+    place(components.Section(formScroll, "Steps - tap to add"))
+    do
+        local palette = Instance.new("Frame")
+        palette.Size = UDim2.new(1, 0, 0, 28)
+        palette.BackgroundTransparency = 1
+        local pl = Instance.new("UIListLayout", palette)
+        pl.FillDirection = Enum.FillDirection.Horizontal
+        pl.Padding = UDim.new(0, 4)
+        for i, t in ipairs(ACTION_TYPES) do
+            local b = Instance.new("TextButton")
+            b.AutomaticSize = Enum.AutomaticSize.X
+            b.Size = UDim2.new(0, 0, 1, 0)
+            b.BackgroundColor3 = theme.bgDark
+            b.AutoButtonColor = true
+            b.TextColor3 = theme.accent
+            b.Font = theme.fontBold
+            b.TextSize = 12
+            b.Text = "+ " .. (STEP_LABEL[t] or t)
+            b.LayoutOrder = i
+            b.Parent = palette
+            local bp = Instance.new("UIPadding", b)
+            bp.PaddingLeft = UDim.new(0, 7); bp.PaddingRight = UDim.new(0, 7)
+            b.MouseButton1Click:Connect(function()
+                local a = { type = t }
+                if t == "look" then a.x = 180; a.y = 0
+                elseif t == "rotate" then a.x = 180
+                elseif t == "wait" then a.seconds = 0.5
+                elseif t == "feature" then local fa = feature.all(); a.feature = fa[1] and fa[1].id or nil end
+                draft.actions[#draft.actions + 1] = a
+                rebuild()
+            end)
+        end
+        place(palette)
     end
-
-    place(components.Section(formScroll, "Actions (in order)"))
-    for i, act in ipairs(draft.actions) do
-        place(buildActionRow(formScroll, i, act))
+    if #draft.actions == 0 then
+        place(components.Label(formScroll, "(no steps yet - tap a button above)"))
+    else
+        for i, act in ipairs(draft.actions) do place(buildChip(formScroll, i, act)) end
     end
-    place(components.Button(formScroll, { text = "+ Add Step", onClick = function()
-        draft.actions[#draft.actions + 1] = { type = "look", x = 180, y = 0, seconds = 0.5 }
-        rebuild()
-    end }))
 
     do
         local bf = Instance.new("Frame")
-        bf.Size = UDim2.new(1, 0, 0, 34)
+        bf.Size = UDim2.new(1, 0, 0, 36)
         bf.BackgroundTransparency = 1
         local bl = Instance.new("UIListLayout", bf)
         bl.FillDirection = Enum.FillDirection.Horizontal
