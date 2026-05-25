@@ -3982,7 +3982,13 @@ local function runTech(tech, hold)
         local cam = Workspace.CurrentCamera
         startCamLook = cam and cam.CFrame.LookVector or nil
         local releaseAfterWait = false
-        local heldKeys = {}   -- keys pressed by a Hold step, released by a Release (or at the end)
+        local heldKeys = {}    -- keys pressed by a Hold step, released by a Release (or at the end)
+        local featRestore = {} -- [featureId] = state BEFORE this tech toggled it, for Return/end
+        local function restoreAll()
+            releaseHold()
+            for id, prev in pairs(featRestore) do pcall(function() feature.setEnabled(id, prev) end); featRestore[id] = nil end
+            for kc in pairs(heldKeys) do pcall(function() VIM:SendKeyEvent(false, kc, false, game) end); heldKeys[kc] = nil end
+        end
         for _, a in ipairs(tech.actions or {}) do
             if a.type == "during" then
                 -- the preceding Look/Rotate lasts only as long as the NEXT Wait,
@@ -4011,16 +4017,28 @@ local function runTech(tech, hold)
             elseif a.type == "release" then
                 local kc = a.key and Enum.KeyCode[a.key]
                 if kc then pcall(function() VIM:SendKeyEvent(false, kc, false, game) end); heldKeys[kc] = nil end
+            elseif a.type == "feature" then
+                -- remember the feature's state before we touch it, so Return/end
+                -- can put it back exactly how it was.
+                if a.feature then
+                    if featRestore[a.feature] == nil then featRestore[a.feature] = feature.getEnabled(a.feature) end
+                    if a.value == nil then feature.fire(a.feature) else feature.setEnabled(a.feature, a.value) end
+                end
+            elseif a.type == "return" then
+                -- Return = restore EVERYTHING to how it was before: drop the held
+                -- facing, undo every feature this tech toggled, release held keys.
+                restoreAll()
             else
                 local fn = ACTIONS[a.type]
                 if fn then local ok, err = pcall(fn, a); if not ok then log.warn("[tech] action " .. tostring(a.type) .. ": " .. tostring(err)) end end
             end
         end
-        -- safety: release any key a Hold left down without a matching Release
-        for kc in pairs(heldKeys) do pcall(function() VIM:SendKeyEvent(false, kc, false, game) end) end
-        -- one-shot triggers auto-clean at the end (in case the tech has no Return).
-        -- hold triggers keep the held facing until the key is released.
-        if not hold then releaseHold() end
+        -- one-shot techs auto-restore at the end (in case there's no explicit
+        -- Return) -- facing, feature toggles, and held keys all reset. Hold techs
+        -- keep their facing until the key is released.
+        if not hold then restoreAll() else
+            for kc in pairs(heldKeys) do pcall(function() VIM:SendKeyEvent(false, kc, false, game) end) end
+        end
         running = false
     end)
 end
