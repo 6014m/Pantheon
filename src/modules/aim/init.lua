@@ -167,7 +167,7 @@ function module.register()
     vis:add(feature.declare({
         id           = "aim.highlight",
         name         = "Highlight",
-        description  = "Target visuals: red outline on the active target, yellow on the swap target (the next-best one Swap Target would cycle to), and a billboard over each showing their username + a live health bar. Self-fade drops your own character's opacity so you don't get blocked by your own back.",
+        description  = "Target visuals: red outline on the active target, yellow on the swap target (the next-best one Swap Target would cycle to), and a top-center HUD showing the current target's name + a live health bar. Self-fade drops your own character's opacity so you don't get blocked by your own back.",
         default      = true,
         dependencies = { "aim.target_select" },
         onToggle     = function(v) highlight.setEnabled(v) end,

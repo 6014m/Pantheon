@@ -1947,9 +1947,9 @@ return Targeting
 end
 
 _MODULES["modules.aim.highlight"] = function()
--- Target visuals: outline highlight + a healthbar/username billboard, plus
--- optional self-fade. Red on the active target, yellow on the next-best (the
--- target Swap Target would cycle to). Ports LockOnVisualModule.
+-- Target visuals: outline highlight (red active / yellow swap target) + a fixed
+-- top-center on-screen HUD showing the current target's name and health bar,
+-- matching the original lock-on script's indicator. Plus optional self-fade.
 
 local state = require("modules.aim.state")
 local env   = require("core.env")
@@ -1962,7 +1962,6 @@ local RED    = Color3.fromRGB(255, 60, 60)
 local YELLOW = Color3.fromRGB(255, 215, 40)
 
 local highlights = {} -- [Player] = Highlight instance
-local billboards = {} -- [Player] = { gui, accent, name, fill, hptext }
 
 -- outline ---------------------------------------------------------------------
 local function setHighlight(plr, color, on)
@@ -1974,7 +1973,7 @@ local function setHighlight(plr, color, on)
         end
         if not h or not h.Parent then
             h = Instance.new("Highlight")
-            h.Name = "_" .. math.random(100000, 999999)   -- unnamed: don't fingerprint as Pantheon
+            h.Name = "_" .. math.random(100000, 999999)
             h.FillTransparency = 0.5
             h.OutlineTransparency = 0
             h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
@@ -1989,111 +1988,103 @@ local function setHighlight(plr, color, on)
     end
 end
 
--- healthbar + username billboard ---------------------------------------------
-local function buildBillboard()
-    local gui = Instance.new("BillboardGui")
+-- top-center target info HUD (name + health bar) -- on-screen, NOT over the head,
+-- mirroring the original lock-on script's indicator. Current target only.
+local info  -- { gui, indicator, container, bar, text }
+local function ensureInfo()
+    if info and info.gui.Parent then return info end
+    local gui = Instance.new("ScreenGui")
     gui.Name = "_" .. math.random(100000, 999999)
-    gui.Size = UDim2.fromOffset(154, 38)
-    gui.StudsOffsetWorldSpace = Vector3.new(0, 3.2, 0)   -- float above the head
-    gui.AlwaysOnTop = true
-    gui.MaxDistance = 1000
-    gui.LightInfluence = 0
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    env.protectGui(gui)
+    gui.Parent = env.guiParent()
 
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.fromScale(1, 1)
-    frame.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
-    frame.BackgroundTransparency = 0.2
-    frame.BorderSizePixel = 0
-    frame.Parent = gui
-    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 6)
-    local accent = Instance.new("UIStroke", frame)
-    accent.Thickness = 1.5
+    local indicator = Instance.new("TextLabel")
+    indicator.Size = UDim2.new(0, 160, 0, 28)
+    indicator.Position = UDim2.new(0.5, -80, 0, 10)
+    indicator.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
+    indicator.BackgroundTransparency = 0.1
+    indicator.TextColor3 = Color3.new(1, 1, 1)
+    indicator.Font = Enum.Font.GothamBold
+    indicator.TextSize = 13
+    indicator.Visible = false
+    indicator.Parent = gui
+    Instance.new("UICorner", indicator).CornerRadius = UDim.new(0, 10)
+    local iStroke = Instance.new("UIStroke", indicator); iStroke.Thickness = 2; iStroke.Color = RED
 
-    local nameLabel = Instance.new("TextLabel")
-    nameLabel.BackgroundTransparency = 1
-    nameLabel.Position = UDim2.fromOffset(6, 2)
-    nameLabel.Size = UDim2.new(1, -12, 0, 18)
-    nameLabel.Font = Enum.Font.GothamBold
-    nameLabel.TextSize = 13
-    nameLabel.TextXAlignment = Enum.TextXAlignment.Left
-    nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
-    nameLabel.Text = ""
-    nameLabel.Parent = frame
+    local container = Instance.new("Frame")
+    container.Size = UDim2.new(0, 160, 0, 20)
+    container.Position = UDim2.new(0.5, -80, 0, 42)
+    container.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
+    container.BackgroundTransparency = 0.1
+    container.Visible = false
+    container.Parent = gui
+    Instance.new("UICorner", container).CornerRadius = UDim.new(0, 10)
+    local cStroke = Instance.new("UIStroke", container); cStroke.Thickness = 2; cStroke.Color = RED
 
-    local hpbg = Instance.new("Frame")
-    hpbg.Position = UDim2.new(0, 6, 1, -13)
-    hpbg.Size = UDim2.new(1, -12, 0, 9)
-    hpbg.BackgroundColor3 = Color3.fromRGB(38, 38, 44)
-    hpbg.BorderSizePixel = 0
-    hpbg.Parent = frame
-    Instance.new("UICorner", hpbg).CornerRadius = UDim.new(1, 0)
+    local bar = Instance.new("Frame")
+    bar.Size = UDim2.new(1, -8, 1, -8)
+    bar.Position = UDim2.new(0, 4, 0, 4)
+    bar.BackgroundColor3 = Color3.fromRGB(0, 255, 100)
+    bar.BorderSizePixel = 0
+    bar.Parent = container
+    Instance.new("UICorner", bar).CornerRadius = UDim.new(0, 6)
 
-    local fill = Instance.new("Frame")
-    fill.Size = UDim2.fromScale(1, 1)
-    fill.BackgroundColor3 = Color3.fromRGB(40, 220, 60)
-    fill.BorderSizePixel = 0
-    fill.Parent = hpbg
-    Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+    local text = Instance.new("TextLabel")
+    text.Size = UDim2.fromScale(1, 1)
+    text.BackgroundTransparency = 1
+    text.TextColor3 = Color3.new(1, 1, 1)
+    text.Font = Enum.Font.GothamBold
+    text.TextSize = 11
+    text.Text = ""
+    text.Parent = container
 
-    local hptext = Instance.new("TextLabel")
-    hptext.BackgroundTransparency = 1
-    hptext.Size = UDim2.fromScale(1, 1)
-    hptext.Font = Enum.Font.GothamBold
-    hptext.TextSize = 9
-    hptext.TextColor3 = Color3.fromRGB(255, 255, 255)
-    hptext.Text = ""
-    hptext.Parent = hpbg
-
-    return { gui = gui, accent = accent, name = nameLabel, fill = fill, hptext = hptext }
+    info = { gui = gui, indicator = indicator, container = container, bar = bar, text = text }
+    return info
 end
 
-local function setBillboard(plr, color, on)
-    local b = billboards[plr]
-    if on and state.targetInfoEnabled then
-        local char = plr.Character
-        local head = char and (char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart"))
-        local hum  = char and char:FindFirstChildOfClass("Humanoid")
-        if not (head and hum) then
-            if b then b.gui:Destroy() end; billboards[plr] = nil; return
-        end
-        if not b or not b.gui.Parent then
-            b = buildBillboard()
-            env.protectGui(b.gui)
-            b.gui.Parent = env.guiParent()             -- gethui sandbox, never PlayerGui
-            billboards[plr] = b
-        end
-        b.gui.Adornee = head
-        b.accent.Color = color
-        b.name.TextColor3 = color
-        local nm = plr.DisplayName
-        b.name.Text = (nm and nm ~= "" and nm) or plr.Name
-        local maxh = math.max(hum.MaxHealth, 1)
-        local pct  = math.clamp(hum.Health / maxh, 0, 1)
-        b.fill.Size = UDim2.fromScale(pct, 1)
-        b.fill.BackgroundColor3 = Color3.fromRGB(            -- green (full) -> red (empty)
-            math.floor((1 - pct) * 225) + 25,
-            math.floor(pct * 200) + 35,
-            45)
-        b.hptext.Text = string.format("%d / %d", math.floor(hum.Health + 0.5), math.floor(hum.MaxHealth + 0.5))
-    else
-        if b then b.gui:Destroy(); billboards[plr] = nil end
+local function hideInfo()
+    if info then info.indicator.Visible = false; info.container.Visible = false end
+end
+
+local function updateInfo(currentTarget)
+    if not state.targetInfoEnabled or not currentTarget then hideInfo(); return end
+    local isNpc = state.target_type == "npc"
+    local char  = isNpc and currentTarget or currentTarget.Character
+    local hum   = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum then hideInfo(); return end
+
+    local i = ensureInfo()
+    i.indicator.Visible = true
+    i.container.Visible = true
+
+    local nm = currentTarget.Name
+    if not isNpc then
+        local dn = currentTarget.DisplayName
+        nm = (dn and dn ~= "" and dn) or currentTarget.Name
     end
-end
+    i.indicator.Text = (isNpc and "👾 " or "🎯 ") .. tostring(nm)
 
--- combined per-player visual --------------------------------------------------
-local function setOne(plr, color, on)
-    setHighlight(plr, color, on)
-    setBillboard(plr, color, on)
+    local maxHp = math.max(hum.MaxHealth, 1)
+    local ratio = math.clamp(hum.Health / maxHp, 0, 1)
+    i.bar.Size = UDim2.new(ratio * (1 - 8 / 160), 0, 1, -8)
+    if ratio > 0.5 then
+        i.bar.BackgroundColor3 = Color3.fromRGB(0, 255, 100)
+    elseif ratio > 0.25 then
+        i.bar.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
+    else
+        i.bar.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+    end
+    i.text.Text = math.floor(hum.Health) .. "/" .. math.floor(hum.MaxHealth)
 end
 
 function Highlight.clearAll()
     for plr in pairs(highlights) do setHighlight(plr, nil, false) end
-    for plr in pairs(billboards) do setBillboard(plr, nil, false) end
+    hideInfo()
 end
 
--- Diff-based: reuse instances across frames. The old clear-then-rebuild ran
--- every frame and would destroy + recreate the billboard ~60x/sec; instead we
--- compute the desired set, drop the stale ones, then create/update the rest.
+-- Diff-based outline update (reuse instances) + the top-center info HUD.
 function Highlight.update(currentTarget, getSecondFn)
     if not state.highlightEnabled or not currentTarget then
         Highlight.clearAll()
@@ -2110,8 +2101,9 @@ function Highlight.update(currentTarget, getSecondFn)
     end
 
     for plr in pairs(highlights) do if not desired[plr] then setHighlight(plr, nil, false) end end
-    for plr in pairs(billboards) do if not desired[plr] then setBillboard(plr, nil, false) end end
-    for plr, color in pairs(desired) do setOne(plr, color, true) end
+    for plr, color in pairs(desired) do setHighlight(plr, color, true) end
+
+    updateInfo(currentTarget)
 end
 
 -- self-fade -------------------------------------------------------------------
@@ -2142,7 +2134,7 @@ end
 
 function Highlight.setTargetInfo(v)
     state.targetInfoEnabled = v and true or false
-    if not v then for plr in pairs(billboards) do setBillboard(plr, nil, false) end end
+    if not v then hideInfo() end
 end
 
 local charConn
@@ -2159,6 +2151,7 @@ end
 function Highlight.destroy()
     if charConn then charConn:Disconnect(); charConn = nil end
     Highlight.clearAll()
+    if info and info.gui then pcall(function() info.gui:Destroy() end); info = nil end
 end
 
 return Highlight
@@ -3456,7 +3449,7 @@ function module.register()
     vis:add(feature.declare({
         id           = "aim.highlight",
         name         = "Highlight",
-        description  = "Target visuals: red outline on the active target, yellow on the swap target (the next-best one Swap Target would cycle to), and a billboard over each showing their username + a live health bar. Self-fade drops your own character's opacity so you don't get blocked by your own back.",
+        description  = "Target visuals: red outline on the active target, yellow on the swap target (the next-best one Swap Target would cycle to), and a top-center HUD showing the current target's name + a live health bar. Self-fade drops your own character's opacity so you don't get blocked by your own back.",
         default      = true,
         dependencies = { "aim.target_select" },
         onToggle     = function(v) highlight.setEnabled(v) end,
