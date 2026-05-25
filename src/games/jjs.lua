@@ -22,7 +22,11 @@ local log       = require("core.log")
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local JJS_PLACE_ID = 17016840407
+-- JJS spans multiple places (17016840407 = "Lobby", 9391468976 = experience root)
+-- that share one GameId. Registering under both known places covers them now;
+-- once the in-game grabber reports game.GameId, add it here (a GameId match covers
+-- EVERY place/VIP server in one entry -- registry.current() checks GameId too).
+local JJS_IDS = { 17016840407, 9391468976 }   -- TODO: append the JJS GameId from the grabber
 
 local JJS = {}
 
@@ -79,6 +83,6 @@ function JJS.register()
     log.info("JJS module registered -- Nanami Perfect Special (Ratio Point, 70-stud range)")
 end
 
-registry.register(JJS_PLACE_ID, JJS)
+registry.register(JJS_IDS, JJS)
 
 return JJS

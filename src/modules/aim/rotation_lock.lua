@@ -68,10 +68,16 @@ local function bgSuppressed()
     if not state.bgSafeEnabled then return false end
     local myHum, _tHum = getHumanoids()
     if myHum then
-        if myHum.PlatformStand or SUPPRESS_STATES[myHum:GetState()] then
-            -- ...but rotate THROUGH a grab (welded to another player, e.g. JJS
-            -- Decisive Strikes parks us in PlatformStand/Physics) unless weld-safety
-            -- is on. The user wants to keep aiming during their own grab.
+        local st = myHum:GetState()
+        -- Hard locks (bleedout / downed / seated): ALWAYS suppress, never rotate through.
+        if myHum.PlatformStand
+           or st == Enum.HumanoidStateType.PlatformStanding
+           or st == Enum.HumanoidStateType.Seated then
+            return true
+        end
+        -- Physics-y states (knockback during a grab): rotate through them while
+        -- grabbing (Decisive Strikes), unless weld-safety is on.
+        if SUPPRESS_STATES[st] then
             if state.isGrabbing() and not state.weldSafetyEnabled then return false end
             return true
         end

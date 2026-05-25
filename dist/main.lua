@@ -1635,18 +1635,27 @@ return notify
 end
 
 _MODULES["games.registry"] = function()
--- Per-game module registry. Keys are tostring(PlaceId).
--- A game module is just a table with a .register(window) function.
+-- Per-game module registry. Keys are tostring(id), where id is either a PlaceId
+-- or a GameId (universe id). A game module is a table with a .register() function.
+--
+-- Matching by GameId is the robust option: a game can have many PlaceIds (lobby,
+-- combat, VIP servers) that all share ONE GameId, so registering under the GameId
+-- catches every place. registry.current() checks both game.PlaceId and game.GameId.
 
 local games = {}
 local registry = {}
 
-function registry.register(placeId, mod)
-    games[tostring(placeId)] = mod
+-- ids may be a single id or a list of ids (place ids and/or the game id).
+function registry.register(ids, mod)
+    if type(ids) == "table" then
+        for _, id in ipairs(ids) do games[tostring(id)] = mod end
+    else
+        games[tostring(ids)] = mod
+    end
 end
 
 function registry.current()
-    return games[tostring(game.PlaceId)]
+    return games[tostring(game.PlaceId)] or games[tostring(game.GameId)]
 end
 
 function registry.all()
@@ -2759,15 +2768,16 @@ local function step()
     local st = hum:GetState()
     if st == Enum.HumanoidStateType.Dead then return end
 
-    -- Incapacitation guards. BUT: a grab (welded to another player, e.g. JJS
-    -- Decisive Strikes) parks us in PlatformStand / Physics while we still want
-    -- to rotate to aim it. So skip these guards while grabbing -- unless the user
-    -- opted into weld-safety (don't-drag-the-victim), which keeps the old behavior.
-    local suppressed = hum.PlatformStand
-        or st == Enum.HumanoidStateType.Ragdoll
+    -- PlatformStand is a HARD game lock (bleedout / downed / seated) -- ALWAYS
+    -- suppress; never rotate through it. (Rotating during bleedout is exactly what
+    -- the user does NOT want, and normal players can't.) The physics-y states
+    -- (knockback during a grab) CAN be rotated through while grabbing (Decisive
+    -- Strikes) unless weld-safety is on.
+    if hum.PlatformStand then return end
+    local physicsy = st == Enum.HumanoidStateType.Ragdoll
         or st == Enum.HumanoidStateType.FallingDown
         or st == Enum.HumanoidStateType.Physics
-    if suppressed and not (state.isGrabbing() and not state.weldSafetyEnabled) then
+    if physicsy and not (state.isGrabbing() and not state.weldSafetyEnabled) then
         return
     end
 
@@ -2937,10 +2947,16 @@ local function bgSuppressed()
     if not state.bgSafeEnabled then return false end
     local myHum, _tHum = getHumanoids()
     if myHum then
-        if myHum.PlatformStand or SUPPRESS_STATES[myHum:GetState()] then
-            -- ...but rotate THROUGH a grab (welded to another player, e.g. JJS
-            -- Decisive Strikes parks us in PlatformStand/Physics) unless weld-safety
-            -- is on. The user wants to keep aiming during their own grab.
+        local st = myHum:GetState()
+        -- Hard locks (bleedout / downed / seated): ALWAYS suppress, never rotate through.
+        if myHum.PlatformStand
+           or st == Enum.HumanoidStateType.PlatformStanding
+           or st == Enum.HumanoidStateType.Seated then
+            return true
+        end
+        -- Physics-y states (knockback during a grab): rotate through them while
+        -- grabbing (Decisive Strikes), unless weld-safety is on.
+        if SUPPRESS_STATES[st] then
             if state.isGrabbing() and not state.weldSafetyEnabled then return false end
             return true
         end
@@ -3543,7 +3559,11 @@ local log       = require("core.log")
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local JJS_PLACE_ID = 17016840407
+-- JJS spans multiple places (17016840407 = "Lobby", 9391468976 = experience root)
+-- that share one GameId. Registering under both known places covers them now;
+-- once the in-game grabber reports game.GameId, add it here (a GameId match covers
+-- EVERY place/VIP server in one entry -- registry.current() checks GameId too).
+local JJS_IDS = { 17016840407, 9391468976 }   -- TODO: append the JJS GameId from the grabber
 
 local JJS = {}
 
@@ -3600,7 +3620,7 @@ function JJS.register()
     log.info("JJS module registered -- Nanami Perfect Special (Ratio Point, 70-stud range)")
 end
 
-registry.register(JJS_PLACE_ID, JJS)
+registry.register(JJS_IDS, JJS)
 
 return JJS
 end

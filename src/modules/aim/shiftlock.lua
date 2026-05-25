@@ -595,15 +595,16 @@ local function step()
     local st = hum:GetState()
     if st == Enum.HumanoidStateType.Dead then return end
 
-    -- Incapacitation guards. BUT: a grab (welded to another player, e.g. JJS
-    -- Decisive Strikes) parks us in PlatformStand / Physics while we still want
-    -- to rotate to aim it. So skip these guards while grabbing -- unless the user
-    -- opted into weld-safety (don't-drag-the-victim), which keeps the old behavior.
-    local suppressed = hum.PlatformStand
-        or st == Enum.HumanoidStateType.Ragdoll
+    -- PlatformStand is a HARD game lock (bleedout / downed / seated) -- ALWAYS
+    -- suppress; never rotate through it. (Rotating during bleedout is exactly what
+    -- the user does NOT want, and normal players can't.) The physics-y states
+    -- (knockback during a grab) CAN be rotated through while grabbing (Decisive
+    -- Strikes) unless weld-safety is on.
+    if hum.PlatformStand then return end
+    local physicsy = st == Enum.HumanoidStateType.Ragdoll
         or st == Enum.HumanoidStateType.FallingDown
         or st == Enum.HumanoidStateType.Physics
-    if suppressed and not (state.isGrabbing() and not state.weldSafetyEnabled) then
+    if physicsy and not (state.isGrabbing() and not state.weldSafetyEnabled) then
         return
     end
 
