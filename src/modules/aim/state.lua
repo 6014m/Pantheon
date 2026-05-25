@@ -38,6 +38,10 @@ local state = {
     shiftlock_enabled = false,
     shiftlock_active  = false,
     killForeign       = true,
+    -- Mirror mode: FOLLOW the game's own shiftlock (shiftlock_active tracks its
+    -- cursor lock) and write nothing ourselves, so the two never overlap. Turn
+    -- on per-game in games that ship their own shiftlock (e.g. JJS).
+    shiftlockMirror   = false,
     -- When true, the locked-mode rotation pass skips root.CFrame writes when
     -- we're welded to another character (grab moves) so we don't drag them
     -- around. Default OFF so we match normal-player behavior in games like

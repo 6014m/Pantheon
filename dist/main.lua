@@ -1697,6 +1697,10 @@ local state = {
     shiftlock_enabled = false,
     shiftlock_active  = false,
     killForeign       = true,
+    -- Mirror mode: FOLLOW the game's own shiftlock (shiftlock_active tracks its
+    -- cursor lock) and write nothing ourselves, so the two never overlap. Turn
+    -- on per-game in games that ship their own shiftlock (e.g. JJS).
+    shiftlockMirror   = false,
     -- When true, the locked-mode rotation pass skips root.CFrame writes when
     -- we're welded to another character (grab moves) so we don't drag them
     -- around. Default OFF so we match normal-player behavior in games like
@@ -2554,6 +2558,7 @@ function Shiftlock.toggle()
     -- cursor when the user has explicitly enabled Pantheon shiftlock.
     -- Same pattern as target_select / rotation_lock hotkeys.
     if not state.shiftlock_enabled then return end
+    if state.shiftlockMirror then return end   -- mirror mode: the game owns Shift; we just follow its state
     if state.shiftlock_active then
         Shiftlock.forceOff()
     else
@@ -2570,15 +2575,19 @@ function Shiftlock.setEnabled(v)
     if state.shiftlock_enabled == v then return end
     state.shiftlock_enabled = v
     if v then
-        disableGameShiftLock()
-        if state.killForeign then
-            sweepForeigns("enable")
-            -- Lazy hook install: only when the user actually wants enforcement
-            -- (killForeign on + master toggled on). Defers the hookmetamethod
-            -- call past script-load so anticheats scanning UIS metatable at
-            -- execute time (TSB-style) don't see the hook.
-            installMouseBehaviorHookLazy()
-            spawnHookGuardLazy()
+        -- Mirror mode follows the game's shiftlock, so DON'T disable or sweep it
+        -- away -- that would kill the very thing we're mirroring.
+        if not state.shiftlockMirror then
+            disableGameShiftLock()
+            if state.killForeign then
+                sweepForeigns("enable")
+                -- Lazy hook install: only when the user actually wants enforcement
+                -- (killForeign on + master toggled on). Defers the hookmetamethod
+                -- call past script-load so anticheats scanning UIS metatable at
+                -- execute time (TSB-style) don't see the hook.
+                installMouseBehaviorHookLazy()
+                spawnHookGuardLazy()
+            end
         end
     else
         Shiftlock.forceOff()
@@ -2607,6 +2616,15 @@ function Shiftlock.setAllowGameShiftlock(v)
     end
 end
 
+-- Mirror mode: Pantheon stops running its own shiftlock and instead FOLLOWS the
+-- game's (shiftlock_active tracks the game's cursor lock). Kills the overlap where
+-- both ran at once. Turning it on releases our writes so the game takes back full
+-- control of the cursor + rotation; our combat layers (rotation-lock, lockon) still work.
+function Shiftlock.setShiftlockMirror(v)
+    state.shiftlockMirror = v and true or false
+    if state.shiftlockMirror then Shiftlock.forceOff() end
+end
+
 -- Pin pass + hook enforce when this is true. Returns false to fully yield
 -- (cursor management is whatever the game scripts and Roblox engine want).
 -- NOTE: assigns the forward-declared upvalue (no `local`) so the hook closure
@@ -2617,6 +2635,7 @@ end
 -- always-on enforcement dominated the game's shiftlock and left rotation stuck
 -- when toggled off -- the user wants the two paired, not Pantheon winning.
 function shouldEnforce()
+    if state.shiftlockMirror then return false end   -- mirror mode: never touch/fight the game's cursor
     if not state.killForeign then return false end
     return state.shiftlock_enabled and state.shiftlock_active
 end
@@ -2667,6 +2686,22 @@ local function autoRepair()
 end
 
 local function step()
+    -- Mirror mode: FOLLOW the game's own shiftlock instead of running ours. Read
+    -- the game's cursor lock and reflect it into shiftlock_active (so the rest of
+    -- Pantheon knows the state), but write NOTHING ourselves -- no cursor pin, no
+    -- rotation -- so we can't overlap/fight the game's shiftlock. The game owns
+    -- the cursor + base rotation; our rotation-lock / lockon still layer on top.
+    if state.shiftlockMirror then
+        if state.shiftlock_enabled then
+            state.shiftlock_active = UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter
+            local hum = self_state.humanoid
+            if hum then hum.CameraOffset = Vector3.new(0, 0, 0) end
+        else
+            state.shiftlock_active = false
+        end
+        return
+    end
+
     -- "shouldLock" is the SINGLE source of truth for whether the cursor should
     -- be locked right now. It is true only when Pantheon's shiftlock is both
     -- enabled and currently active.
@@ -2765,7 +2800,7 @@ function Shiftlock.init()
         -- When Pantheon shiftlock is OFF the game's shiftlock script (which we
         -- never disabled) owns the cursor; calling forceOff here races its own
         -- CharacterAdded and left free movement broken after dying.
-        if state.shiftlock_enabled then
+        if state.shiftlock_enabled and not state.shiftlockMirror then
             Shiftlock.forceOff()
             if state.killForeign then
                 task.defer(function() sweepForeigns("respawn") end)
@@ -3328,6 +3363,12 @@ function module.register()
         -- on while the UI button still showed OFF.
         onKey       = function() shiftlock.toggle() end,
         settings = {
+            -- Follow the game's own shiftlock instead of running a competing one
+            -- (eliminates the overlap/fight). Turn on in games that have their own
+            -- shiftlock, e.g. JJS. Off => Pantheon runs its own shiftlock.
+            { type = "toggle", name = "Follow game's shiftlock (no overlap)",
+              key = "mirror", default = false,
+              onChange = function(v) shiftlock.setShiftlockMirror(v) end },
             { type = "toggle", name = "Kill foreign shiftlock GUIs / loops", default = true,
               onChange = function(v) shiftlock.setKillForeign(v) end },
             -- Off (default) => rotation fires through grab welds, matching
@@ -3477,6 +3518,93 @@ end
 return module
 end
 
+_MODULES["games.jjs"] = function()
+-- Jujutsu Shenanigans (PlaceId 17016840407) integration.
+--
+-- Registered into the game registry; its container only appears when you're
+-- actually in JJS -- init.lua calls registry.current().register() gated on
+-- game.PlaceId, so this never shows in other games.
+--
+-- Feature: Nanami "Perfect Special" -- auto-times Salaryman's R special, Ratio
+-- Point (NanamiService.RE.RightActivated). Per the JJS wiki, Ratio Point marks a
+-- target within 70 STUDS and runs a quick-time event whose timing speeds up as
+-- the target's HP drops; this fires the confirm after an HP-scaled delay so it
+-- lands on the ratio. Ported from the old lock-on script, which used a wrong
+-- 27-stud range -- corrected to the wiki's 70.
+
+local registry  = require("games.registry")
+local window    = require("ui.window")
+local container = require("ui.container")
+local feature   = require("ui.feature")
+local state     = require("modules.aim.state")
+local targeting = require("modules.aim.targeting")
+local log       = require("core.log")
+
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local JJS_PLACE_ID = 17016840407
+
+local JJS = {}
+
+local CFG = {
+    range    = 70,     -- studs -- wiki: Ratio Point marks a target within 70 studs
+    delayHi  = 0.63,   -- s, target >= 80% HP (QTE slower early-fight)
+    delayLo  = 0.55,   -- s, target <  80% HP (QTE faster as HP drops)
+    hpThresh = 80,     -- % HP threshold between the two timings
+}
+local enabled = false
+
+local function rootOf(c) return c and c:FindFirstChild("HumanoidRootPart") end
+
+-- Prefer the Target Select / Lock-On target; fall back to the nearest valid
+-- target so it still works if you haven't engaged Target Select first.
+local function targetChar()
+    local t = state.target
+    if t then
+        return (state.target_type == "npc") and t or t.Character
+    end
+    local best = targeting.getBestTarget()
+    return best and best.Character or nil
+end
+
+local function ratioPointPerfect()
+    if not enabled then return end
+    local tChar = targetChar()
+    if not tChar then return end
+    local myRoot, tRoot = rootOf(Players.LocalPlayer.Character), rootOf(tChar)
+    if not (myRoot and tRoot) then return end
+    if (myRoot.Position - tRoot.Position).Magnitude > CFG.range then return end
+    local hum = tChar:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    local hpPct = (hum.Health / math.max(hum.MaxHealth, 1)) * 100
+    local delay = (hpPct < CFG.hpThresh) and CFG.delayLo or CFG.delayHi
+    task.delay(delay, function()
+        pcall(function()
+            ReplicatedStorage.Knit.Knit.Services.NanamiService.RE.RightActivated:FireServer(tChar)
+        end)
+    end)
+end
+
+function JJS.register()
+    local box = container.new(window.parent(), "Jujutsu Shenanigans")
+    box:add(feature.declare({
+        id          = "jjs.nanami_special",
+        name        = "Nanami Perfect Special",
+        description = "Auto-times Salaryman's R special, Ratio Point, onto your target. With a target within 70 studs (wiki range), pressing the key fires Ratio Point after an HP-timed delay so the confirm lands on the ratio QTE (the QTE speeds up at lower HP). Uses your Target Select / Lock-On target, else the nearest player.",
+        default     = false,
+        defaultKey  = Enum.KeyCode.R,
+        onToggle    = function(v) enabled = v and true or false end,
+        onKey       = function() ratioPointPerfect() end,
+    }).root)
+    log.info("JJS module registered -- Nanami Perfect Special (Ratio Point, 70-stud range)")
+end
+
+registry.register(JJS_PLACE_ID, JJS)
+
+return JJS
+end
+
 _MODULES["init"] = function()
 -- Pantheon entry point. Boots persist + keybinds + window, registers modules,
 -- and stashes a shutdown handle on the executor's global env so a second
@@ -3512,6 +3640,11 @@ window.init()
 -- Universal modules
 local aim = require("modules.aim.init")
 aim.register()
+
+-- Per-game modules self-register on require; pull them in so registry.current()
+-- can find one for this PlaceId. (Requiring in a non-matching game just adds to
+-- the registry table; its .register() only runs if the PlaceId matches.)
+require("games.jjs")
 
 -- Per-game module (if registered for this PlaceId)
 local gameMod = registry.current()

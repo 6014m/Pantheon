@@ -33,6 +33,11 @@ window.init()
 local aim = require("modules.aim.init")
 aim.register()
 
+-- Per-game modules self-register on require; pull them in so registry.current()
+-- can find one for this PlaceId. (Requiring in a non-matching game just adds to
+-- the registry table; its .register() only runs if the PlaceId matches.)
+require("games.jjs")
+
 -- Per-game module (if registered for this PlaceId)
 local gameMod = registry.current()
 if gameMod and gameMod.register then

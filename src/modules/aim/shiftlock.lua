@@ -394,6 +394,7 @@ function Shiftlock.toggle()
     -- cursor when the user has explicitly enabled Pantheon shiftlock.
     -- Same pattern as target_select / rotation_lock hotkeys.
     if not state.shiftlock_enabled then return end
+    if state.shiftlockMirror then return end   -- mirror mode: the game owns Shift; we just follow its state
     if state.shiftlock_active then
         Shiftlock.forceOff()
     else
@@ -410,15 +411,19 @@ function Shiftlock.setEnabled(v)
     if state.shiftlock_enabled == v then return end
     state.shiftlock_enabled = v
     if v then
-        disableGameShiftLock()
-        if state.killForeign then
-            sweepForeigns("enable")
-            -- Lazy hook install: only when the user actually wants enforcement
-            -- (killForeign on + master toggled on). Defers the hookmetamethod
-            -- call past script-load so anticheats scanning UIS metatable at
-            -- execute time (TSB-style) don't see the hook.
-            installMouseBehaviorHookLazy()
-            spawnHookGuardLazy()
+        -- Mirror mode follows the game's shiftlock, so DON'T disable or sweep it
+        -- away -- that would kill the very thing we're mirroring.
+        if not state.shiftlockMirror then
+            disableGameShiftLock()
+            if state.killForeign then
+                sweepForeigns("enable")
+                -- Lazy hook install: only when the user actually wants enforcement
+                -- (killForeign on + master toggled on). Defers the hookmetamethod
+                -- call past script-load so anticheats scanning UIS metatable at
+                -- execute time (TSB-style) don't see the hook.
+                installMouseBehaviorHookLazy()
+                spawnHookGuardLazy()
+            end
         end
     else
         Shiftlock.forceOff()
@@ -447,6 +452,15 @@ function Shiftlock.setAllowGameShiftlock(v)
     end
 end
 
+-- Mirror mode: Pantheon stops running its own shiftlock and instead FOLLOWS the
+-- game's (shiftlock_active tracks the game's cursor lock). Kills the overlap where
+-- both ran at once. Turning it on releases our writes so the game takes back full
+-- control of the cursor + rotation; our combat layers (rotation-lock, lockon) still work.
+function Shiftlock.setShiftlockMirror(v)
+    state.shiftlockMirror = v and true or false
+    if state.shiftlockMirror then Shiftlock.forceOff() end
+end
+
 -- Pin pass + hook enforce when this is true. Returns false to fully yield
 -- (cursor management is whatever the game scripts and Roblox engine want).
 -- NOTE: assigns the forward-declared upvalue (no `local`) so the hook closure
@@ -457,6 +471,7 @@ end
 -- always-on enforcement dominated the game's shiftlock and left rotation stuck
 -- when toggled off -- the user wants the two paired, not Pantheon winning.
 function shouldEnforce()
+    if state.shiftlockMirror then return false end   -- mirror mode: never touch/fight the game's cursor
     if not state.killForeign then return false end
     return state.shiftlock_enabled and state.shiftlock_active
 end
@@ -507,6 +522,22 @@ local function autoRepair()
 end
 
 local function step()
+    -- Mirror mode: FOLLOW the game's own shiftlock instead of running ours. Read
+    -- the game's cursor lock and reflect it into shiftlock_active (so the rest of
+    -- Pantheon knows the state), but write NOTHING ourselves -- no cursor pin, no
+    -- rotation -- so we can't overlap/fight the game's shiftlock. The game owns
+    -- the cursor + base rotation; our rotation-lock / lockon still layer on top.
+    if state.shiftlockMirror then
+        if state.shiftlock_enabled then
+            state.shiftlock_active = UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter
+            local hum = self_state.humanoid
+            if hum then hum.CameraOffset = Vector3.new(0, 0, 0) end
+        else
+            state.shiftlock_active = false
+        end
+        return
+    end
+
     -- "shouldLock" is the SINGLE source of truth for whether the cursor should
     -- be locked right now. It is true only when Pantheon's shiftlock is both
     -- enabled and currently active.
@@ -605,7 +636,7 @@ function Shiftlock.init()
         -- When Pantheon shiftlock is OFF the game's shiftlock script (which we
         -- never disabled) owns the cursor; calling forceOff here races its own
         -- CharacterAdded and left free movement broken after dying.
-        if state.shiftlock_enabled then
+        if state.shiftlock_enabled and not state.shiftlockMirror then
             Shiftlock.forceOff()
             if state.killForeign then
                 task.defer(function() sweepForeigns("respawn") end)
