@@ -33,6 +33,7 @@ BUILD_ORDER = [
     "modules/aim/target_select",
     "modules/aim/init",
     "modules/tech/engine",
+    "modules/tech/scanner",
     "modules/tech/builder_ui",
     "modules/tech/init",
     "modules/system",

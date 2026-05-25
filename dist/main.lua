@@ -4111,6 +4111,105 @@ end
 return Engine
 end
 
+_MODULES["modules.tech.scanner"] = function()
+-- Move-button scanner: detect the game's on-screen MOVE buttons so you can see
+-- which moves you can build techs around (and, later, trigger off a button press).
+--
+-- Heuristic -- Roblox has no "this is a move button" flag -- but the strong signal
+-- is cross-referencing on-screen buttons against the REAL move list
+-- (ReplicatedStorage.Knit.Knit.Services that own an RE). Plus skill-bar / cooldown
+-- / keybind cues. You confirm the matches.
+
+local Players = game:GetService("Players")
+local RS      = game:GetService("ReplicatedStorage")
+
+local Scanner = {}
+local cached = nil
+
+local function clean(s) return (s and (s:lower():gsub("%s", ""))) or "" end
+
+-- Knit services that look like moves (own an RE) = the things "move used" can fire on.
+function Scanner.moveServices()
+    local out = {}
+    local knit     = RS:FindFirstChild("Knit")
+    local inner    = knit and knit:FindFirstChild("Knit")
+    local services = inner and inner:FindFirstChild("Services")
+    if services then
+        for _, s in ipairs(services:GetChildren()) do
+            if s:FindFirstChild("RE") then out[#out + 1] = s.Name end
+        end
+        table.sort(out)
+    end
+    return out
+end
+
+local SKILL_KW = { "move", "skill", "abilit", "hotbar", "combat", "slot", "action", "spell", "ult" }
+local function ancestorSkill(inst)
+    local cur, depth = inst.Parent, 0
+    while cur and depth < 7 do
+        local n = clean(cur.Name)
+        for _, kw in ipairs(SKILL_KW) do if n:find(kw, 1, true) then return true end end
+        cur, depth = cur.Parent, depth + 1
+    end
+    return false
+end
+
+-- Returns { services = {serviceName,...}, buttons = { {button, name, text, move, key, score}, ... } }
+function Scanner.scan()
+    local LP = Players.LocalPlayer
+    local pg = LP:FindFirstChildOfClass("PlayerGui")
+    local services = Scanner.moveServices()
+
+    -- stems for matching button names/text to a service (strip trailing "Service")
+    local stems = {}
+    for _, svc in ipairs(services) do
+        local stem = clean((svc:gsub("Service$", "")))
+        if #stem >= 3 then stems[stem] = svc end
+    end
+
+    local buttons = {}
+    if pg then
+        for _, d in ipairs(pg:GetDescendants()) do
+            if d:IsA("TextButton") or d:IsA("ImageButton") then
+                local nm  = clean(d.Name)
+                local txt = clean((d:IsA("TextButton") and d.Text) or "")
+                local score, matched = 0, nil
+                for stem, svc in pairs(stems) do
+                    if nm:find(stem, 1, true) or (txt ~= "" and txt:find(stem, 1, true)) then
+                        score, matched = score + 5, svc; break
+                    end
+                end
+                if ancestorSkill(d) then score = score + 2 end
+                -- a keybind letter / cooldown label hints at a move button
+                local keyHint
+                for _, c in ipairs(d:GetDescendants()) do
+                    local cn = clean(c.Name)
+                    if cn:find("cooldown") or cn:find("keybind") or cn == "cd" or cn == "key" then
+                        score = score + 1
+                        if c:IsA("TextLabel") and #c.Text > 0 and #c.Text <= 3 then keyHint = c.Text end
+                    end
+                end
+                if score >= 3 then
+                    buttons[#buttons + 1] = {
+                        button = d, name = d.Name,
+                        text = (d:IsA("TextButton") and d.Text) or "",
+                        move = matched, key = keyHint, score = score,
+                    }
+                end
+            end
+        end
+        table.sort(buttons, function(a, b) return a.score > b.score end)
+    end
+
+    cached = { services = services, buttons = buttons }
+    return cached
+end
+
+function Scanner.cached() return cached end
+
+return Scanner
+end
+
 _MODULES["modules.tech.builder_ui"] = function()
 -- Tech Builder editor window (opened by "Open Tech Builder").
 --
@@ -4753,6 +4852,7 @@ local theme      = require("ui.theme")
 local notify     = require("ui.notify")
 local engine     = require("modules.tech.engine")
 local builder    = require("modules.tech.builder_ui")
+local scanner    = require("modules.tech.scanner")
 local log        = require("core.log")
 
 local module = {}
@@ -4894,11 +4994,50 @@ function module.register()
     })
     openBtn.LayoutOrder = 1
 
+    -- "Scan Moves": detect the game's move buttons so you know what moves you can
+    -- build techs around. Results listed below.
+    local resultsFrame = Instance.new("Frame")
+    resultsFrame.Size = UDim2.new(1, 0, 0, 0)
+    resultsFrame.AutomaticSize = Enum.AutomaticSize.Y
+    resultsFrame.BackgroundTransparency = 1
+    resultsFrame.LayoutOrder = 3
+    resultsFrame.Parent = holder
+    local rl = Instance.new("UIListLayout", resultsFrame)
+    rl.SortOrder = Enum.SortOrder.LayoutOrder
+    rl.Padding = UDim.new(0, 1)
+
+    local function showScan()
+        for _, c in ipairs(resultsFrame:GetChildren()) do
+            if not c:IsA("UIListLayout") then c:Destroy() end
+        end
+        local res = scanner.scan()
+        local n = #res.buttons
+        local ord2 = 0
+        local function place2(inst) ord2 = ord2 + 1; inst.LayoutOrder = ord2; return inst end
+        place2(components.Section(resultsFrame, "Detected moves (" .. n .. ")"))
+        if n == 0 then
+            place2(components.Label(resultsFrame, "No move buttons found. " ..
+                (#res.services .. " move services exist; use 'move used' trigger.")))
+        else
+            for _, b in ipairs(res.buttons) do
+                local label = (b.text ~= "" and b.text) or b.name
+                if b.move then label = label .. "  -> " .. b.move end
+                if b.key then label = label .. "  [" .. b.key .. "]" end
+                place2(components.Label(resultsFrame, "- " .. label))
+            end
+        end
+        log.info("scan: " .. n .. " move button(s), " .. #res.services .. " move service(s)")
+        pcall(function() notify.info("Scan: " .. n .. " move button(s) found", 4) end)
+    end
+
+    local scanBtn = components.Button(holder, { text = "Scan Moves", onClick = showScan })
+    scanBtn.LayoutOrder = 2
+
     local listFrame = Instance.new("Frame")
     listFrame.Size = UDim2.new(1, 0, 0, 0)
     listFrame.AutomaticSize = Enum.AutomaticSize.Y
     listFrame.BackgroundTransparency = 1
-    listFrame.LayoutOrder = 2
+    listFrame.LayoutOrder = 4
     listFrame.Parent = holder
     local ll = Instance.new("UIListLayout", listFrame)
     ll.SortOrder = Enum.SortOrder.LayoutOrder

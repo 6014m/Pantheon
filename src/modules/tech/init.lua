@@ -16,6 +16,7 @@ local theme      = require("ui.theme")
 local notify     = require("ui.notify")
 local engine     = require("modules.tech.engine")
 local builder    = require("modules.tech.builder_ui")
+local scanner    = require("modules.tech.scanner")
 local log        = require("core.log")
 
 local module = {}
@@ -157,11 +158,50 @@ function module.register()
     })
     openBtn.LayoutOrder = 1
 
+    -- "Scan Moves": detect the game's move buttons so you know what moves you can
+    -- build techs around. Results listed below.
+    local resultsFrame = Instance.new("Frame")
+    resultsFrame.Size = UDim2.new(1, 0, 0, 0)
+    resultsFrame.AutomaticSize = Enum.AutomaticSize.Y
+    resultsFrame.BackgroundTransparency = 1
+    resultsFrame.LayoutOrder = 3
+    resultsFrame.Parent = holder
+    local rl = Instance.new("UIListLayout", resultsFrame)
+    rl.SortOrder = Enum.SortOrder.LayoutOrder
+    rl.Padding = UDim.new(0, 1)
+
+    local function showScan()
+        for _, c in ipairs(resultsFrame:GetChildren()) do
+            if not c:IsA("UIListLayout") then c:Destroy() end
+        end
+        local res = scanner.scan()
+        local n = #res.buttons
+        local ord2 = 0
+        local function place2(inst) ord2 = ord2 + 1; inst.LayoutOrder = ord2; return inst end
+        place2(components.Section(resultsFrame, "Detected moves (" .. n .. ")"))
+        if n == 0 then
+            place2(components.Label(resultsFrame, "No move buttons found. " ..
+                (#res.services .. " move services exist; use 'move used' trigger.")))
+        else
+            for _, b in ipairs(res.buttons) do
+                local label = (b.text ~= "" and b.text) or b.name
+                if b.move then label = label .. "  -> " .. b.move end
+                if b.key then label = label .. "  [" .. b.key .. "]" end
+                place2(components.Label(resultsFrame, "- " .. label))
+            end
+        end
+        log.info("scan: " .. n .. " move button(s), " .. #res.services .. " move service(s)")
+        pcall(function() notify.info("Scan: " .. n .. " move button(s) found", 4) end)
+    end
+
+    local scanBtn = components.Button(holder, { text = "Scan Moves", onClick = showScan })
+    scanBtn.LayoutOrder = 2
+
     local listFrame = Instance.new("Frame")
     listFrame.Size = UDim2.new(1, 0, 0, 0)
     listFrame.AutomaticSize = Enum.AutomaticSize.Y
     listFrame.BackgroundTransparency = 1
-    listFrame.LayoutOrder = 2
+    listFrame.LayoutOrder = 4
     listFrame.Parent = holder
     local ll = Instance.new("UIListLayout", listFrame)
     ll.SortOrder = Enum.SortOrder.LayoutOrder
