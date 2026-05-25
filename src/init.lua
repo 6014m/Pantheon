@@ -36,6 +36,9 @@ aim.register()
 local tech = require("modules.tech.init")
 tech.register()
 
+local system = require("modules.system")
+system.register()
+
 -- Per-game modules self-register on require; pull them in so registry.current()
 -- can find one for this PlaceId. (Requiring in a non-matching game just adds to
 -- the registry table; its .register() only runs if the PlaceId matches.)
@@ -58,6 +61,7 @@ end
 genv.Pantheon.shutdown = function()
     pcall(function() if aim.destroy      then aim.destroy()      end end)
     pcall(function() if tech.destroy     then tech.destroy()     end end)
+    pcall(function() if system.destroy   then system.destroy()   end end)
     pcall(function() if window.destroy   then window.destroy()   end end)
     pcall(function() if notify.destroy   then notify.destroy()   end end)
     pcall(function() if keybinds.destroy then keybinds.destroy() end end)

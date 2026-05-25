@@ -15,6 +15,7 @@ local components = require("ui.components")
 local theme      = require("ui.theme")
 local notify     = require("ui.notify")
 local engine     = require("modules.tech.engine")
+local builder    = require("modules.tech.builder_ui")
 local log        = require("core.log")
 
 local module = {}
@@ -32,8 +33,10 @@ local function buildRow(parent, tech)
     f.BorderSizePixel = 0
     f.Parent = parent
 
-    local name = Instance.new("TextLabel")
-    name.Size = UDim2.new(1, -52, 1, 0)
+    -- custom (user-built) techs are clickable to edit and get a delete button;
+    -- built-in examples are a plain label.
+    local name = Instance.new(tech.custom and "TextButton" or "TextLabel")
+    name.Size = UDim2.new(1, tech.custom and -76 or -52, 1, 0)
     name.Position = UDim2.fromOffset(8, 0)
     name.BackgroundTransparency = 1
     name.Text = tech.name or tech.id
@@ -43,6 +46,21 @@ local function buildRow(parent, tech)
     name.TextXAlignment = Enum.TextXAlignment.Left
     name.TextTruncate = Enum.TextTruncate.AtEnd
     name.Parent = f
+    if tech.custom then
+        name.AutoButtonColor = false
+        name.MouseButton1Click:Connect(function() builder.open(tech) end)
+        local del = Instance.new("TextButton")
+        del.Size = UDim2.fromOffset(20, 18)
+        del.Position = UDim2.new(1, -68, 0.5, -9)
+        del.BackgroundColor3 = theme.danger
+        del.AutoButtonColor = false
+        del.TextColor3 = theme.fg
+        del.Font = theme.fontBold
+        del.TextSize = 10
+        del.Text = "X"
+        del.Parent = f
+        del.MouseButton1Click:Connect(function() engine.remove(tech.id) end)
+    end
 
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.fromOffset(38, 18)
@@ -126,9 +144,7 @@ function module.register()
 
     local openBtn = components.Button(holder, {
         text    = "Open Tech Builder",
-        onClick = function()
-            notify.info("Tech Builder editor + avatar/dummy viewport are coming in the next update. Built-in techs are usable now below.", 5)
-        end,
+        onClick = function() builder.open() end,
     })
     openBtn.LayoutOrder = 1
 
@@ -149,12 +165,14 @@ function module.register()
     engine.changed:Connect(function() refreshList(listFrame) end)
 
     registerExamples()
+    engine.loadCustom()   -- rehydrate persisted user-built techs
     refreshList(listFrame)
 
     log.info("Tech Builder registered")
 end
 
 function module.destroy()
+    pcall(function() builder.destroy() end)
     pcall(function() engine.destroy() end)
 end
 

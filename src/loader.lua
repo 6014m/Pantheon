@@ -56,7 +56,9 @@ local files = {
     { "modules.aim.target_select", "modules/aim/target_select.lua" },
     { "modules.aim.init",          "modules/aim/init.lua" },
     { "modules.tech.engine",       "modules/tech/engine.lua" },
+    { "modules.tech.builder_ui",   "modules/tech/builder_ui.lua" },
     { "modules.tech.init",         "modules/tech/init.lua" },
+    { "modules.system",            "modules/system.lua" },
     { "games.jjs",                 "games/jjs.lua" },
     { "init",                      "init.lua" },
 }

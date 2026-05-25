@@ -17,6 +17,7 @@
 local state    = require("modules.aim.state")
 local feature  = require("ui.feature")
 local keybinds = require("core.keybinds")
+local persist  = require("core.persist")
 local log      = require("core.log")
 local Signal   = require("core.signal")
 
@@ -190,13 +191,74 @@ function Engine.rewire()
     end
 end
 
+-- ===== persistence =====
+-- enabled-state is persisted per tech for EVERY tech (examples + custom) so
+-- toggles survive reloads. Custom (user-built) techs also persist their full
+-- definition under one "tech.custom" map, rehydrated on boot via loadCustom().
+local ENABLED_KEY = "tech.enabled."
+local CUSTOM_KEY  = "tech.custom"
+
+local function serialize(tech)
+    return {
+        id      = tech.id,
+        name    = tech.name,
+        scope   = tech.scope,
+        enabled = tech.enabled,
+        trigger = {
+            event      = tech.trigger.event,
+            key        = persist.keyToString(tech.trigger.key),
+            move       = tech.trigger.move,
+            conditions = tech.trigger.conditions or {},
+        },
+        actions = tech.actions or {},
+    }
+end
+
+local function deserialize(s)
+    return {
+        id      = s.id,
+        name    = s.name,
+        scope   = s.scope,
+        enabled = s.enabled,
+        custom  = true,
+        trigger = {
+            event      = s.trigger and s.trigger.event,
+            key        = s.trigger and persist.stringToKey(s.trigger.key),
+            move       = s.trigger and s.trigger.move,
+            conditions = (s.trigger and s.trigger.conditions) or {},
+        },
+        actions = s.actions or {},
+    }
+end
+
 -- ===== public API =====
 function Engine.add(tech)
     if not (tech and tech.id) then return end
     if tech.enabled == nil then tech.enabled = true end
+    -- a persisted enabled-state overrides the declared default
+    local savedEnabled = persist.get(ENABLED_KEY .. tech.id)
+    if savedEnabled ~= nil then tech.enabled = savedEnabled and true or false end
     techs[tech.id] = tech
     Engine.rewire()
     Engine.changed:Fire()
+end
+
+-- Persist a user-built tech's full definition (and add/replace it live).
+function Engine.saveCustom(tech)
+    tech.custom = true
+    Engine.add(tech)
+    local map = persist.get(CUSTOM_KEY, {}) or {}
+    map[tech.id] = serialize(tech)
+    persist.set(CUSTOM_KEY, map)
+    persist.scheduleSave()
+end
+
+-- Rehydrate persisted user-built techs. Call once at init.
+function Engine.loadCustom()
+    local map = persist.get(CUSTOM_KEY, {}) or {}
+    for _, s in pairs(map) do
+        if s and s.id then Engine.add(deserialize(s)) end
+    end
 end
 
 function Engine.all() return techs end
@@ -205,11 +267,29 @@ function Engine.get(id) return techs[id] end
 function Engine.setEnabled(id, v)
     local t = techs[id]; if not t then return end
     t.enabled = v and true or false
+    persist.set(ENABLED_KEY .. id, t.enabled)
+    -- keep the custom map's snapshot in sync so a reload restores this state
+    if t.custom then
+        local map = persist.get(CUSTOM_KEY, {}) or {}
+        if map[id] then map[id].enabled = t.enabled; persist.set(CUSTOM_KEY, map) end
+    end
     Engine.rewire()
     Engine.changed:Fire()
 end
 
-function Engine.remove(id) techs[id] = nil; Engine.rewire(); Engine.changed:Fire() end
+function Engine.remove(id)
+    local t = techs[id]
+    techs[id] = nil
+    persist.set(ENABLED_KEY .. id, nil)
+    if t and t.custom then
+        local map = persist.get(CUSTOM_KEY, {}) or {}
+        map[id] = nil
+        persist.set(CUSTOM_KEY, map)
+    end
+    keybinds.clear("tech." .. id)
+    Engine.rewire()
+    Engine.changed:Fire()
+end
 
 function Engine.init()
     if bound then return end

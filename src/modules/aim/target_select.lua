@@ -14,7 +14,16 @@ local s = {
     holdMode   = false,
     holdActive = false,
     heartConn  = nil,
+    lastStep   = 0,
 }
+
+-- Target validity + highlight/swap-target recompute run on a throttle, not every
+-- frame. getBestTarget() loops every player (and raycasts per player when the
+-- visibility check is on) -- doing that 240x/s in a crowded server is the main
+-- source of the "choppy sometimes" hitching. 30 Hz keeps the health bar and
+-- target-release responsive while cutting the scan rate ~8x. The actual aim
+-- (lockon camera + rotation_lock body) stays per-frame and is untouched.
+local STEP_INTERVAL = 1 / 30
 
 local function releaseTarget()
     state.setTarget(nil, nil)
@@ -39,6 +48,10 @@ end
 local function step()
     if not state.target_select_enabled then return end
     if not state.target then return end
+
+    local now = os.clock()
+    if now - s.lastStep < STEP_INTERVAL then return end
+    s.lastStep = now
 
     local t = state.target
     if state.target_type == "player" then
