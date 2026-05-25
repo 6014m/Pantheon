@@ -25,6 +25,7 @@ local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Workspace  = game:GetService("Workspace")
 local RS         = game:GetService("ReplicatedStorage")
+local VIM        = game:GetService("VirtualInputManager")
 
 local Engine = {}
 Engine.changed = Signal.new()   -- fires when the tech set changes (UI list re-reads it)
@@ -151,6 +152,15 @@ ACTIONS.wait   = function(a) task.wait(a.seconds or a.x or 0.5) end
 ACTIONS["return"] = function() releaseHold() end
 ACTIONS.feature = function(a)
     if a.value == nil then feature.fire(a.feature) else feature.setEnabled(a.feature, a.value) end
+end
+-- send a real keyboard key (a.key is the short name, e.g. "R"), so a tech can
+-- press keys -- e.g. fire a game move via its keybind, dash, jump, etc.
+ACTIONS.key = function(a)
+    local kc = a.key and Enum.KeyCode[a.key]
+    if not kc then return end
+    VIM:SendKeyEvent(true, kc, false, game)
+    task.wait(tonumber(a.hold) or 0.04)
+    VIM:SendKeyEvent(false, kc, false, game)
 end
 Engine.ACTIONS = ACTIONS
 

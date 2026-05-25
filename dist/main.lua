@@ -3740,6 +3740,7 @@ local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Workspace  = game:GetService("Workspace")
 local RS         = game:GetService("ReplicatedStorage")
+local VIM        = game:GetService("VirtualInputManager")
 
 local Engine = {}
 Engine.changed = Signal.new()   -- fires when the tech set changes (UI list re-reads it)
@@ -3866,6 +3867,15 @@ ACTIONS.wait   = function(a) task.wait(a.seconds or a.x or 0.5) end
 ACTIONS["return"] = function() releaseHold() end
 ACTIONS.feature = function(a)
     if a.value == nil then feature.fire(a.feature) else feature.setEnabled(a.feature, a.value) end
+end
+-- send a real keyboard key (a.key is the short name, e.g. "R"), so a tech can
+-- press keys -- e.g. fire a game move via its keybind, dash, jump, etc.
+ACTIONS.key = function(a)
+    local kc = a.key and Enum.KeyCode[a.key]
+    if not kc then return end
+    VIM:SendKeyEvent(true, kc, false, game)
+    task.wait(tonumber(a.hold) or 0.04)
+    VIM:SendKeyEvent(false, kc, false, game)
 end
 Engine.ACTIONS = ACTIONS
 
@@ -4138,7 +4148,7 @@ local CONDITIONS = {
     { id = "locked_on", label = "Locked on"    },
     { id = "shiftlock", label = "Shiftlock on" },
 }
-local ACTION_TYPES = { "look", "rotate", "during", "wait", "return", "feature" }
+local ACTION_TYPES = { "look", "rotate", "during", "wait", "return", "feature", "key" }
 local ACTION_LABEL = {
     look = "Look (camera)", rotate = "Rotate (body)", wait = "Wait",
     during = "During", ["return"] = "Return", feature = "Use feature",
@@ -4303,6 +4313,8 @@ local function draftActions()
             actions[#actions + 1] = { type = "return" }
         elseif a.type == "feature" then
             actions[#actions + 1] = { type = "feature", feature = a.feature }
+        elseif a.type == "key" then
+            actions[#actions + 1] = { type = "key", key = a.key }
         end
     end
     return actions
@@ -4353,7 +4365,7 @@ local rebuild
 -- Tap-to-cycle preset values keep steps simple (no sliders -- JJS-node feel).
 local YAW_PRESETS  = { 180, 135, 90, 45, 0, -45, -90, -135, -180 }
 local WAIT_PRESETS = { 0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3 }
-local STEP_LABEL   = { look = "Look", rotate = "Rotate", wait = "Wait", during = "During", ["return"] = "Return", feature = "Use" }
+local STEP_LABEL   = { look = "Look", rotate = "Rotate", wait = "Wait", during = "During", ["return"] = "Return", feature = "Use", key = "Press" }
 
 local function nextPreset(list, cur)
     for i, v in ipairs(list) do
@@ -4394,6 +4406,24 @@ local function buildChip(parent, i, act)
             local n = tonumber((val.Text:gsub("[^%d%.]", "")))
             if n then act.seconds = math.clamp(n, 0, 60) end
             val.Text = tostring(act.seconds or 0.5)
+        end)
+    elseif act.type == "key" then
+        -- pick which key this step presses: click, then press a key
+        val = Instance.new("TextButton")
+        val.AutoButtonColor = false
+        val.Text = act.key and ("key: " .. act.key) or "(click, then press a key)"
+        val.MouseButton1Click:Connect(function()
+            val.Text = "press a key..."
+            local conn
+            conn = UIS.InputBegan:Connect(function(input)
+                if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+                if input.KeyCode == Enum.KeyCode.Unknown then return end
+                if input.KeyCode ~= Enum.KeyCode.Escape then
+                    act.key = (tostring(input.KeyCode):gsub("Enum.KeyCode.", ""))
+                end
+                val.Text = act.key and ("key: " .. act.key) or "(click, then press a key)"
+                conn:Disconnect()
+            end)
         end)
     else
         val = Instance.new("TextButton")
