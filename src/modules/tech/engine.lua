@@ -264,6 +264,10 @@ end
 function Engine.all() return techs end
 function Engine.get(id) return techs[id] end
 
+-- Run a tech's action sequence once, now, ignoring its trigger/conditions.
+-- Used by the editor's "Test" button to preview a draft against the world.
+function Engine.run(tech) if tech then runTech(tech, false) end end
+
 function Engine.setEnabled(id, v)
     local t = techs[id]; if not t then return end
     t.enabled = v and true or false

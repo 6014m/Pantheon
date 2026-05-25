@@ -183,20 +183,7 @@ local function draftFromTech(t)
     }
 end
 
-local function onSave()
-    local name = (draft.name and #draft.name > 0) and draft.name or "Tech"
-
-    local id = draft.editId
-    if not id then
-        local base = "custom." .. persist.slug(name)
-        id = base
-        local n = 2
-        while engine.get(id) do id = base .. "_" .. n; n = n + 1 end
-    end
-
-    local conds = {}
-    for _, c in ipairs(CONDITIONS) do if draft.conditions[c.id] then conds[#conds + 1] = c.id end end
-
+local function draftActions()
     local actions = {}
     for _, a in ipairs(draft.actions) do
         if a.type == "look" then
@@ -211,15 +198,44 @@ local function onSave()
             actions[#actions + 1] = { type = "feature", feature = a.feature }
         end
     end
+    return actions
+end
 
-    engine.saveCustom({
-        id = id, name = name, custom = true,
+local function draftConditions()
+    local conds = {}
+    for _, c in ipairs(CONDITIONS) do if draft.conditions[c.id] then conds[#conds + 1] = c.id end end
+    return conds
+end
+
+local function buildTechFromDraft(id)
+    return {
+        id = id,
+        name = (draft.name and #draft.name > 0) and draft.name or "Tech",
+        custom = true,
         scope = (draft.scope == "universal") and "universal" or game.GameId,
         enabled = true,
-        trigger = { event = draft.event, key = draft.key, move = draft.move, conditions = conds },
-        actions = actions,
-    })
+        trigger = { event = draft.event, key = draft.key, move = draft.move, conditions = draftConditions() },
+        actions = draftActions(),
+    }
+end
+
+local function onSave()
+    local name = (draft.name and #draft.name > 0) and draft.name or "Tech"
+    local id = draft.editId
+    if not id then
+        local base = "custom." .. persist.slug(name)
+        id = base
+        local n = 2
+        while engine.get(id) do id = base .. "_" .. n; n = n + 1 end
+    end
+    engine.saveCustom(buildTechFromDraft(id))
     Builder.close()
+end
+
+-- Run the draft once against the world without saving, so you can preview the
+-- look/rotate/wait/return motion before committing.
+local function onTest()
+    engine.run(buildTechFromDraft("__tech_test__"))
 end
 
 -- ---- form (mutually recursive: rebuild builds rows; rows call rebuild) ----
@@ -377,15 +393,21 @@ rebuild = function()
         bl.Padding = UDim.new(0, 8)
 
         local cancel = Instance.new("TextButton")
-        cancel.Size = UDim2.fromOffset(90, 26); cancel.BackgroundColor3 = theme.bgAlt
+        cancel.Size = UDim2.fromOffset(78, 26); cancel.BackgroundColor3 = theme.bgAlt
         cancel.AutoButtonColor = false; cancel.TextColor3 = theme.fg; cancel.Font = theme.font
         cancel.TextSize = 12; cancel.Text = "Cancel"; cancel.LayoutOrder = 1; cancel.Parent = bf
         cancel.MouseButton1Click:Connect(function() Builder.close() end)
 
+        local test = Instance.new("TextButton")
+        test.Size = UDim2.fromOffset(78, 26); test.BackgroundColor3 = theme.bgDark
+        test.AutoButtonColor = false; test.TextColor3 = theme.fg; test.Font = theme.font
+        test.TextSize = 12; test.Text = "Test"; test.LayoutOrder = 2; test.Parent = bf
+        test.MouseButton1Click:Connect(onTest)
+
         local save = Instance.new("TextButton")
         save.Size = UDim2.fromOffset(90, 26); save.BackgroundColor3 = theme.accent
         save.AutoButtonColor = false; save.TextColor3 = theme.fg; save.Font = theme.fontBold
-        save.TextSize = 12; save.Text = "Save Tech"; save.LayoutOrder = 2; save.Parent = bf
+        save.TextSize = 12; save.Text = "Save Tech"; save.LayoutOrder = 3; save.Parent = bf
         save.MouseButton1Click:Connect(onSave)
 
         place(bf)

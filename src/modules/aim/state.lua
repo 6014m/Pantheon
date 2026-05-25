@@ -124,13 +124,23 @@ local StatsService   = game:GetService("Stats")
 -- ~ping behind, so leading by velocity * ping faces where they actually are
 -- now -- this self-tunes per server instead of a fixed guess. Falls back to the
 -- manual predictionTime slider when auto is off.
+-- Cache the live ping read. GetValue() through StatsService.Network is a pcall +
+-- property traversal, and getLeadTime() is called several times per frame (lockon
+-- camera + rotation_lock's render+stepped double-bind). Ping barely moves frame to
+-- frame, so refreshing it 4x/s instead of ~240x/s is free perf. The cheap lead
+-- math (ping * factor, capped) still runs per call so factor/cap stay live.
+local pingCacheT, pingCacheV = 0, 0.1
 function state.getLeadTime()
     if state.predictionAuto then
-        local ok, ms = pcall(function()
-            return StatsService.Network.ServerStatsItem["Data Ping"]:GetValue()
-        end)
-        local ping = (ok and ms or 100) / 1000
-        return math.min(ping * (state.predictionFactor or 1), state.predictionCap or 0.3)
+        local now = os.clock()
+        if now - pingCacheT > 0.25 then
+            pingCacheT = now
+            local ok, ms = pcall(function()
+                return StatsService.Network.ServerStatsItem["Data Ping"]:GetValue()
+            end)
+            pingCacheV = (ok and ms or 100) / 1000
+        end
+        return math.min(pingCacheV * (state.predictionFactor or 1), state.predictionCap or 0.3)
     end
     return state.predictionTime or 0
 end

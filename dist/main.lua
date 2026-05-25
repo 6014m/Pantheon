@@ -1814,13 +1814,23 @@ local StatsService   = game:GetService("Stats")
 -- ~ping behind, so leading by velocity * ping faces where they actually are
 -- now -- this self-tunes per server instead of a fixed guess. Falls back to the
 -- manual predictionTime slider when auto is off.
+-- Cache the live ping read. GetValue() through StatsService.Network is a pcall +
+-- property traversal, and getLeadTime() is called several times per frame (lockon
+-- camera + rotation_lock's render+stepped double-bind). Ping barely moves frame to
+-- frame, so refreshing it 4x/s instead of ~240x/s is free perf. The cheap lead
+-- math (ping * factor, capped) still runs per call so factor/cap stay live.
+local pingCacheT, pingCacheV = 0, 0.1
 function state.getLeadTime()
     if state.predictionAuto then
-        local ok, ms = pcall(function()
-            return StatsService.Network.ServerStatsItem["Data Ping"]:GetValue()
-        end)
-        local ping = (ok and ms or 100) / 1000
-        return math.min(ping * (state.predictionFactor or 1), state.predictionCap or 0.3)
+        local now = os.clock()
+        if now - pingCacheT > 0.25 then
+            pingCacheT = now
+            local ok, ms = pcall(function()
+                return StatsService.Network.ServerStatsItem["Data Ping"]:GetValue()
+            end)
+            pingCacheV = (ok and ms or 100) / 1000
+        end
+        return math.min(pingCacheV * (state.predictionFactor or 1), state.predictionCap or 0.3)
     end
     return state.predictionTime or 0
 end
@@ -2223,6 +2233,7 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local Shiftlock = {}
 
+local ZERO3 = Vector3.new(0, 0, 0)
 local RENDER_BIND = "PantheonShiftlock"
 -- Randomised at script-load so game-side ScreenGui-name scanners can't
 -- pattern-match "PantheonShiftLockVGui" / "ShiftLockVGui". Lives in
@@ -2786,7 +2797,7 @@ local function step()
     if not state.shiftlock_enabled then return end
 
     local hum = self_state.humanoid
-    if hum then hum.CameraOffset = Vector3.new(0, 0, 0) end
+    if hum and hum.CameraOffset ~= ZERO3 then hum.CameraOffset = ZERO3 end
 
     if not state.shiftlock_active or not self_state.root or not hum then return end
     if hum.Health <= 0 then return end
@@ -3194,11 +3205,11 @@ local function cameraStep(dt)
     if not cam then return end
 
     -- Suspend the camera-tracking write whenever we're welded to another
-    -- character (grab moves). Checked every frame with no cache so the
-    -- resumption is on the literal next frame after the weld breaks --
-    -- a 50ms cache like shiftlock's would leave the camera frozen for
-    -- up to a render after the user is freed.
-    if state.isWeldedToOther(Players.LocalPlayer.Character) then return end
+    -- character (grab moves). Uses the shared 50ms-cached check instead of
+    -- walking every character descendant + its joints on EVERY frame -- that
+    -- per-frame walk was a real cost while locked on. ~3 frames of resume
+    -- latency after the weld breaks is imperceptible next to the saved work.
+    if state.isGrabbing() then return end
 
     local tRoot = rootOf(targetCharacter())
     if not tRoot then return end
@@ -3844,6 +3855,10 @@ end
 function Engine.all() return techs end
 function Engine.get(id) return techs[id] end
 
+-- Run a tech's action sequence once, now, ignoring its trigger/conditions.
+-- Used by the editor's "Test" button to preview a draft against the world.
+function Engine.run(tech) if tech then runTech(tech, false) end end
+
 function Engine.setEnabled(id, v)
     local t = techs[id]; if not t then return end
     t.enabled = v and true or false
@@ -4073,20 +4088,7 @@ local function draftFromTech(t)
     }
 end
 
-local function onSave()
-    local name = (draft.name and #draft.name > 0) and draft.name or "Tech"
-
-    local id = draft.editId
-    if not id then
-        local base = "custom." .. persist.slug(name)
-        id = base
-        local n = 2
-        while engine.get(id) do id = base .. "_" .. n; n = n + 1 end
-    end
-
-    local conds = {}
-    for _, c in ipairs(CONDITIONS) do if draft.conditions[c.id] then conds[#conds + 1] = c.id end end
-
+local function draftActions()
     local actions = {}
     for _, a in ipairs(draft.actions) do
         if a.type == "look" then
@@ -4101,15 +4103,44 @@ local function onSave()
             actions[#actions + 1] = { type = "feature", feature = a.feature }
         end
     end
+    return actions
+end
 
-    engine.saveCustom({
-        id = id, name = name, custom = true,
+local function draftConditions()
+    local conds = {}
+    for _, c in ipairs(CONDITIONS) do if draft.conditions[c.id] then conds[#conds + 1] = c.id end end
+    return conds
+end
+
+local function buildTechFromDraft(id)
+    return {
+        id = id,
+        name = (draft.name and #draft.name > 0) and draft.name or "Tech",
+        custom = true,
         scope = (draft.scope == "universal") and "universal" or game.GameId,
         enabled = true,
-        trigger = { event = draft.event, key = draft.key, move = draft.move, conditions = conds },
-        actions = actions,
-    })
+        trigger = { event = draft.event, key = draft.key, move = draft.move, conditions = draftConditions() },
+        actions = draftActions(),
+    }
+end
+
+local function onSave()
+    local name = (draft.name and #draft.name > 0) and draft.name or "Tech"
+    local id = draft.editId
+    if not id then
+        local base = "custom." .. persist.slug(name)
+        id = base
+        local n = 2
+        while engine.get(id) do id = base .. "_" .. n; n = n + 1 end
+    end
+    engine.saveCustom(buildTechFromDraft(id))
     Builder.close()
+end
+
+-- Run the draft once against the world without saving, so you can preview the
+-- look/rotate/wait/return motion before committing.
+local function onTest()
+    engine.run(buildTechFromDraft("__tech_test__"))
 end
 
 -- ---- form (mutually recursive: rebuild builds rows; rows call rebuild) ----
@@ -4267,15 +4298,21 @@ rebuild = function()
         bl.Padding = UDim.new(0, 8)
 
         local cancel = Instance.new("TextButton")
-        cancel.Size = UDim2.fromOffset(90, 26); cancel.BackgroundColor3 = theme.bgAlt
+        cancel.Size = UDim2.fromOffset(78, 26); cancel.BackgroundColor3 = theme.bgAlt
         cancel.AutoButtonColor = false; cancel.TextColor3 = theme.fg; cancel.Font = theme.font
         cancel.TextSize = 12; cancel.Text = "Cancel"; cancel.LayoutOrder = 1; cancel.Parent = bf
         cancel.MouseButton1Click:Connect(function() Builder.close() end)
 
+        local test = Instance.new("TextButton")
+        test.Size = UDim2.fromOffset(78, 26); test.BackgroundColor3 = theme.bgDark
+        test.AutoButtonColor = false; test.TextColor3 = theme.fg; test.Font = theme.font
+        test.TextSize = 12; test.Text = "Test"; test.LayoutOrder = 2; test.Parent = bf
+        test.MouseButton1Click:Connect(onTest)
+
         local save = Instance.new("TextButton")
         save.Size = UDim2.fromOffset(90, 26); save.BackgroundColor3 = theme.accent
         save.AutoButtonColor = false; save.TextColor3 = theme.fg; save.Font = theme.fontBold
-        save.TextSize = 12; save.Text = "Save Tech"; save.LayoutOrder = 2; save.Parent = bf
+        save.TextSize = 12; save.Text = "Save Tech"; save.LayoutOrder = 3; save.Parent = bf
         save.MouseButton1Click:Connect(onSave)
 
         place(bf)
@@ -4591,20 +4628,22 @@ end
 _MODULES["modules.system"] = function()
 -- System / "Pantheon" container: global utilities.
 --
--- Auto Re-Execute: when on, re-runs the Pantheon bundle on respawn. Pantheon's
--- render binds + hooks already survive respawn (they re-resolve LocalPlayer.
--- Character each frame), but some games reset state on death in ways that leave
--- a feature half-broken; re-executing gives a clean reboot. Re-exec tears down
--- the previous instance first (init.lua's getgenv().Pantheon.shutdown), so there
--- are never stacked GUIs / listeners. Persisted, so it survives the reload it
--- triggers and keeps going every subsequent respawn.
+-- Auto Re-Execute (teleport persistence): a Roblox teleport (e.g. JJS lobby ->
+-- a match) drops every executor script. queue_on_teleport asks the executor to
+-- run a payload after the next teleport; our payload waits for the new place to
+-- load, then re-loadstrings the Pantheon bundle so the hub follows you across
+-- teleports. Ported from the legacy lock-on script:
+--   METHOD 1 -- queue once at startup (covers executors that need the queue set
+--               before the teleport).
+--   METHOD 2 -- re-queue when Player.OnTeleport fires Started, and flush settings
+--               first so the new place loads your latest toggles.
 --
--- Re-Execute Now: the same reload on demand (cog button).
+-- Re-Execute Now: reload the latest bundle on demand (cog button).
 
 local feature    = require("ui.feature")
 local window     = require("ui.window")
 local container  = require("ui.container")
-local components = require("ui.components")
+local persist    = require("core.persist")
 local notify     = require("ui.notify")
 local log        = require("core.log")
 
@@ -4612,43 +4651,80 @@ local Players = game:GetService("Players")
 
 local System = {}
 
--- The released bundle. ?v=tick() busts Wave's aggressive HttpGet cache so a
--- re-exec actually pulls the latest push, not a stale copy.
+-- The released bundle. ?v=tick() busts Wave's aggressive HttpGet cache.
 local DIST_URL = "https://raw.githubusercontent.com/6014m/Pantheon/main/dist/main.lua"
 
-local s = { auto = false, conn = nil }
+-- queue_on_teleport varies by executor. Undefined names resolve to nil safely,
+-- so this just picks the first one that exists.
+local queueteleport = queue_on_teleport
+    or (syn and syn.queue_on_teleport)
+    or (fluxus and fluxus.queue_on_teleport)
+    or (getgenv and getgenv().queue_on_teleport)
 
-local function reexec()
+-- Payload run in the NEW place after a teleport. The `?v=" .. tostring(tick())`
+-- is literal text INSIDE the payload string, so it evaluates (and cache-busts)
+-- at re-exec time in the destination place.
+local PAYLOAD =
+    'repeat task.wait() until game:IsLoaded()\n' ..
+    'task.wait(2)\n' ..
+    'pcall(function() loadstring(game:HttpGet("' .. DIST_URL .. '?v=" .. tostring(tick())))() end)\n'
+
+local s = { auto = false, tpConn = nil }
+
+-- Manual reload (cog button): re-run the latest bundle right now. The bundle's
+-- own teardown (getgenv().Pantheon.shutdown) replaces the current instance.
+local function reexecNow()
     task.spawn(function()
         local ok, src = pcall(function()
             return game:HttpGet(DIST_URL .. "?v=" .. tostring(tick()))
         end)
         if not ok or type(src) ~= "string" or #src == 0 then
-            notify.warn("Re-execute: download failed")
-            return
+            notify.warn("Re-execute: download failed"); return
         end
         local fn, err = loadstring(src)
         if not fn then
-            notify.warn("Re-execute: compile failed")
-            log.warn("reexec compile: " .. tostring(err))
-            return
+            notify.warn("Re-execute: compile failed"); log.warn("reexec compile: " .. tostring(err)); return
         end
         local rok, rerr = pcall(fn)
         if not rok then log.warn("reexec run: " .. tostring(rerr)) end
     end)
 end
-System.reexec = reexec
+System.reexec = reexecNow
+
+local function queuePayload()
+    if not queueteleport then return false end
+    return (pcall(queueteleport, PAYLOAD))
+end
 
 local function setAuto(v)
     s.auto = v and true or false
-    if s.conn then s.conn:Disconnect(); s.conn = nil end
+    local genv = (getgenv and getgenv()) or _G
+
     if s.auto then
-        s.conn = Players.LocalPlayer.CharacterAdded:Connect(function()
-            -- let the new character settle before reloading; re-check the flag
-            -- after the wait in case the user toggled it off in between.
-            task.wait(1.5)
-            if s.auto then reexec() end
-        end)
+        if not queueteleport then
+            notify.warn("Teleport persistence: your executor has no queue_on_teleport")
+            return
+        end
+        -- METHOD 1: queue once per executor session. Re-exec'd instances (after a
+        -- teleport) see the persisted getgenv flag and skip; METHOD 2 carries the
+        -- chain forward on each subsequent teleport.
+        if not genv.PANTHEON_TP_QUEUED then
+            if queuePayload() then genv.PANTHEON_TP_QUEUED = true end
+        end
+        -- METHOD 2: re-queue + flush settings the moment a teleport starts.
+        if not s.tpConn then
+            s.tpConn = Players.LocalPlayer.OnTeleport:Connect(function(st)
+                if st == Enum.TeleportState.Started and s.auto then
+                    pcall(function() persist.flush() end)
+                    queuePayload()
+                end
+            end)
+        end
+    else
+        if s.tpConn then s.tpConn:Disconnect(); s.tpConn = nil end
+        -- An already-registered payload can't be un-queued on most executors, but
+        -- METHOD 2 won't re-queue and the next teleport's instance will boot with
+        -- the toggle persisted off, so the chain stops there.
     end
 end
 
@@ -4656,19 +4732,19 @@ function System.register()
     local box = container.new(window.parent(), "Pantheon")
     box:add(feature.declare({
         id          = "system.auto_reexec",
-        name        = "Auto Re-Execute",
-        description = "Re-runs Pantheon automatically after you respawn (clean reboot; re-fetches the latest build). Off by default. Use 'Re-Execute Now' in this panel to reload on demand.",
-        default     = false,
+        name        = "Auto Re-Execute (teleport)",
+        description = "Re-runs Pantheon automatically after a Roblox teleport (e.g. JJS lobby to a match) so the hub follows you. Uses your executor's queue_on_teleport. Use 'Re-Execute Now' to reload the latest build on demand.",
+        default     = true,
         onToggle    = setAuto,
         settings    = {
-            { type = "button", name = "Re-Execute Now", onClick = function() reexec() end },
+            { type = "button", name = "Re-Execute Now", onClick = function() reexecNow() end },
         },
     }).root)
     log.info("System module registered")
 end
 
 function System.destroy()
-    if s.conn then s.conn:Disconnect(); s.conn = nil end
+    if s.tpConn then s.tpConn:Disconnect(); s.tpConn = nil end
 end
 
 return System

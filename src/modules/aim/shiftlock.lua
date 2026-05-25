@@ -23,6 +23,7 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local Shiftlock = {}
 
+local ZERO3 = Vector3.new(0, 0, 0)
 local RENDER_BIND = "PantheonShiftlock"
 -- Randomised at script-load so game-side ScreenGui-name scanners can't
 -- pattern-match "PantheonShiftLockVGui" / "ShiftLockVGui". Lives in
@@ -586,7 +587,7 @@ local function step()
     if not state.shiftlock_enabled then return end
 
     local hum = self_state.humanoid
-    if hum then hum.CameraOffset = Vector3.new(0, 0, 0) end
+    if hum and hum.CameraOffset ~= ZERO3 then hum.CameraOffset = ZERO3 end
 
     if not state.shiftlock_active or not self_state.root or not hum then return end
     if hum.Health <= 0 then return end
