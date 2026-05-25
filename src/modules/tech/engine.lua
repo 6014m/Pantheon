@@ -180,9 +180,20 @@ local function runTech(tech, hold)
     task.spawn(function()
         local cam = Workspace.CurrentCamera
         startCamLook = cam and cam.CFrame.LookVector or nil
+        local releaseAfterWait = false
         for _, a in ipairs(tech.actions or {}) do
-            local fn = ACTIONS[a.type]
-            if fn then local ok, err = pcall(fn, a); if not ok then log.warn("[tech] action " .. tostring(a.type) .. ": " .. tostring(err)) end end
+            if a.type == "during" then
+                -- the preceding Look/Rotate lasts only as long as the NEXT Wait,
+                -- then auto-returns (so "Rotate -> During -> Wait 0.5" rotates for
+                -- exactly 0.5s).
+                releaseAfterWait = true
+            elseif a.type == "wait" then
+                task.wait(a.seconds or a.x or 0.5)
+                if releaseAfterWait then releaseHold(); releaseAfterWait = false end
+            else
+                local fn = ACTIONS[a.type]
+                if fn then local ok, err = pcall(fn, a); if not ok then log.warn("[tech] action " .. tostring(a.type) .. ": " .. tostring(err)) end end
+            end
         end
         -- one-shot triggers auto-clean at the end (in case the tech has no Return).
         -- hold triggers keep the held facing until the key is released.

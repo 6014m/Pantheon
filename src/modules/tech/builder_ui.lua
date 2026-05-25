@@ -34,10 +34,10 @@ local CONDITIONS = {
     { id = "locked_on", label = "Locked on"    },
     { id = "shiftlock", label = "Shiftlock on" },
 }
-local ACTION_TYPES = { "look", "rotate", "wait", "return", "feature" }
+local ACTION_TYPES = { "look", "rotate", "during", "wait", "return", "feature" }
 local ACTION_LABEL = {
     look = "Look (camera)", rotate = "Rotate (body)", wait = "Wait",
-    ["return"] = "Return", feature = "Use feature",
+    during = "During", ["return"] = "Return", feature = "Use feature",
 }
 
 -- move services usable as triggers = those with an RE.Effects broadcast.
@@ -193,6 +193,8 @@ local function draftActions()
             actions[#actions + 1] = { type = "rotate", x = a.x or 0, y = a.y or 0 }
         elseif a.type == "wait" then
             actions[#actions + 1] = { type = "wait", seconds = a.seconds or 0.5 }
+        elseif a.type == "during" then
+            actions[#actions + 1] = { type = "during" }
         elseif a.type == "return" then
             actions[#actions + 1] = { type = "return" }
         elseif a.type == "feature" then
@@ -247,7 +249,7 @@ local rebuild
 -- Tap-to-cycle preset values keep steps simple (no sliders -- JJS-node feel).
 local YAW_PRESETS  = { 180, 135, 90, 45, 0, -45, -90, -135, -180 }
 local WAIT_PRESETS = { 0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3 }
-local STEP_LABEL   = { look = "Look", rotate = "Rotate", wait = "Wait", ["return"] = "Return", feature = "Use" }
+local STEP_LABEL   = { look = "Look", rotate = "Rotate", wait = "Wait", during = "During", ["return"] = "Return", feature = "Use" }
 
 local function nextPreset(list, cur)
     for i, v in ipairs(list) do
@@ -277,37 +279,49 @@ local function buildChip(parent, i, act)
     lbl.TextColor3 = theme.fg; lbl.Font = theme.fontBold; lbl.TextSize = 12
     lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Parent = f
 
-    local val = Instance.new("TextButton")
-    val.Size = UDim2.new(1, -154, 1, -8); val.Position = UDim2.new(0, 84, 0, 4)
-    val.BackgroundColor3 = theme.bgDark; val.AutoButtonColor = false
-    val.TextColor3 = theme.fg; val.Font = theme.font; val.TextSize = 12; val.Parent = f
-    local function valText()
-        if act.type == "look" or act.type == "rotate" then return tostring(act.x or 0) .. "\u{00B0}"
-        elseif act.type == "wait" then return tostring(act.seconds or 0.5) .. "s"
-        elseif act.type == "feature" then return featName(act.feature)
-        else return "re-face target" end
-    end
-    val.Text = valText()
-    if act.type == "return" then
-        val.TextColor3 = theme.fgDim
-    else
-        val.MouseButton1Click:Connect(function()
-            if act.type == "look" or act.type == "rotate" then
-                act.x = nextPreset(YAW_PRESETS, act.x)
-            elseif act.type == "wait" then
-                act.seconds = nextPreset(WAIT_PRESETS, act.seconds)
-            elseif act.type == "feature" then
-                local feats = feature.all()
-                table.sort(feats, function(a, b) return (a.name or a.id) < (b.name or b.id) end)
-                if #feats > 0 then
-                    local idx = 0
-                    for k, ft in ipairs(feats) do if ft.id == act.feature then idx = k end end
-                    act.feature = feats[(idx % #feats) + 1].id
-                end
-            end
-            val.Text = valText()
+    local val
+    if act.type == "wait" then
+        -- Wait is a typed number of seconds (not preset cycling).
+        val = Instance.new("TextBox")
+        val.ClearTextOnFocus = false
+        val.PlaceholderText = "seconds"
+        val.Text = tostring(act.seconds or 0.5)
+        val.FocusLost:Connect(function()
+            local n = tonumber((val.Text:gsub("[^%d%.]", "")))
+            if n then act.seconds = math.clamp(n, 0, 60) end
+            val.Text = tostring(act.seconds or 0.5)
         end)
+    else
+        val = Instance.new("TextButton")
+        val.AutoButtonColor = false
+        local function valText()
+            if act.type == "look" or act.type == "rotate" then return tostring(act.x or 0) .. "\u{00B0}"
+            elseif act.type == "feature" then return featName(act.feature)
+            elseif act.type == "during" then return "holds prev step for the next wait"
+            else return "re-face target" end
+        end
+        val.Text = valText()
+        if act.type ~= "return" and act.type ~= "during" then
+            val.MouseButton1Click:Connect(function()
+                if act.type == "look" or act.type == "rotate" then
+                    act.x = nextPreset(YAW_PRESETS, act.x)
+                elseif act.type == "feature" then
+                    local feats = feature.all()
+                    table.sort(feats, function(a, b) return (a.name or a.id) < (b.name or b.id) end)
+                    if #feats > 0 then
+                        local idx = 0
+                        for k, ft in ipairs(feats) do if ft.id == act.feature then idx = k end end
+                        act.feature = feats[(idx % #feats) + 1].id
+                    end
+                end
+                val.Text = valText()
+            end)
+        end
     end
+    val.Size = UDim2.new(1, -154, 1, -8); val.Position = UDim2.new(0, 84, 0, 4)
+    val.BackgroundColor3 = theme.bgDark
+    val.TextColor3 = (act.type == "return" or act.type == "during") and theme.fgDim or theme.fg
+    val.Font = theme.font; val.TextSize = 12; val.Parent = f
 
     local up = smallBtn(f, "^", -70)
     up.MouseButton1Click:Connect(function()
@@ -375,15 +389,15 @@ rebuild = function()
     place(components.Section(formScroll, "Steps - tap to add"))
     do
         local palette = Instance.new("Frame")
-        palette.Size = UDim2.new(1, 0, 0, 28)
+        palette.Size = UDim2.new(1, 0, 0, 0)
+        palette.AutomaticSize = Enum.AutomaticSize.Y
         palette.BackgroundTransparency = 1
-        local pl = Instance.new("UIListLayout", palette)
-        pl.FillDirection = Enum.FillDirection.Horizontal
-        pl.Padding = UDim.new(0, 4)
+        local pl = Instance.new("UIGridLayout", palette)
+        pl.CellSize = UDim2.new(0, 84, 0, 26)
+        pl.CellPadding = UDim2.new(0, 4, 0, 4)
+        pl.SortOrder = Enum.SortOrder.LayoutOrder
         for i, t in ipairs(ACTION_TYPES) do
             local b = Instance.new("TextButton")
-            b.AutomaticSize = Enum.AutomaticSize.X
-            b.Size = UDim2.new(0, 0, 1, 0)
             b.BackgroundColor3 = theme.bgDark
             b.AutoButtonColor = true
             b.TextColor3 = theme.accent
@@ -392,8 +406,6 @@ rebuild = function()
             b.Text = "+ " .. (STEP_LABEL[t] or t)
             b.LayoutOrder = i
             b.Parent = palette
-            local bp = Instance.new("UIPadding", b)
-            bp.PaddingLeft = UDim.new(0, 7); bp.PaddingRight = UDim.new(0, 7)
             b.MouseButton1Click:Connect(function()
                 local a = { type = t }
                 if t == "look" then a.x = 180; a.y = 0

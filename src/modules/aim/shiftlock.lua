@@ -15,6 +15,7 @@ local env      = require("core.env")
 local state    = require("modules.aim.state")
 local log      = require("core.log")
 local keybinds = require("core.keybinds")
+local notify   = require("ui.notify")
 
 local Players             = game:GetService("Players")
 local UserInputService    = game:GetService("UserInputService")
@@ -342,7 +343,7 @@ local iconScanT = 0
 -- (re)scan PlayerGui for shiftlock-named GUIs, recording any new ones with their
 -- original value (so we can restore later). Throttled by the caller.
 local function nameClean(s) return (s and (s:lower():gsub("%s", ""))) or "" end
-local lastIconLog = 0
+local lastReportedN = -1
 local function scanShiftlockIcons()
     local pg = lp():FindFirstChildOfClass("PlayerGui")
     if not pg then return end
@@ -377,11 +378,15 @@ local function scanShiftlockIcons()
             end
         end
     end
-    if os.clock() - lastIconLog > 3 then
-        lastIconLog = os.clock()
+    -- report (toast + log) whenever the hidden-count changes, so we can SEE on
+    -- screen whether it's actually finding JJS's icon.
+    if #hiddenStore ~= lastReportedN then
+        lastReportedN = #hiddenStore
         local names = {}
         for _, e in ipairs(hiddenStore) do names[#names + 1] = e[1].Name end
-        log.info("shiftlock icon-hide: " .. #hiddenStore .. " element(s) [" .. table.concat(names, ", ") .. "]")
+        local msg = "Shiftlock hide: " .. #hiddenStore .. " [" .. table.concat(names, ", ") .. "]"
+        log.info(msg)
+        pcall(function() notify.info(msg, 8) end)
     end
 end
 
