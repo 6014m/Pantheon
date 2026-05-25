@@ -3629,6 +3629,7 @@ local bound = false
 -- held camera/body facings; the render loop enforces these each frame while set.
 local held = { cam = nil, body = nil }   -- each = { yaw, pitch } degrees, target-relative
 local startCamLook                        -- camera LookVector at tech start (no-target fallback)
+local bodyARDisabled = false              -- did a Rotate step turn off Humanoid.AutoRotate?
 
 -- ===== geometry =====
 local function myChar() return LP.Character end
@@ -3675,6 +3676,10 @@ local function renderHold()
         local root = myRoot()
         local base = bodyBaseFlat()
         if root and base.Magnitude > 1e-3 then
+            -- stop the humanoid auto-rotating back while we hold the facing
+            local ch = myChar()
+            local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+            if hum and hum.AutoRotate then hum.AutoRotate = false; bodyARDisabled = true end
             local dir = offsetDir(base, held.body.yaw)
             root.CFrame = CFrame.lookAt(root.Position, root.Position + dir)
         end
@@ -3685,6 +3690,14 @@ local function releaseHold()
     held.cam, held.body = nil, nil
     state.techCamOverride = false
     state.techBodyOverride = false
+    -- hand auto-rotate back if a Rotate step took it (lockon/shiftlock re-manage
+    -- it next frame if they're active, since the override flags are now clear).
+    if bodyARDisabled then
+        local ch = myChar()
+        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+        if hum then hum.AutoRotate = true end
+        bodyARDisabled = false
+    end
     -- no Lock-On to re-aim us? snap the camera back to where we started.
     if not (state.lockon_enabled and state.target) and startCamLook then
         local cam = Workspace.CurrentCamera
