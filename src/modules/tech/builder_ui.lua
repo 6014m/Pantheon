@@ -522,7 +522,7 @@ local function ensureGui()
     formScroll.BorderSizePixel = 0
     formScroll.ScrollBarThickness = 4
     formScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-    formScroll.AutomaticCanvasSize = Enum.AutomaticCanvasSize.Y
+    formScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y   -- value type is AutomaticSize; "Enum.AutomaticCanvasSize" does not exist
     formScroll.Parent = rootFrame
     local fl = Instance.new("UIListLayout", formScroll)
     fl.SortOrder = Enum.SortOrder.LayoutOrder
@@ -550,15 +550,7 @@ function Builder.open(existingTech)
     if not ok then
         warn("[Pantheon] Tech Builder open error: " .. tostring(err))
         pcall(function() notify.warn("Tech Builder error: " .. tostring(err), 8) end)
-        return
     end
-    -- diagnostic: how many rows did the form actually get + is the scroll real
-    local n = (formScroll and #formScroll:GetChildren()) or -1
-    print(("[Pantheon] TechBuilder opened: formChildren=%d formScroll=%s rootVisible=%s parent=%s")
-        :format(n,
-            tostring(formScroll ~= nil),
-            tostring(rootFrame and rootFrame.Visible),
-            tostring(gui and gui.Parent and gui.Parent.ClassName)))
 end
 
 function Builder.close()

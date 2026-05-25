@@ -599,8 +599,11 @@ local function step()
         -- pair mode doesn't call applyLock(), so drive our shiftlock icon here so it
         -- shows while the paired shiftlock is active...
         if self_state.vIcon then self_state.vIcon.Visible = state.shiftlock_active end
-        -- ...and keep the GAME's own shiftlock icon hidden so only ours shows.
-        if state.shiftlock_active then
+        -- ...and keep the GAME's own shiftlock icon hidden the WHOLE time Pantheon
+        -- shiftlock is enabled (not just while actively locking) -- some games show
+        -- their shiftlock icon as a persistent indicator even when not in
+        -- LockCenter, so gating on shiftlock_active left it visible.
+        if state.shiftlock_enabled then
             enforceShiftlockHidden()
             self_state.iconsHidden = true
         elseif self_state.iconsHidden then

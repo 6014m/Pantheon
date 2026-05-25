@@ -2838,8 +2838,11 @@ local function step()
         -- pair mode doesn't call applyLock(), so drive our shiftlock icon here so it
         -- shows while the paired shiftlock is active...
         if self_state.vIcon then self_state.vIcon.Visible = state.shiftlock_active end
-        -- ...and keep the GAME's own shiftlock icon hidden so only ours shows.
-        if state.shiftlock_active then
+        -- ...and keep the GAME's own shiftlock icon hidden the WHOLE time Pantheon
+        -- shiftlock is enabled (not just while actively locking) -- some games show
+        -- their shiftlock icon as a persistent indicator even when not in
+        -- LockCenter, so gating on shiftlock_active left it visible.
+        if state.shiftlock_enabled then
             enforceShiftlockHidden()
             self_state.iconsHidden = true
         elseif self_state.iconsHidden then
@@ -4572,7 +4575,7 @@ local function ensureGui()
     formScroll.BorderSizePixel = 0
     formScroll.ScrollBarThickness = 4
     formScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-    formScroll.AutomaticCanvasSize = Enum.AutomaticCanvasSize.Y
+    formScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y   -- value type is AutomaticSize; "Enum.AutomaticCanvasSize" does not exist
     formScroll.Parent = rootFrame
     local fl = Instance.new("UIListLayout", formScroll)
     fl.SortOrder = Enum.SortOrder.LayoutOrder
@@ -4600,15 +4603,7 @@ function Builder.open(existingTech)
     if not ok then
         warn("[Pantheon] Tech Builder open error: " .. tostring(err))
         pcall(function() notify.warn("Tech Builder error: " .. tostring(err), 8) end)
-        return
     end
-    -- diagnostic: how many rows did the form actually get + is the scroll real
-    local n = (formScroll and #formScroll:GetChildren()) or -1
-    print(("[Pantheon] TechBuilder opened: formChildren=%d formScroll=%s rootVisible=%s parent=%s")
-        :format(n,
-            tostring(formScroll ~= nil),
-            tostring(rootFrame and rootFrame.Visible),
-            tostring(gui and gui.Parent and gui.Parent.ClassName)))
 end
 
 function Builder.close()
