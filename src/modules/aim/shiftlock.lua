@@ -341,6 +341,8 @@ local iconScanT = 0
 
 -- (re)scan PlayerGui for shiftlock-named GUIs, recording any new ones with their
 -- original value (so we can restore later). Throttled by the caller.
+local function nameClean(s) return (s and (s:lower():gsub("%s", ""))) or "" end
+local lastIconLog = 0
 local function scanShiftlockIcons()
     local pg = lp():FindFirstChildOfClass("PlayerGui")
     if not pg then return end
@@ -348,13 +350,24 @@ local function scanShiftlockIcons()
     for _, e in ipairs(hiddenStore) do known[e[1]] = true end
     for _, gobj in ipairs(pg:GetDescendants()) do
         local isSG = gobj:IsA("ScreenGui")
-        if (isSG or gobj:IsA("GuiObject"))
-           and string.find(gobj.Name:lower():gsub("%s", ""), "shiftlock")
-           and not known[gobj] then
-            local prop = isSG and "Enabled" or "Visible"
-            local ok, cur = pcall(function() return gobj[prop] end)
-            if ok then hiddenStore[#hiddenStore + 1] = { gobj, prop, cur } end
+        if (isSG or gobj:IsA("GuiObject")) and not known[gobj] then
+            -- match the element's own name OR its parent's name (the icon image
+            -- 'Lock' lives inside a 'ShiftLock' container -- catch both).
+            local hit = (string.find(nameClean(gobj.Name), "shiftlock") ~= nil)
+                or (gobj.Parent and string.find(nameClean(gobj.Parent.Name), "shiftlock") ~= nil)
+            if hit then
+                local prop = isSG and "Enabled" or "Visible"
+                local ok, cur = pcall(function() return gobj[prop] end)
+                if ok then hiddenStore[#hiddenStore + 1] = { gobj, prop, cur } end
+            end
         end
+    end
+    -- diagnostic: confirm whether we're actually finding JJS's icon (F9 console)
+    if os.clock() - lastIconLog > 3 then
+        lastIconLog = os.clock()
+        local names = {}
+        for _, e in ipairs(hiddenStore) do names[#names + 1] = e[1].Name end
+        log.info("shiftlock icon-hide: " .. #hiddenStore .. " element(s) [" .. table.concat(names, ", ") .. "]")
     end
 end
 

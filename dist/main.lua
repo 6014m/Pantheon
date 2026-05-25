@@ -2580,6 +2580,8 @@ local iconScanT = 0
 
 -- (re)scan PlayerGui for shiftlock-named GUIs, recording any new ones with their
 -- original value (so we can restore later). Throttled by the caller.
+local function nameClean(s) return (s and (s:lower():gsub("%s", ""))) or "" end
+local lastIconLog = 0
 local function scanShiftlockIcons()
     local pg = lp():FindFirstChildOfClass("PlayerGui")
     if not pg then return end
@@ -2587,13 +2589,24 @@ local function scanShiftlockIcons()
     for _, e in ipairs(hiddenStore) do known[e[1]] = true end
     for _, gobj in ipairs(pg:GetDescendants()) do
         local isSG = gobj:IsA("ScreenGui")
-        if (isSG or gobj:IsA("GuiObject"))
-           and string.find(gobj.Name:lower():gsub("%s", ""), "shiftlock")
-           and not known[gobj] then
-            local prop = isSG and "Enabled" or "Visible"
-            local ok, cur = pcall(function() return gobj[prop] end)
-            if ok then hiddenStore[#hiddenStore + 1] = { gobj, prop, cur } end
+        if (isSG or gobj:IsA("GuiObject")) and not known[gobj] then
+            -- match the element's own name OR its parent's name (the icon image
+            -- 'Lock' lives inside a 'ShiftLock' container -- catch both).
+            local hit = (string.find(nameClean(gobj.Name), "shiftlock") ~= nil)
+                or (gobj.Parent and string.find(nameClean(gobj.Parent.Name), "shiftlock") ~= nil)
+            if hit then
+                local prop = isSG and "Enabled" or "Visible"
+                local ok, cur = pcall(function() return gobj[prop] end)
+                if ok then hiddenStore[#hiddenStore + 1] = { gobj, prop, cur } end
+            end
         end
+    end
+    -- diagnostic: confirm whether we're actually finding JJS's icon (F9 console)
+    if os.clock() - lastIconLog > 3 then
+        lastIconLog = os.clock()
+        local names = {}
+        for _, e in ipairs(hiddenStore) do names[#names + 1] = e[1].Name end
+        log.info("shiftlock icon-hide: " .. #hiddenStore .. " element(s) [" .. table.concat(names, ", ") .. "]")
     end
 end
 
@@ -3745,6 +3758,7 @@ local bound = false
 local held = { cam = nil, body = nil }   -- each = { yaw, pitch } degrees, target-relative
 local startCamLook                        -- camera LookVector at tech start (no-target fallback)
 local bodyARDisabled = false              -- did a Rotate step turn off Humanoid.AutoRotate?
+local techAlign, techAttach               -- rigid AlignOrientation body-rotate (same type as Lock-On+)
 
 -- ===== geometry =====
 local function myChar() return LP.Character end
@@ -3776,6 +3790,27 @@ local function bodyBaseFlat()
     return Vector3.zAxis
 end
 
+-- Lock-On+ (rotation_lock) faces the body with a rigid AlignOrientation; the
+-- Rotate action reuses that exact mechanism (its own instance so it doesn't fight
+-- rotation_lock's) for identical feel/replication instead of a raw CFrame snap.
+local function ensureBodyConstraint(root)
+    if not techAttach or not techAttach.Parent then
+        techAttach = Instance.new("Attachment")
+        techAttach.Name = "PantheonTechAlignAtt"
+        techAttach.Parent = root
+    end
+    if not techAlign or not techAlign.Parent then
+        techAlign = Instance.new("AlignOrientation")
+        techAlign.Name = "PantheonTechAlign"
+        techAlign.Mode = Enum.OrientationAlignmentMode.OneAttachment
+        techAlign.Attachment0 = techAttach
+        techAlign.RigidityEnabled = true
+        techAlign.Responsiveness = 200
+        techAlign.MaxTorque = math.huge
+        techAlign.Parent = root
+    end
+end
+
 local function renderHold()
     if held.cam then
         local cam = Workspace.CurrentCamera
@@ -3796,7 +3831,13 @@ local function renderHold()
             local hum = ch and ch:FindFirstChildOfClass("Humanoid")
             if hum and hum.AutoRotate then hum.AutoRotate = false; bodyARDisabled = true end
             local dir = offsetDir(base, held.body.yaw)
-            root.CFrame = CFrame.lookAt(root.Position, root.Position + dir)
+            -- same rotation type as Lock-On+: rigid AlignOrientation + CFrame nudge
+            ensureBodyConstraint(root)
+            techAlign.Enabled = true
+            techAlign.CFrame = CFrame.lookAt(Vector3.zero, dir)
+            local cf = CFrame.lookAt(root.Position, root.Position + dir)
+            local _, yAngle = cf:ToEulerAnglesYXZ()
+            root.CFrame = CFrame.new(root.Position) * CFrame.Angles(0, yAngle, 0)
         end
     end
 end
@@ -3813,6 +3854,7 @@ local function releaseHold()
         if hum then hum.AutoRotate = true end
         bodyARDisabled = false
     end
+    if techAlign then techAlign.Enabled = false end
     -- no Lock-On to re-aim us? snap the camera back to where we started.
     if not (state.lockon_enabled and state.target) and startCamLook then
         local cam = Workspace.CurrentCamera
@@ -4045,6 +4087,8 @@ function Engine.destroy()
     for _, list in pairs(conns) do for _, c in ipairs(list) do pcall(function() c:Disconnect() end) end end
     conns = {}
     releaseHold()
+    if techAlign then pcall(function() techAlign:Destroy() end); techAlign = nil end
+    if techAttach then pcall(function() techAttach:Destroy() end); techAttach = nil end
 end
 
 return Engine
