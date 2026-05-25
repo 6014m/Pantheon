@@ -4145,13 +4145,26 @@ local function ancestorSkill(inst)
     return false
 end
 
--- Returns { services = {serviceName,...}, buttons = { {button, name, text, move, key, score}, ... } }
+-- on screen = the button AND every GuiObject ancestor is Visible -- so we skip
+-- buttons sitting in a CLOSED menu (e.g. the emote list with "conga").
+local function onScreen(d)
+    local cur = d
+    while cur and cur:IsA("GuiObject") do
+        if not cur.Visible then return false end
+        cur = cur.Parent
+    end
+    return true
+end
+
+-- Detect MOVE-BAR slots from the GUI itself (not service names, which over-match
+-- emotes/animations like "conga"): the button is on screen and carries a single
+-- capital-letter KEYBIND label (Z / X / C / R / ...), plus a cooldown child or a
+-- skill-bar ancestor. Service names are used ONLY to label a match, never to flag.
+-- Returns { services = {...}, buttons = { {button, name, text, move, key}, ... } }
 function Scanner.scan()
     local LP = Players.LocalPlayer
     local pg = LP:FindFirstChildOfClass("PlayerGui")
     local services = Scanner.moveServices()
-
-    -- stems for matching button names/text to a service (strip trailing "Service")
     local stems = {}
     for _, svc in ipairs(services) do
         local stem = clean((svc:gsub("Service$", "")))
@@ -4161,37 +4174,34 @@ function Scanner.scan()
     local buttons = {}
     if pg then
         for _, d in ipairs(pg:GetDescendants()) do
-            if d:IsA("TextButton") or d:IsA("ImageButton") then
-                local nm  = clean(d.Name)
-                local txt = clean((d:IsA("TextButton") and d.Text) or "")
-                local score, matched = 0, nil
-                for stem, svc in pairs(stems) do
-                    if nm:find(stem, 1, true) or (txt ~= "" and txt:find(stem, 1, true)) then
-                        score, matched = score + 5, svc; break
-                    end
-                end
-                if ancestorSkill(d) then score = score + 2 end
-                -- a keybind letter / cooldown label hints at a move button
-                local keyHint
+            if (d:IsA("TextButton") or d:IsA("ImageButton")) and onScreen(d) then
+                local keyHint, hasCD = nil, false
                 for _, c in ipairs(d:GetDescendants()) do
-                    local cn = clean(c.Name)
-                    if cn:find("cooldown") or cn:find("keybind") or cn == "cd" or cn == "key" then
-                        score = score + 1
-                        if c:IsA("TextLabel") and #c.Text > 0 and #c.Text <= 3 then keyHint = c.Text end
+                    if not keyHint and c:IsA("TextLabel") then
+                        local t = c.Text
+                        if t and t:match("^%u$") then keyHint = t end   -- single capital = keybind letter
+                    end
+                    if not hasCD then
+                        local cn = clean(c.Name)
+                        if cn:find("cooldown") or cn == "cd" then hasCD = true end
                     end
                 end
-                if score >= 3 then
+                if keyHint and (hasCD or ancestorSkill(d)) then
+                    local nm  = clean(d.Name)
+                    local txt = clean((d:IsA("TextButton") and d.Text) or "")
+                    local move
+                    for stem, svc in pairs(stems) do
+                        if nm:find(stem, 1, true) or (txt ~= "" and txt:find(stem, 1, true)) then move = svc; break end
+                    end
                     buttons[#buttons + 1] = {
                         button = d, name = d.Name,
                         text = (d:IsA("TextButton") and d.Text) or "",
-                        move = matched, key = keyHint, score = score,
+                        move = move, key = keyHint,
                     }
                 end
             end
         end
-        table.sort(buttons, function(a, b) return a.score > b.score end)
     end
-
     cached = { services = services, buttons = buttons }
     return cached
 end
@@ -5013,10 +5023,13 @@ function module.register()
 
     -- "Scan Moves": detect the game's move buttons so you know what moves you can
     -- build techs around. Results listed below.
-    local resultsFrame = Instance.new("Frame")
-    resultsFrame.Size = UDim2.new(1, 0, 0, 0)
-    resultsFrame.AutomaticSize = Enum.AutomaticSize.Y
+    local resultsFrame = Instance.new("ScrollingFrame")
+    resultsFrame.Size = UDim2.new(1, 0, 0, 0)   -- height set (and capped) when populated
     resultsFrame.BackgroundTransparency = 1
+    resultsFrame.BorderSizePixel = 0
+    resultsFrame.ScrollBarThickness = 4
+    resultsFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+    resultsFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
     resultsFrame.LayoutOrder = 3
     resultsFrame.Parent = holder
     local rl = Instance.new("UIListLayout", resultsFrame)
@@ -5033,16 +5046,17 @@ function module.register()
         local function place2(inst) ord2 = ord2 + 1; inst.LayoutOrder = ord2; return inst end
         place2(components.Section(resultsFrame, "Detected moves (" .. n .. ")"))
         if n == 0 then
-            place2(components.Label(resultsFrame, "No move buttons found. " ..
-                (#res.services .. " move services exist; use 'move used' trigger.")))
+            place2(components.Label(resultsFrame, "No move bar found - open/equip your moves, then Scan."))
         else
             for _, b in ipairs(res.buttons) do
                 local label = (b.text ~= "" and b.text) or b.name
-                if b.move then label = label .. "  -> " .. b.move end
                 if b.key then label = label .. "  [" .. b.key .. "]" end
                 place2(components.Label(resultsFrame, "- " .. label))
             end
         end
+        -- cap the panel height so it scrolls instead of overlapping the menu
+        local shown = #resultsFrame:GetChildren() - 1   -- minus the UIListLayout
+        resultsFrame.Size = UDim2.new(1, 0, 0, math.min(150, math.max(1, shown) * 20))
         log.info("scan: " .. n .. " move button(s), " .. #res.services .. " move service(s)")
         pcall(function() notify.info("Scan: " .. n .. " move button(s) found", 4) end)
     end

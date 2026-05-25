@@ -160,10 +160,13 @@ function module.register()
 
     -- "Scan Moves": detect the game's move buttons so you know what moves you can
     -- build techs around. Results listed below.
-    local resultsFrame = Instance.new("Frame")
-    resultsFrame.Size = UDim2.new(1, 0, 0, 0)
-    resultsFrame.AutomaticSize = Enum.AutomaticSize.Y
+    local resultsFrame = Instance.new("ScrollingFrame")
+    resultsFrame.Size = UDim2.new(1, 0, 0, 0)   -- height set (and capped) when populated
     resultsFrame.BackgroundTransparency = 1
+    resultsFrame.BorderSizePixel = 0
+    resultsFrame.ScrollBarThickness = 4
+    resultsFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+    resultsFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
     resultsFrame.LayoutOrder = 3
     resultsFrame.Parent = holder
     local rl = Instance.new("UIListLayout", resultsFrame)
@@ -180,16 +183,17 @@ function module.register()
         local function place2(inst) ord2 = ord2 + 1; inst.LayoutOrder = ord2; return inst end
         place2(components.Section(resultsFrame, "Detected moves (" .. n .. ")"))
         if n == 0 then
-            place2(components.Label(resultsFrame, "No move buttons found. " ..
-                (#res.services .. " move services exist; use 'move used' trigger.")))
+            place2(components.Label(resultsFrame, "No move bar found - open/equip your moves, then Scan."))
         else
             for _, b in ipairs(res.buttons) do
                 local label = (b.text ~= "" and b.text) or b.name
-                if b.move then label = label .. "  -> " .. b.move end
                 if b.key then label = label .. "  [" .. b.key .. "]" end
                 place2(components.Label(resultsFrame, "- " .. label))
             end
         end
+        -- cap the panel height so it scrolls instead of overlapping the menu
+        local shown = #resultsFrame:GetChildren() - 1   -- minus the UIListLayout
+        resultsFrame.Size = UDim2.new(1, 0, 0, math.min(150, math.max(1, shown) * 20))
         log.info("scan: " .. n .. " move button(s), " .. #res.services .. " move service(s)")
         pcall(function() notify.info("Scan: " .. n .. " move button(s) found", 4) end)
     end
