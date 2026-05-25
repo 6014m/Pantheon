@@ -97,6 +97,23 @@ local function nextPreset(list, cur)
     return list[1]
 end
 
+-- A hotbar keybind label is often a DIGIT ("1".."9") but Enum.KeyCode has no "1"
+-- member -- it's "One" -- and Enum.KeyCode["1"] THROWS. Map digits to their names
+-- and look up safely so a numbered move key can't blow up the form.
+local DIGIT_NAMES = { ["0"]="Zero",["1"]="One",["2"]="Two",["3"]="Three",["4"]="Four",
+                      ["5"]="Five",["6"]="Six",["7"]="Seven",["8"]="Eight",["9"]="Nine" }
+local function keyNameNorm(hint)
+    if not hint then return nil end
+    hint = tostring(hint)
+    return DIGIT_NAMES[hint] or hint
+end
+local function toKeyCode(name)
+    name = keyNameNorm(name)
+    if not name then return nil end
+    local ok, kc = pcall(function() return Enum.KeyCode[name] end)
+    return ok and kc or nil
+end
+
 -- ---------- draft <-> tech ----------
 local function newDraft()
     return { name = "New Tech", scope = "game", event = "key",
@@ -415,17 +432,17 @@ rebuild = function()
             end
             if not draft.move then
                 draft.move = moveset[1].name
-                if moveset[1].key and not draft.movekey then draft.movekey = moveset[1].key end
+                if moveset[1].key and not draft.movekey then draft.movekey = keyNameNorm(moveset[1].key) end
             end
             local idx = 1
             for i, b in ipairs(moveset) do if b.name == draft.move then idx = i end end
             place(cycleRow(formScroll, "Move", labels, idx, function(i)
                 draft.move = moveset[i].name
-                if moveset[i].key then draft.movekey = moveset[i].key end
+                if moveset[i].key then draft.movekey = keyNameNorm(moveset[i].key) end
                 rebuild()
             end))
             place(wrap(28, function(p)
-                local def = (draft.movekey and Enum.KeyCode[draft.movekey]) or Enum.KeyCode.Unknown
+                local def = toKeyCode(draft.movekey) or Enum.KeyCode.Unknown
                 components.KeybindSetter(p, { label = "Move key", default = def,
                     onChange = function(k)
                         draft.movekey = (k and k ~= Enum.KeyCode.Unknown) and (tostring(k):gsub("Enum.KeyCode.", "")) or nil

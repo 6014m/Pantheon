@@ -172,12 +172,24 @@ CONDITIONS.locked_on = function() return state.target ~= nil end
 CONDITIONS.shiftlock = function() return state.shiftlock_active == true end
 Engine.CONDITIONS = CONDITIONS
 
+-- A move key hint can be a DIGIT ("1".."9") but Enum.KeyCode["1"] THROWS (the
+-- member is "One"). Map digits to names and look up safely so a numbered move key
+-- never errors out wiring/dispatch.
+local DIGIT_NAMES = { ["0"]="Zero",["1"]="One",["2"]="Two",["3"]="Three",["4"]="Four",
+                      ["5"]="Five",["6"]="Six",["7"]="Seven",["8"]="Eight",["9"]="Nine" }
+local function safeKeyCode(name)
+    if not name then return nil end
+    name = DIGIT_NAMES[tostring(name)] or name
+    local ok, kc = pcall(function() return Enum.KeyCode[name] end)
+    return ok and kc or nil
+end
+
 -- optional modifier key that must be HELD for a key/move trigger to fire
 -- (e.g. hold A + press Q). trigger.modkey is the short key name, or nil.
 local function modifierHeld(tech)
     local m = tech.trigger and tech.trigger.modkey
     if not m then return true end
-    local kc = Enum.KeyCode[m]
+    local kc = safeKeyCode(m)
     return kc ~= nil and UIS:IsKeyDown(kc)
 end
 
@@ -422,7 +434,7 @@ end
 -- exactly like a key trigger, so it lands on keydown.
 local function wireMove(tech)
     local keyName = tech.trigger.movekey
-    local kc = keyName and Enum.KeyCode[keyName]
+    local kc = keyName and safeKeyCode(keyName)
     if not kc or kc == Enum.KeyCode.Unknown then
         log.warn("[tech] '" .. tostring(tech.name) .. "': move trigger has no key set -- pick the move's key")
         return

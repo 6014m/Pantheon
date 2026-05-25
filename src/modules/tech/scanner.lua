@@ -65,10 +65,12 @@ local function indicators(b)
     return keyHint, hasCD
 end
 
--- A NAMED move slot: a button carrying a label like ToolName / MoveName / Name
--- with a real move name (not "N/A"/empty), plus optionally a Number/keybind label.
+-- A NAMED move slot: a button carrying a label like ToolName / MoveName with a
+-- real move name (not "N/A"/empty), plus optionally a Number/keybind label.
 -- Strongest, cleanest signal -- e.g. TSB hotbar slots have ToolName + Number.
-local NAME_KW = { "toolname", "movename", "abilityname", "skillname", "displayname", "ability", "skill", "name" }
+-- Keywords are SPECIFIC compounds on purpose: a bare "name"/"displayname" matched
+-- player-list / leaderboard labels, so whole players showed up as "moves".
+local NAME_KW = { "toolname", "movename", "abilityname", "skillname", "moveslot", "skillslot" }
 local KEY_KW  = { "number", "keybind", "bind", "input", "key", "slot" }
 local function slotLabels(b)
     local moveName, keyHint

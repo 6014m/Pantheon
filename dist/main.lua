@@ -3945,12 +3945,24 @@ CONDITIONS.locked_on = function() return state.target ~= nil end
 CONDITIONS.shiftlock = function() return state.shiftlock_active == true end
 Engine.CONDITIONS = CONDITIONS
 
+-- A move key hint can be a DIGIT ("1".."9") but Enum.KeyCode["1"] THROWS (the
+-- member is "One"). Map digits to names and look up safely so a numbered move key
+-- never errors out wiring/dispatch.
+local DIGIT_NAMES = { ["0"]="Zero",["1"]="One",["2"]="Two",["3"]="Three",["4"]="Four",
+                      ["5"]="Five",["6"]="Six",["7"]="Seven",["8"]="Eight",["9"]="Nine" }
+local function safeKeyCode(name)
+    if not name then return nil end
+    name = DIGIT_NAMES[tostring(name)] or name
+    local ok, kc = pcall(function() return Enum.KeyCode[name] end)
+    return ok and kc or nil
+end
+
 -- optional modifier key that must be HELD for a key/move trigger to fire
 -- (e.g. hold A + press Q). trigger.modkey is the short key name, or nil.
 local function modifierHeld(tech)
     local m = tech.trigger and tech.trigger.modkey
     if not m then return true end
-    local kc = Enum.KeyCode[m]
+    local kc = safeKeyCode(m)
     return kc ~= nil and UIS:IsKeyDown(kc)
 end
 
@@ -4195,7 +4207,7 @@ end
 -- exactly like a key trigger, so it lands on keydown.
 local function wireMove(tech)
     local keyName = tech.trigger.movekey
-    local kc = keyName and Enum.KeyCode[keyName]
+    local kc = keyName and safeKeyCode(keyName)
     if not kc or kc == Enum.KeyCode.Unknown then
         log.warn("[tech] '" .. tostring(tech.name) .. "': move trigger has no key set -- pick the move's key")
         return
@@ -4442,10 +4454,12 @@ local function indicators(b)
     return keyHint, hasCD
 end
 
--- A NAMED move slot: a button carrying a label like ToolName / MoveName / Name
--- with a real move name (not "N/A"/empty), plus optionally a Number/keybind label.
+-- A NAMED move slot: a button carrying a label like ToolName / MoveName with a
+-- real move name (not "N/A"/empty), plus optionally a Number/keybind label.
 -- Strongest, cleanest signal -- e.g. TSB hotbar slots have ToolName + Number.
-local NAME_KW = { "toolname", "movename", "abilityname", "skillname", "displayname", "ability", "skill", "name" }
+-- Keywords are SPECIFIC compounds on purpose: a bare "name"/"displayname" matched
+-- player-list / leaderboard labels, so whole players showed up as "moves".
+local NAME_KW = { "toolname", "movename", "abilityname", "skillname", "moveslot", "skillslot" }
 local KEY_KW  = { "number", "keybind", "bind", "input", "key", "slot" }
 local function slotLabels(b)
     local moveName, keyHint
@@ -4737,6 +4751,23 @@ end
 local function nextPreset(list, cur)
     for i, v in ipairs(list) do if math.abs(v - (cur or 0)) < 1e-3 then return list[(i % #list) + 1] end end
     return list[1]
+end
+
+-- A hotbar keybind label is often a DIGIT ("1".."9") but Enum.KeyCode has no "1"
+-- member -- it's "One" -- and Enum.KeyCode["1"] THROWS. Map digits to their names
+-- and look up safely so a numbered move key can't blow up the form.
+local DIGIT_NAMES = { ["0"]="Zero",["1"]="One",["2"]="Two",["3"]="Three",["4"]="Four",
+                      ["5"]="Five",["6"]="Six",["7"]="Seven",["8"]="Eight",["9"]="Nine" }
+local function keyNameNorm(hint)
+    if not hint then return nil end
+    hint = tostring(hint)
+    return DIGIT_NAMES[hint] or hint
+end
+local function toKeyCode(name)
+    name = keyNameNorm(name)
+    if not name then return nil end
+    local ok, kc = pcall(function() return Enum.KeyCode[name] end)
+    return ok and kc or nil
 end
 
 -- ---------- draft <-> tech ----------
@@ -5057,17 +5088,17 @@ rebuild = function()
             end
             if not draft.move then
                 draft.move = moveset[1].name
-                if moveset[1].key and not draft.movekey then draft.movekey = moveset[1].key end
+                if moveset[1].key and not draft.movekey then draft.movekey = keyNameNorm(moveset[1].key) end
             end
             local idx = 1
             for i, b in ipairs(moveset) do if b.name == draft.move then idx = i end end
             place(cycleRow(formScroll, "Move", labels, idx, function(i)
                 draft.move = moveset[i].name
-                if moveset[i].key then draft.movekey = moveset[i].key end
+                if moveset[i].key then draft.movekey = keyNameNorm(moveset[i].key) end
                 rebuild()
             end))
             place(wrap(28, function(p)
-                local def = (draft.movekey and Enum.KeyCode[draft.movekey]) or Enum.KeyCode.Unknown
+                local def = toKeyCode(draft.movekey) or Enum.KeyCode.Unknown
                 components.KeybindSetter(p, { label = "Move key", default = def,
                     onChange = function(k)
                         draft.movekey = (k and k ~= Enum.KeyCode.Unknown) and (tostring(k):gsub("Enum.KeyCode.", "")) or nil
