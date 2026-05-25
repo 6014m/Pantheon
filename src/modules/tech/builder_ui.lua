@@ -29,9 +29,9 @@ local CONDITIONS = {
     { id = "locked_on", label = "Locked on"    },
     { id = "shiftlock", label = "Shiftlock on" },
 }
-local ACTION_TYPES = { "look", "rotate", "during", "wait", "return", "feature", "key" }
+local ACTION_TYPES = { "look", "rotate", "during", "wait", "within", "return", "feature", "key" }
 local STEP_LABEL   = { look = "Look", rotate = "Rotate", wait = "Wait", during = "During",
-                       ["return"] = "Return", feature = "Use", key = "Press" }
+                       within = "Within", ["return"] = "Return", feature = "Use", key = "Press" }
 local YAW_PRESETS  = { 180, 135, 90, 45, 0, -45, -90, -135, -180 }
 
 -- ---------- small helpers ----------
@@ -125,6 +125,7 @@ local function draftActions()
         if a.type == "look" then actions[#actions + 1] = { type = "look", x = a.x or 0, y = a.y or 0 }
         elseif a.type == "rotate" then actions[#actions + 1] = { type = "rotate", x = a.x or 0, y = a.y or 0 }
         elseif a.type == "wait" then actions[#actions + 1] = { type = "wait", seconds = a.seconds or 0.5 }
+        elseif a.type == "within" then actions[#actions + 1] = { type = "within", studs = a.studs or 5 }
         elseif a.type == "during" then actions[#actions + 1] = { type = "during" }
         elseif a.type == "return" then actions[#actions + 1] = { type = "return" }
         elseif a.type == "feature" then actions[#actions + 1] = { type = "feature", feature = a.feature }
@@ -228,6 +229,8 @@ local function previewDraft()
                 if releaseAfter then tweenYaw(0); releaseAfter = false end
             elseif a.type == "during" then
                 releaseAfter = true
+            elseif a.type == "within" then
+                task.wait(0.3)   -- can't gauge range in the preview; brief beat
             elseif a.type == "return" then
                 tweenYaw(0)
             end
@@ -256,6 +259,15 @@ local function buildChip(parent, i, act)
             local n = tonumber((val.Text:gsub("[^%d%.]", "")))
             if n then act.seconds = math.clamp(n, 0, 60) end
             val.Text = tostring(act.seconds or 0.5)
+        end)
+    elseif act.type == "within" then
+        -- wait here until the target is within this many studs, then continue
+        val = Instance.new("TextBox"); val.ClearTextOnFocus = false; val.PlaceholderText = "studs"
+        val.Text = tostring(act.studs or 5)
+        val.FocusLost:Connect(function()
+            local n = tonumber((val.Text:gsub("[^%d%.]", "")))
+            if n then act.studs = math.clamp(n, 0, 500) end
+            val.Text = tostring(act.studs or 5)
         end)
     elseif act.type == "key" then
         val = Instance.new("TextButton"); val.AutoButtonColor = false
@@ -379,9 +391,6 @@ rebuild = function()
     place(wrap(30, function(p) components.Toggle(p, { text = "Only while locked on",
         default = draft.conditions.locked_on == true,
         onChange = function(v) draft.conditions.locked_on = v or nil end }) end))
-    place(textRow(formScroll, "Within studs (0=any)", tostring(draft.maxRange or 0), function(t)
-        draft.maxRange = tonumber((t:gsub("[^%d%.]", ""))) or 0
-    end))
 
     place(components.Section(formScroll, "Steps - tap to add"))
     do
@@ -398,6 +407,7 @@ rebuild = function()
                 if t == "look" then a.x = 180; a.y = 0
                 elseif t == "rotate" then a.x = 180
                 elseif t == "wait" then a.seconds = 0.5
+                elseif t == "within" then a.studs = 5
                 elseif t == "feature" then local fa = feature.all(); a.feature = fa[1] and fa[1].id or nil end
                 draft.actions[#draft.actions + 1] = a; rebuild()
             end)

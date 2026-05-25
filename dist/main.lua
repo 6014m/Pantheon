@@ -2964,6 +2964,14 @@ local function step()
         return
     end
 
+    -- Knockback: don't pin facing while being launched fast with no movement input
+    -- -- the per-frame root.CFrame write fights / cancels the knockback (TSB). A
+    -- dash holds a direction (MoveDirection > 0) so it isn't caught.
+    if state.bgSafeEnabled and hum.MoveDirection.Magnitude < 0.1 then
+        local v = self_state.root.AssemblyLinearVelocity
+        if Vector3.new(v.X, 0, v.Z).Magnitude > (hum.WalkSpeed * 1.6 + 8) then return end
+    end
+
     local cam = workspace.CurrentCamera
     if not cam then return end
     local look = cam.CFrame.LookVector
@@ -3147,6 +3155,15 @@ local function bgSuppressed()
            or st == Enum.HumanoidStateType.Seated
            or SUPPRESS_STATES[st] then
             return true
+        end
+        -- Knockback: being launched fast with NO movement input. Our per-frame
+        -- root.CFrame write fights/cancels the knockback (TSB), so yield. A dash
+        -- holds a direction (MoveDirection > 0) so it's NOT caught here.
+        local char = Players.LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp and myHum.MoveDirection.Magnitude < 0.1 then
+            local v = hrp.AssemblyLinearVelocity
+            if Vector3.new(v.X, 0, v.Z).Magnitude > (myHum.WalkSpeed * 1.6 + 8) then return true end
         end
     end
     -- Intentionally NOT checking the target's state -- knockback briefly puts
@@ -3964,6 +3981,17 @@ local function runTech(tech, hold)
             elseif a.type == "wait" then
                 task.wait(a.seconds or a.x or 0.5)
                 if releaseAfterWait then releaseHold(); releaseAfterWait = false end
+            elseif a.type == "within" then
+                -- gate: hold here until the target is within `studs`, then continue
+                -- (e.g. rotate 90 -> Within 6 -> Use Rotation Lock -> side-dash).
+                -- 6s cap so it can't hang if you never close the distance.
+                local studs = tonumber(a.studs) or 5
+                local t0 = os.clock()
+                while os.clock() - t0 < 6 do
+                    local mr, tr = myRoot(), targetRoot()
+                    if mr and tr and (tr.Position - mr.Position).Magnitude <= studs then break end
+                    task.wait(0.05)
+                end
             else
                 local fn = ACTIONS[a.type]
                 if fn then local ok, err = pcall(fn, a); if not ok then log.warn("[tech] action " .. tostring(a.type) .. ": " .. tostring(err)) end end
@@ -4302,6 +4330,92 @@ function Scanner.cached() return cached end
 return Scanner
 end
 
+_MODULES["modules.tech.dumper"] = function()
+-- Raw GUI + animation dumps, written to files, so move-bar detection and
+-- move->animation mapping can be set up CORRECTLY per game instead of guessed.
+-- Run in-game, then send the files:
+--   pantheon_gui_dump.txt   -- every on-screen button (name/text/size/pos/path/children)
+--   pantheon_anim_dump.txt  -- each animation you play (id + asset name)
+
+local Players = game:GetService("Players")
+local MPS     = game:GetService("MarketplaceService")
+
+local Dumper = {}
+local LP = Players.LocalPlayer
+local hasWrite = (typeof(writefile) == "function")
+
+function Dumper.dumpGui()
+    local pg = LP:FindFirstChildOfClass("PlayerGui")
+    local lines = { "=== Pantheon GUI dump ===" }
+    local n = 0
+    if pg then
+        for _, sg in ipairs(pg:GetChildren()) do
+            if sg:IsA("LayerCollector") or sg:IsA("GuiObject") or sg:IsA("Folder") then
+                lines[#lines + 1] = "[" .. sg.ClassName .. "] " .. sg.Name ..
+                    (sg:IsA("ScreenGui") and (" enabled=" .. tostring(sg.Enabled)) or "")
+                local ok, descs = pcall(function() return sg:GetDescendants() end)
+                if ok then
+                    for _, d in ipairs(descs) do
+                        if d:IsA("TextButton") or d:IsA("ImageButton") then
+                            n = n + 1
+                            local parts, cur = {}, d
+                            while cur and cur ~= sg do table.insert(parts, 1, cur.Name); cur = cur.Parent end
+                            local kids = {}
+                            for _, c in ipairs(d:GetDescendants()) do
+                                if c:IsA("TextLabel") then kids[#kids + 1] = "Lbl:" .. c.Name .. "='" .. tostring(c.Text) .. "'"
+                                elseif c:IsA("ImageLabel") then kids[#kids + 1] = "Img:" .. c.Name end
+                            end
+                            lines[#lines + 1] = ("  %s '%s' txt='%s' size=%s pos=%s vis=%s img=%s\n      path=%s\n      kids=[%s]")
+                                :format(d.ClassName, d.Name, (d:IsA("TextButton") and d.Text or ""),
+                                    tostring(d.AbsoluteSize), tostring(d.AbsolutePosition), tostring(d.Visible),
+                                    (d:IsA("ImageButton") and d.Image or "-"),
+                                    table.concat(parts, "/"), table.concat(kids, ", "))
+                        end
+                    end
+                end
+            end
+        end
+    end
+    local out = table.concat(lines, "\n")
+    if hasWrite then pcall(writefile, "pantheon_gui_dump.txt", out) end
+    print(out)
+    return n
+end
+
+local animConn, animLines, animSeen
+function Dumper.animActive() return animConn ~= nil end
+
+-- Toggle animation logging. While on, every NEW animation you play is appended to
+-- pantheon_anim_dump.txt (id + asset name). Use each move once to capture it.
+function Dumper.toggleAnims()
+    if animConn then pcall(function() animConn:Disconnect() end); animConn = nil; return false end
+    animLines, animSeen = { "=== Pantheon animation dump (use each move once) ===" }, {}
+    local function hook(char)
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local animator = hum and hum:FindFirstChildOfClass("Animator")
+        if not animator then return end
+        animConn = animator.AnimationPlayed:Connect(function(track)
+            local id = track.Animation and track.Animation.AnimationId
+            if not id or id == "" or animSeen[id] then return end
+            animSeen[id] = true
+            local name = ""
+            local num = tonumber(string.match(id, "%d+"))
+            if num then
+                local ok, info = pcall(function() return MPS:GetProductInfo(num) end)
+                if ok and info and info.Name then name = info.Name end
+            end
+            animLines[#animLines + 1] = id .. "   " .. name
+            if hasWrite then pcall(writefile, "pantheon_anim_dump.txt", table.concat(animLines, "\n")) end
+            print("[anim] " .. id .. "  " .. name)
+        end)
+    end
+    hook(LP.Character)
+    return true
+end
+
+return Dumper
+end
+
 _MODULES["modules.tech.builder_ui"] = function()
 -- Tech Builder editor window -- JJS-skill-builder style, two panes:
 --   LEFT  = the tech form (name, trigger, conditions, step palette + chips).
@@ -4334,9 +4448,9 @@ local CONDITIONS = {
     { id = "locked_on", label = "Locked on"    },
     { id = "shiftlock", label = "Shiftlock on" },
 }
-local ACTION_TYPES = { "look", "rotate", "during", "wait", "return", "feature", "key" }
+local ACTION_TYPES = { "look", "rotate", "during", "wait", "within", "return", "feature", "key" }
 local STEP_LABEL   = { look = "Look", rotate = "Rotate", wait = "Wait", during = "During",
-                       ["return"] = "Return", feature = "Use", key = "Press" }
+                       within = "Within", ["return"] = "Return", feature = "Use", key = "Press" }
 local YAW_PRESETS  = { 180, 135, 90, 45, 0, -45, -90, -135, -180 }
 
 -- ---------- small helpers ----------
@@ -4430,6 +4544,7 @@ local function draftActions()
         if a.type == "look" then actions[#actions + 1] = { type = "look", x = a.x or 0, y = a.y or 0 }
         elseif a.type == "rotate" then actions[#actions + 1] = { type = "rotate", x = a.x or 0, y = a.y or 0 }
         elseif a.type == "wait" then actions[#actions + 1] = { type = "wait", seconds = a.seconds or 0.5 }
+        elseif a.type == "within" then actions[#actions + 1] = { type = "within", studs = a.studs or 5 }
         elseif a.type == "during" then actions[#actions + 1] = { type = "during" }
         elseif a.type == "return" then actions[#actions + 1] = { type = "return" }
         elseif a.type == "feature" then actions[#actions + 1] = { type = "feature", feature = a.feature }
@@ -4533,6 +4648,8 @@ local function previewDraft()
                 if releaseAfter then tweenYaw(0); releaseAfter = false end
             elseif a.type == "during" then
                 releaseAfter = true
+            elseif a.type == "within" then
+                task.wait(0.3)   -- can't gauge range in the preview; brief beat
             elseif a.type == "return" then
                 tweenYaw(0)
             end
@@ -4561,6 +4678,15 @@ local function buildChip(parent, i, act)
             local n = tonumber((val.Text:gsub("[^%d%.]", "")))
             if n then act.seconds = math.clamp(n, 0, 60) end
             val.Text = tostring(act.seconds or 0.5)
+        end)
+    elseif act.type == "within" then
+        -- wait here until the target is within this many studs, then continue
+        val = Instance.new("TextBox"); val.ClearTextOnFocus = false; val.PlaceholderText = "studs"
+        val.Text = tostring(act.studs or 5)
+        val.FocusLost:Connect(function()
+            local n = tonumber((val.Text:gsub("[^%d%.]", "")))
+            if n then act.studs = math.clamp(n, 0, 500) end
+            val.Text = tostring(act.studs or 5)
         end)
     elseif act.type == "key" then
         val = Instance.new("TextButton"); val.AutoButtonColor = false
@@ -4684,9 +4810,6 @@ rebuild = function()
     place(wrap(30, function(p) components.Toggle(p, { text = "Only while locked on",
         default = draft.conditions.locked_on == true,
         onChange = function(v) draft.conditions.locked_on = v or nil end }) end))
-    place(textRow(formScroll, "Within studs (0=any)", tostring(draft.maxRange or 0), function(t)
-        draft.maxRange = tonumber((t:gsub("[^%d%.]", ""))) or 0
-    end))
 
     place(components.Section(formScroll, "Steps - tap to add"))
     do
@@ -4703,6 +4826,7 @@ rebuild = function()
                 if t == "look" then a.x = 180; a.y = 0
                 elseif t == "rotate" then a.x = 180
                 elseif t == "wait" then a.seconds = 0.5
+                elseif t == "within" then a.studs = 5
                 elseif t == "feature" then local fa = feature.all(); a.feature = fa[1] and fa[1].id or nil end
                 draft.actions[#draft.actions + 1] = a; rebuild()
             end)
@@ -4870,6 +4994,7 @@ local notify     = require("ui.notify")
 local engine     = require("modules.tech.engine")
 local builder    = require("modules.tech.builder_ui")
 local scanner    = require("modules.tech.scanner")
+local dumper     = require("modules.tech.dumper")
 local log        = require("core.log")
 
 local module = {}
@@ -5011,57 +5136,33 @@ function module.register()
     })
     openBtn.LayoutOrder = 1
 
-    -- "Scan Moves": detect the game's move buttons so you know what moves you can
-    -- build techs around. Results listed below.
-    local resultsFrame = Instance.new("ScrollingFrame")
-    resultsFrame.Size = UDim2.new(1, 0, 0, 0)   -- height set (and capped) when populated
-    resultsFrame.BackgroundTransparency = 1
-    resultsFrame.BorderSizePixel = 0
-    resultsFrame.ScrollBarThickness = 4
-    resultsFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
-    resultsFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    resultsFrame.LayoutOrder = 3
-    resultsFrame.Parent = holder
-    local rl = Instance.new("UIListLayout", resultsFrame)
-    rl.SortOrder = Enum.SortOrder.LayoutOrder
-    rl.Padding = UDim.new(0, 1)
+    -- Dev dumps: write raw GUI + animation data to files so move-bar detection and
+    -- move->animation mapping can be set up correctly per game (vs heuristics).
+    local status = components.Label(holder, "")
+    status.LayoutOrder = 4
+    status.Visible = false
 
-    local function showScan()
-        for _, c in ipairs(resultsFrame:GetChildren()) do
-            if not c:IsA("UIListLayout") then c:Destroy() end
-        end
-        local res = scanner.scan()
-        local n = #res.buttons
-        local ord2 = 0
-        local function place2(inst) ord2 = ord2 + 1; inst.LayoutOrder = ord2; return inst end
-        place2(components.Section(resultsFrame, "Detected moves (" .. n .. ")"))
-        if n == 0 then
-            place2(components.Label(resultsFrame, "No move bar found - open/equip your moves, then Scan."))
-            if res.diag and #res.diag > 0 then
-                place2(components.Label(resultsFrame, "clusters: " .. table.concat(res.diag, ", ")))
-            end
-        else
-            for _, b in ipairs(res.buttons) do
-                local label = (b.text ~= "" and b.text) or b.name
-                if b.key then label = label .. "  [" .. b.key .. "]" end
-                place2(components.Label(resultsFrame, "- " .. label))
-            end
-        end
-        -- cap the panel height so it scrolls instead of overlapping the menu
-        local shown = #resultsFrame:GetChildren() - 1   -- minus the UIListLayout
-        resultsFrame.Size = UDim2.new(1, 0, 0, math.min(150, math.max(1, shown) * 20))
-        log.info("scan: " .. n .. " move button(s), " .. #res.services .. " move service(s)")
-        pcall(function() notify.info("Scan: " .. n .. " move button(s) found", 4) end)
-    end
+    local dumpGuiBtn = components.Button(holder, { text = "Dump GUI (for setup)", onClick = function()
+        local n = dumper.dumpGui()
+        status.Visible = true
+        status.Text = "GUI dumped (" .. n .. " buttons) -> pantheon_gui_dump.txt"
+        pcall(function() notify.info("GUI dumped: " .. n .. " buttons", 4) end)
+    end })
+    dumpGuiBtn.LayoutOrder = 2
 
-    local scanBtn = components.Button(holder, { text = "Scan Moves", onClick = showScan })
-    scanBtn.LayoutOrder = 2
+    local dumpAnimBtn = components.Button(holder, { text = "Dump Anims (toggle)", onClick = function()
+        local on = dumper.toggleAnims()
+        status.Visible = true
+        status.Text = on and "Anim dump ON - use each move -> pantheon_anim_dump.txt" or "Anim dump OFF"
+        pcall(function() notify.info(on and "Anim dump ON - use your moves now" or "Anim dump OFF", 4) end)
+    end })
+    dumpAnimBtn.LayoutOrder = 3
 
     local listFrame = Instance.new("Frame")
     listFrame.Size = UDim2.new(1, 0, 0, 0)
     listFrame.AutomaticSize = Enum.AutomaticSize.Y
     listFrame.BackgroundTransparency = 1
-    listFrame.LayoutOrder = 4
+    listFrame.LayoutOrder = 5
     listFrame.Parent = holder
     local ll = Instance.new("UIListLayout", listFrame)
     ll.SortOrder = Enum.SortOrder.LayoutOrder

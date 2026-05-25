@@ -17,6 +17,7 @@ local notify     = require("ui.notify")
 local engine     = require("modules.tech.engine")
 local builder    = require("modules.tech.builder_ui")
 local scanner    = require("modules.tech.scanner")
+local dumper     = require("modules.tech.dumper")
 local log        = require("core.log")
 
 local module = {}
@@ -158,57 +159,33 @@ function module.register()
     })
     openBtn.LayoutOrder = 1
 
-    -- "Scan Moves": detect the game's move buttons so you know what moves you can
-    -- build techs around. Results listed below.
-    local resultsFrame = Instance.new("ScrollingFrame")
-    resultsFrame.Size = UDim2.new(1, 0, 0, 0)   -- height set (and capped) when populated
-    resultsFrame.BackgroundTransparency = 1
-    resultsFrame.BorderSizePixel = 0
-    resultsFrame.ScrollBarThickness = 4
-    resultsFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
-    resultsFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    resultsFrame.LayoutOrder = 3
-    resultsFrame.Parent = holder
-    local rl = Instance.new("UIListLayout", resultsFrame)
-    rl.SortOrder = Enum.SortOrder.LayoutOrder
-    rl.Padding = UDim.new(0, 1)
+    -- Dev dumps: write raw GUI + animation data to files so move-bar detection and
+    -- move->animation mapping can be set up correctly per game (vs heuristics).
+    local status = components.Label(holder, "")
+    status.LayoutOrder = 4
+    status.Visible = false
 
-    local function showScan()
-        for _, c in ipairs(resultsFrame:GetChildren()) do
-            if not c:IsA("UIListLayout") then c:Destroy() end
-        end
-        local res = scanner.scan()
-        local n = #res.buttons
-        local ord2 = 0
-        local function place2(inst) ord2 = ord2 + 1; inst.LayoutOrder = ord2; return inst end
-        place2(components.Section(resultsFrame, "Detected moves (" .. n .. ")"))
-        if n == 0 then
-            place2(components.Label(resultsFrame, "No move bar found - open/equip your moves, then Scan."))
-            if res.diag and #res.diag > 0 then
-                place2(components.Label(resultsFrame, "clusters: " .. table.concat(res.diag, ", ")))
-            end
-        else
-            for _, b in ipairs(res.buttons) do
-                local label = (b.text ~= "" and b.text) or b.name
-                if b.key then label = label .. "  [" .. b.key .. "]" end
-                place2(components.Label(resultsFrame, "- " .. label))
-            end
-        end
-        -- cap the panel height so it scrolls instead of overlapping the menu
-        local shown = #resultsFrame:GetChildren() - 1   -- minus the UIListLayout
-        resultsFrame.Size = UDim2.new(1, 0, 0, math.min(150, math.max(1, shown) * 20))
-        log.info("scan: " .. n .. " move button(s), " .. #res.services .. " move service(s)")
-        pcall(function() notify.info("Scan: " .. n .. " move button(s) found", 4) end)
-    end
+    local dumpGuiBtn = components.Button(holder, { text = "Dump GUI (for setup)", onClick = function()
+        local n = dumper.dumpGui()
+        status.Visible = true
+        status.Text = "GUI dumped (" .. n .. " buttons) -> pantheon_gui_dump.txt"
+        pcall(function() notify.info("GUI dumped: " .. n .. " buttons", 4) end)
+    end })
+    dumpGuiBtn.LayoutOrder = 2
 
-    local scanBtn = components.Button(holder, { text = "Scan Moves", onClick = showScan })
-    scanBtn.LayoutOrder = 2
+    local dumpAnimBtn = components.Button(holder, { text = "Dump Anims (toggle)", onClick = function()
+        local on = dumper.toggleAnims()
+        status.Visible = true
+        status.Text = on and "Anim dump ON - use each move -> pantheon_anim_dump.txt" or "Anim dump OFF"
+        pcall(function() notify.info(on and "Anim dump ON - use your moves now" or "Anim dump OFF", 4) end)
+    end })
+    dumpAnimBtn.LayoutOrder = 3
 
     local listFrame = Instance.new("Frame")
     listFrame.Size = UDim2.new(1, 0, 0, 0)
     listFrame.AutomaticSize = Enum.AutomaticSize.Y
     listFrame.BackgroundTransparency = 1
-    listFrame.LayoutOrder = 4
+    listFrame.LayoutOrder = 5
     listFrame.Parent = holder
     local ll = Instance.new("UIListLayout", listFrame)
     ll.SortOrder = Enum.SortOrder.LayoutOrder

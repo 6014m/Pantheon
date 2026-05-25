@@ -88,6 +88,15 @@ local function bgSuppressed()
            or SUPPRESS_STATES[st] then
             return true
         end
+        -- Knockback: being launched fast with NO movement input. Our per-frame
+        -- root.CFrame write fights/cancels the knockback (TSB), so yield. A dash
+        -- holds a direction (MoveDirection > 0) so it's NOT caught here.
+        local char = Players.LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp and myHum.MoveDirection.Magnitude < 0.1 then
+            local v = hrp.AssemblyLinearVelocity
+            if Vector3.new(v.X, 0, v.Z).Magnitude > (myHum.WalkSpeed * 1.6 + 8) then return true end
+        end
     end
     -- Intentionally NOT checking the target's state -- knockback briefly puts
     -- them in Physics during their attacks and we still want to track for blocks.

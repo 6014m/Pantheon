@@ -34,6 +34,7 @@ BUILD_ORDER = [
     "modules/aim/init",
     "modules/tech/engine",
     "modules/tech/scanner",
+    "modules/tech/dumper",
     "modules/tech/builder_ui",
     "modules/tech/init",
     "modules/system",

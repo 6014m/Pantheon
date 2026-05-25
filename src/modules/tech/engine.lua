@@ -208,6 +208,17 @@ local function runTech(tech, hold)
             elseif a.type == "wait" then
                 task.wait(a.seconds or a.x or 0.5)
                 if releaseAfterWait then releaseHold(); releaseAfterWait = false end
+            elseif a.type == "within" then
+                -- gate: hold here until the target is within `studs`, then continue
+                -- (e.g. rotate 90 -> Within 6 -> Use Rotation Lock -> side-dash).
+                -- 6s cap so it can't hang if you never close the distance.
+                local studs = tonumber(a.studs) or 5
+                local t0 = os.clock()
+                while os.clock() - t0 < 6 do
+                    local mr, tr = myRoot(), targetRoot()
+                    if mr and tr and (tr.Position - mr.Position).Magnitude <= studs then break end
+                    task.wait(0.05)
+                end
             else
                 local fn = ACTIONS[a.type]
                 if fn then local ok, err = pcall(fn, a); if not ok then log.warn("[tech] action " .. tostring(a.type) .. ": " .. tostring(err)) end end

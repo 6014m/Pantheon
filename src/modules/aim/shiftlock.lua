@@ -720,6 +720,14 @@ local function step()
         return
     end
 
+    -- Knockback: don't pin facing while being launched fast with no movement input
+    -- -- the per-frame root.CFrame write fights / cancels the knockback (TSB). A
+    -- dash holds a direction (MoveDirection > 0) so it isn't caught.
+    if state.bgSafeEnabled and hum.MoveDirection.Magnitude < 0.1 then
+        local v = self_state.root.AssemblyLinearVelocity
+        if Vector3.new(v.X, 0, v.Z).Magnitude > (hum.WalkSpeed * 1.6 + 8) then return end
+    end
+
     local cam = workspace.CurrentCamera
     if not cam then return end
     local look = cam.CFrame.LookVector
