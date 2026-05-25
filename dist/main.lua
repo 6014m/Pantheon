@@ -4591,15 +4591,24 @@ local function ensureGui()
 end
 
 function Builder.open(existingTech)
-    ensureGui()
-    draft = existingTech and draftFromTech(existingTech) or newDraft()
-    -- Surface a build error instead of silently showing a blank form.
-    local ok, err = pcall(rebuild)
+    local ok, err = pcall(function()
+        ensureGui()
+        draft = existingTech and draftFromTech(existingTech) or newDraft()
+        rebuild()
+        rootFrame.Visible = true
+    end)
     if not ok then
-        warn("[Pantheon] Tech Builder rebuild error: " .. tostring(err))
-        pcall(function() notify.warn("Tech Builder error: " .. tostring(err), 6) end)
+        warn("[Pantheon] Tech Builder open error: " .. tostring(err))
+        pcall(function() notify.warn("Tech Builder error: " .. tostring(err), 8) end)
+        return
     end
-    rootFrame.Visible = true
+    -- diagnostic: how many rows did the form actually get + is the scroll real
+    local n = (formScroll and #formScroll:GetChildren()) or -1
+    print(("[Pantheon] TechBuilder opened: formChildren=%d formScroll=%s rootVisible=%s parent=%s")
+        :format(n,
+            tostring(formScroll ~= nil),
+            tostring(rootFrame and rootFrame.Visible),
+            tostring(gui and gui.Parent and gui.Parent.ClassName)))
 end
 
 function Builder.close()
