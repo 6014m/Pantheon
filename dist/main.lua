@@ -4275,6 +4275,11 @@ local function recordAnim(track, id, raw)
     animLog[#animLog + 1] = { id = id, raw = raw, label = label or ("anim " .. id) }
 end
 function Engine.animHistory() return animLog end
+-- wipe the played-anim log (the dropdown gets cluttered with emotes/effects)
+function Engine.clearAnimHistory()
+    for i = #animLog, 1, -1 do animLog[i] = nil end
+    for k in pairs(animLogSeen) do animLogSeen[k] = nil end
+end
 
 local function onAnimPlayed(track)
     local raw = track and track.Animation and track.Animation.AnimationId
@@ -5331,6 +5336,13 @@ rebuild = function()
             place(components.Label(formScroll, "(none yet - play your moves, or hit Capture below)"))
           else
             place(components.Label(formScroll, "click=preview, double-click=select"))
+            place(wrap(24, function(p)
+                local cb = Instance.new("TextButton")
+                cb.Size = UDim2.new(1, 0, 0, 22); cb.BackgroundColor3 = theme.bgAlt; cb.AutoButtonColor = true
+                cb.TextColor3 = theme.danger; cb.Font = theme.font; cb.TextSize = 11
+                cb.Text = "Clear logged anims (" .. #hist .. ")"; cb.Parent = p; corner(cb, 4)
+                cb.MouseButton1Click:Connect(function() engine.clearAnimHistory(); rebuild() end)
+            end))
             local n = math.min(#hist, 7)
             local listWrap = Instance.new("Frame")
             listWrap.Size = UDim2.new(1, 0, 0, n * 24 + 4); listWrap.BackgroundColor3 = theme.bgDark

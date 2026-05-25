@@ -497,6 +497,11 @@ local function recordAnim(track, id, raw)
     animLog[#animLog + 1] = { id = id, raw = raw, label = label or ("anim " .. id) }
 end
 function Engine.animHistory() return animLog end
+-- wipe the played-anim log (the dropdown gets cluttered with emotes/effects)
+function Engine.clearAnimHistory()
+    for i = #animLog, 1, -1 do animLog[i] = nil end
+    for k in pairs(animLogSeen) do animLogSeen[k] = nil end
+end
 
 local function onAnimPlayed(track)
     local raw = track and track.Animation and track.Animation.AnimationId
