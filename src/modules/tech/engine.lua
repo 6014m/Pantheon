@@ -370,7 +370,7 @@ local function animIdNum(s)    -- "rbxassetid://123" / "http://...id=123" / "123
     return tostring(s):match("(%d+)")
 end
 -- the character's default locomotion anim ids (walk/run/idle/jump/fall/climb/sit),
--- so Capture skips them -- otherwise it'd grab "walk" the instant you move.
+-- so history/Capture skip them -- otherwise they'd grab "walk" the instant you move.
 local function locomotionIds()
     local set = {}
     local ch = LP.Character
@@ -383,20 +383,65 @@ local function locomotionIds()
     end
     return set
 end
+
+-- Friendly names for anim ids, parsed lazily from pantheon_anim_dump.txt ("id  path")
+-- so the editor dropdown can show "Dash7_Right" instead of a bare id.
+local animNameMap, animNamesLoaded = {}, false
+local function loadAnimNames()
+    if animNamesLoaded then return end
+    animNamesLoaded = true
+    if typeof(readfile) ~= "function" then return end
+    local ok, data = pcall(function()
+        if typeof(isfile) == "function" and not isfile("pantheon_anim_dump.txt") then return nil end
+        return readfile("pantheon_anim_dump.txt")
+    end)
+    if ok and data then
+        for line in tostring(data):gmatch("[^\r\n]+") do
+            local idp, path = line:match("^(%S+)%s+(.+)$")
+            local n = idp and animIdNum(idp)
+            if n and path then animNameMap[n] = path end
+        end
+    end
+end
+local function shortPath(p)              -- last 2 dot-segments of a GetFullName path
+    local segs = {}
+    for s in tostring(p):gmatch("[^%.]+") do segs[#segs + 1] = s end
+    if #segs <= 2 then return p end
+    return segs[#segs - 1] .. "." .. segs[#segs]
+end
+
+-- history of non-locomotion anims you've played this session, for the dropdown
+local animLog, animLogSeen = {}, {}
+local function recordAnim(track, id, raw)
+    if animLogSeen[id] then return end
+    loadAnimNames()
+    local label = animNameMap[id] and shortPath(animNameMap[id])
+    if not label then
+        local a = track and track.Animation
+        local ok, full = pcall(function() return a and a:GetFullName() end)
+        if ok and full and full ~= "" and full ~= "Animation" then label = shortPath(full)
+        elseif a and a.Name and a.Name ~= "" and a.Name ~= "Animation" then label = a.Name end
+    end
+    animLogSeen[id] = true
+    animLog[#animLog + 1] = { id = id, raw = raw, label = label or ("anim " .. id) }
+end
+function Engine.animHistory() return animLog end
+
 local function onAnimPlayed(track)
     local raw = track and track.Animation and track.Animation.AnimationId
     local id = animIdNum(raw)
-    if id then
-        for _, tech in pairs(techs) do
-            local tr = tech.trigger
-            if tech.enabled and tr and tr.event == "anim" and animIdNum(tr.animId) == id
-               and modifierHeld(tech) and conditionsMet(tech) then
-                runTech(tech, false)
-            end
+    if not id then return end
+    for _, tech in pairs(techs) do
+        local tr = tech.trigger
+        if tech.enabled and tr and tr.event == "anim" and animIdNum(tr.animId) == id
+           and modifierHeld(tech) and conditionsMet(tech) then
+            runTech(tech, false)
         end
     end
-    -- Capture: deliver the next NON-locomotion anim you play (so it's the move, not walk)
-    if #animCaptureCbs > 0 and raw and id and not locomotionIds()[id] then
+    -- below: moves only -- skip locomotion so the dropdown/Capture stay clean
+    if locomotionIds()[id] then return end
+    recordAnim(track, id, raw)
+    if #animCaptureCbs > 0 then
         local cbs = animCaptureCbs; animCaptureCbs = {}
         for _, cb in ipairs(cbs) do pcall(cb, raw) end
     end

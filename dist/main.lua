@@ -4143,7 +4143,7 @@ local function animIdNum(s)    -- "rbxassetid://123" / "http://...id=123" / "123
     return tostring(s):match("(%d+)")
 end
 -- the character's default locomotion anim ids (walk/run/idle/jump/fall/climb/sit),
--- so Capture skips them -- otherwise it'd grab "walk" the instant you move.
+-- so history/Capture skip them -- otherwise they'd grab "walk" the instant you move.
 local function locomotionIds()
     local set = {}
     local ch = LP.Character
@@ -4156,20 +4156,65 @@ local function locomotionIds()
     end
     return set
 end
+
+-- Friendly names for anim ids, parsed lazily from pantheon_anim_dump.txt ("id  path")
+-- so the editor dropdown can show "Dash7_Right" instead of a bare id.
+local animNameMap, animNamesLoaded = {}, false
+local function loadAnimNames()
+    if animNamesLoaded then return end
+    animNamesLoaded = true
+    if typeof(readfile) ~= "function" then return end
+    local ok, data = pcall(function()
+        if typeof(isfile) == "function" and not isfile("pantheon_anim_dump.txt") then return nil end
+        return readfile("pantheon_anim_dump.txt")
+    end)
+    if ok and data then
+        for line in tostring(data):gmatch("[^\r\n]+") do
+            local idp, path = line:match("^(%S+)%s+(.+)$")
+            local n = idp and animIdNum(idp)
+            if n and path then animNameMap[n] = path end
+        end
+    end
+end
+local function shortPath(p)              -- last 2 dot-segments of a GetFullName path
+    local segs = {}
+    for s in tostring(p):gmatch("[^%.]+") do segs[#segs + 1] = s end
+    if #segs <= 2 then return p end
+    return segs[#segs - 1] .. "." .. segs[#segs]
+end
+
+-- history of non-locomotion anims you've played this session, for the dropdown
+local animLog, animLogSeen = {}, {}
+local function recordAnim(track, id, raw)
+    if animLogSeen[id] then return end
+    loadAnimNames()
+    local label = animNameMap[id] and shortPath(animNameMap[id])
+    if not label then
+        local a = track and track.Animation
+        local ok, full = pcall(function() return a and a:GetFullName() end)
+        if ok and full and full ~= "" and full ~= "Animation" then label = shortPath(full)
+        elseif a and a.Name and a.Name ~= "" and a.Name ~= "Animation" then label = a.Name end
+    end
+    animLogSeen[id] = true
+    animLog[#animLog + 1] = { id = id, raw = raw, label = label or ("anim " .. id) }
+end
+function Engine.animHistory() return animLog end
+
 local function onAnimPlayed(track)
     local raw = track and track.Animation and track.Animation.AnimationId
     local id = animIdNum(raw)
-    if id then
-        for _, tech in pairs(techs) do
-            local tr = tech.trigger
-            if tech.enabled and tr and tr.event == "anim" and animIdNum(tr.animId) == id
-               and modifierHeld(tech) and conditionsMet(tech) then
-                runTech(tech, false)
-            end
+    if not id then return end
+    for _, tech in pairs(techs) do
+        local tr = tech.trigger
+        if tech.enabled and tr and tr.event == "anim" and animIdNum(tr.animId) == id
+           and modifierHeld(tech) and conditionsMet(tech) then
+            runTech(tech, false)
         end
     end
-    -- Capture: deliver the next NON-locomotion anim you play (so it's the move, not walk)
-    if #animCaptureCbs > 0 and raw and id and not locomotionIds()[id] then
+    -- below: moves only -- skip locomotion so the dropdown/Capture stay clean
+    if locomotionIds()[id] then return end
+    recordAnim(track, id, raw)
+    if #animCaptureCbs > 0 then
         local cbs = animCaptureCbs; animCaptureCbs = {}
         for _, cb in ipairs(cbs) do pcall(cb, raw) end
     end
@@ -4840,7 +4885,7 @@ local function onSave()
 end
 
 -- ---------- viewport preview (clone rig, ported from Animation Logger) ----------
-local vpFrame, worldModel, vpCam, rigTemplate, curRig
+local vpFrame, worldModel, vpCam, rigTemplate, curRig, curTrack
 local camTarget, camDist = Vector3.new(0, 2.5, 0), 12
 local curYaw, previewing = 0, false
 
@@ -4867,6 +4912,7 @@ local function rigSetYaw(yaw)
 end
 
 local function buildRigPreview()
+    if curTrack then pcall(function() curTrack:Stop(0) end); curTrack = nil end
     if curRig then curRig:Destroy(); curRig = nil end
     if not rigTemplate then captureRig() end
     if not (rigTemplate and worldModel) then return end
@@ -4885,6 +4931,28 @@ local function buildRigPreview()
     curYaw = 0
 end
 
+-- play an animation on the clone's Animator (ported from the Animation Logger):
+-- HRP is anchored, the rest stay jointed by Motor6D and get posed by the track.
+-- VFX isn't reproduced (it's spawned by the game's own scripts, not the track).
+local function playAnimOnRig(id, loop)
+    if not curRig then buildRigPreview() end
+    if not curRig then return end
+    if curTrack then pcall(function() curTrack:Stop(0) end); curTrack = nil end
+    local num = tostring(id):match("%d+"); if not num then return end
+    local hum = curRig:FindFirstChildOfClass("Humanoid")
+    local animator = hum and hum:FindFirstChildOfClass("Animator")
+    if hum and not animator then animator = Instance.new("Animator"); animator.Parent = hum end
+    if not animator then return end
+    local a = Instance.new("Animation"); a.AnimationId = "rbxassetid://" .. num
+    local ok, tr = pcall(function() return animator:LoadAnimation(a) end)
+    if ok and tr then
+        tr.Looped = loop and true or false
+        pcall(function() tr.Priority = Enum.AnimationPriority.Action end)
+        pcall(function() tr:Play() end)
+        curTrack = tr
+    end
+end
+
 local function tweenYaw(target, dur)
     dur = dur or 0.15
     local start, t0 = curYaw, os.clock()
@@ -4899,6 +4967,8 @@ local function previewDraft()
     if previewing then return end
     buildRigPreview()
     if not curRig then notify.warn("Preview: couldn't clone your avatar"); return end
+    -- if this tech is animation-triggered, play that anim on the clone too
+    if draft.event == "anim" and draft.animId then playAnimOnRig(draft.animId, true) end
     previewing = true
     task.spawn(function()
         rigSetYaw(0)
@@ -5053,15 +5123,40 @@ rebuild = function()
 
     place(components.Section(formScroll, "Trigger"))
     if draft.event == "anim" then
-        -- bind to an animation: paste its id, or Capture the next one you play
-        place(components.Label(formScroll, "Fires when this animation plays on you:"))
-        place(textRow(formScroll, "Anim ID", draft.animId, function(t)
-            local id = t and t:match("%d+")
-            draft.animId = id or (t ~= "" and t) or nil
-        end))
-        place(wrap(30, function(p)
+        -- bind to an animation: pick one you've played (click = select + preview),
+        -- Capture the next one, or paste an id.
+        place(components.Label(formScroll, "Pick an animation you've played:"))
+        local hist = engine.animHistory()
+        if #hist == 0 then
+            place(components.Label(formScroll, "(none yet - play your moves, or hit Capture below)"))
+        else
+            local n = math.min(#hist, 7)
+            local listWrap = Instance.new("Frame")
+            listWrap.Size = UDim2.new(1, 0, 0, n * 24 + 4); listWrap.BackgroundColor3 = theme.bgDark
+            listWrap.BorderSizePixel = 0; corner(listWrap, 4)
+            local sf = Instance.new("ScrollingFrame")
+            sf.Size = UDim2.new(1, -4, 1, -4); sf.Position = UDim2.fromOffset(2, 2)
+            sf.BackgroundTransparency = 1; sf.BorderSizePixel = 0; sf.ScrollBarThickness = 4
+            sf.CanvasSize = UDim2.new(0, 0, 0, 0); sf.AutomaticCanvasSize = Enum.AutomaticSize.Y; sf.Parent = listWrap
+            local sl = Instance.new("UIListLayout", sf); sl.Padding = UDim.new(0, 2); sl.SortOrder = Enum.SortOrder.LayoutOrder
+            for hi, h in ipairs(hist) do
+                local row = Instance.new("TextButton")
+                row.Size = UDim2.new(1, 0, 0, 22); row.AutoButtonColor = true; row.LayoutOrder = hi
+                row.BackgroundColor3 = (tostring(draft.animId) == tostring(h.id)) and theme.accent or theme.bgAlt
+                row.TextColor3 = theme.fg; row.Font = theme.font; row.TextSize = 11
+                row.TextXAlignment = Enum.TextXAlignment.Left; row.TextTruncate = Enum.TextTruncate.AtEnd
+                row.Text = "  " .. (h.label or tostring(h.id)) .. "  (" .. tostring(h.id) .. ")"; row.Parent = sf
+                row.MouseButton1Click:Connect(function()
+                    draft.animId = tostring(h.id)
+                    playAnimOnRig(h.id, true)   -- show it in the preview (looped)
+                    rebuild()
+                end)
+            end
+            place(listWrap)
+        end
+        place(wrap(28, function(p)
             local b = Instance.new("TextButton")
-            b.Size = UDim2.new(1, 0, 0, 26); b.BackgroundColor3 = theme.bgDark; b.AutoButtonColor = true
+            b.Size = UDim2.new(1, 0, 0, 24); b.BackgroundColor3 = theme.bgDark; b.AutoButtonColor = true
             b.TextColor3 = theme.accent; b.Font = theme.fontBold; b.TextSize = 12
             b.Text = "Capture (play the move now)"; b.Parent = p; corner(b, 4)
             b.MouseButton1Click:Connect(function()
@@ -5073,6 +5168,10 @@ rebuild = function()
                     rebuild()
                 end)
             end)
+        end))
+        place(textRow(formScroll, "Or paste ID", draft.animId, function(t)
+            local id = t and t:match("%d+")
+            draft.animId = id or (t ~= "" and t) or nil
         end))
     elseif draft.event == "move" then
         local res = scanner.cached() or scanner.scan()
