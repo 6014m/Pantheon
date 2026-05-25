@@ -134,6 +134,7 @@ local function renderHold()
 end
 
 local function releaseHold()
+    local didRotate = bodyARDisabled   -- a Rotate step actually turned the body
     held.cam, held.body = nil, nil
     state.techCamOverride = false
     state.techBodyOverride = false
@@ -146,10 +147,18 @@ local function releaseHold()
         bodyARDisabled = false
     end
     if techAlign then techAlign.Enabled = false end
-    -- no Lock-On to re-aim us? snap the camera back to where we started.
-    if not (state.lockon_enabled and state.target) and startCamLook then
+    -- no Lock-On to re-aim us? snap the camera AND body back to where we started, so
+    -- a Rotate (e.g. 180) doesn't leave you stuck facing that way until you move.
+    if not (state.lockon_enabled and state.target) then
         local cam = Workspace.CurrentCamera
-        if cam then cam.CFrame = CFrame.new(cam.CFrame.Position, cam.CFrame.Position + startCamLook) end
+        if cam and startCamLook then cam.CFrame = CFrame.new(cam.CFrame.Position, cam.CFrame.Position + startCamLook) end
+        if didRotate and startBodyLook then
+            local root = myRoot()
+            local flat = Vector3.new(startBodyLook.X, 0, startBodyLook.Z)
+            if root and flat.Magnitude > 1e-3 then
+                root.CFrame = CFrame.lookAt(root.Position, root.Position + flat.Unit)
+            end
+        end
     end
 end
 
@@ -337,6 +346,9 @@ local function runTech(tech, hold)
         startCamLook = cam and cam.CFrame.LookVector or nil
         local r0 = myRoot()
         startBodyLook = r0 and r0.CFrame.LookVector or nil
+        -- "Ignore welds": keep Lock-On/Rotation alive even while welded for this run
+        local ignoreWelds = tech.trigger and tech.trigger.ignoreWelds
+        if ignoreWelds then state.techIgnoreWelds = true end
         local releaseAfterWait = false
         local heldKeys = {}    -- keys pressed by a Hold step, released by a Release (or at the end)
         local featRestore = {} -- [featureId] = state BEFORE this tech toggled it, for Return/end
@@ -397,6 +409,8 @@ local function runTech(tech, hold)
         if not hold then restoreAll() else
             for kc in pairs(heldKeys) do pcall(function() VIM:SendKeyEvent(false, kc, false, game) end) end
         end
+        -- one-shot: release the weld-ignore now; hold techs keep it until key release
+        if ignoreWelds and not hold then state.techIgnoreWelds = false end
         running = false
     end)
 end
@@ -549,6 +563,7 @@ local function wireKey(tech)
                 if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then queueRun(tech, isHold) end
             elseif inputState == Enum.UserInputState.End and isHold then
                 releaseHold()
+                if tech.trigger.ignoreWelds then state.techIgnoreWelds = false end
             end
             return Enum.ContextActionResult.Sink
         end, false, 3000, key)
@@ -557,7 +572,7 @@ local function wireKey(tech)
     end
     keybinds.set("tech." .. tech.id, key,
         function() if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then queueRun(tech, isHold) end end,
-        function() if isHold then releaseHold() end end)
+        function() if isHold then releaseHold(); if tech.trigger.ignoreWelds then state.techIgnoreWelds = false end end end)
 end
 
 -- The "move" trigger fires the INSTANT the move's KEY is pressed (keydown), so the
@@ -642,6 +657,7 @@ local function serialize(tech)
             maxRange   = tech.trigger.maxRange,
             animId     = tech.trigger.animId,
             suppress   = tech.trigger.suppress,
+            ignoreWelds = tech.trigger.ignoreWelds,
             conditions = tech.trigger.conditions or {},
         },
         actions = tech.actions or {},
@@ -664,6 +680,7 @@ local function deserialize(s)
             maxRange   = s.trigger and s.trigger.maxRange,
             animId     = s.trigger and s.trigger.animId,
             suppress   = s.trigger and s.trigger.suppress,
+            ignoreWelds = s.trigger and s.trigger.ignoreWelds,
             conditions = (s.trigger and s.trigger.conditions) or {},
         },
         actions = s.actions or {},

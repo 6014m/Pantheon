@@ -67,6 +67,9 @@ local state = {
     -- Lock-On (camera) and Rotation Lock (body) yield so they don't fight it.
     techCamOverride  = false,
     techBodyOverride = false,
+    -- Tech Builder: a tech with "Ignore welds" set turns this on while it runs, so
+    -- isGrabbing() reports false and Lock-On/Rotation stay active even when welded.
+    techIgnoreWelds  = false,
 
     -- Misc
     lockHeightOffset = 0,
@@ -205,6 +208,8 @@ end
 -- involved, which the weld check captures.
 local grabCacheT, grabCacheV = 0, false
 function state.isGrabbing()
+    -- a tech opted out of grab-suppression so Lock-On keeps working while welded
+    if state.techIgnoreWelds then return false end
     local now = os.clock()
     if now - grabCacheT > 0.05 then
         grabCacheT = now

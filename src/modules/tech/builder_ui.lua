@@ -132,7 +132,7 @@ local function draftFromTech(t)
         scope = (t.scope == "universal") and "universal" or "game",
         event = t.trigger.event, key = t.trigger.key, move = t.trigger.move, movekey = t.trigger.movekey,
         modkey = t.trigger.modkey, maxRange = t.trigger.maxRange,
-        animId = t.trigger.animId, suppress = t.trigger.suppress,
+        animId = t.trigger.animId, suppress = t.trigger.suppress, ignoreWelds = t.trigger.ignoreWelds,
         conditions = conds, actions = actions,
     }
 end
@@ -165,7 +165,8 @@ local function buildTechFromDraft(id)
         scope = (draft.scope == "universal") and "universal" or game.GameId, enabled = true,
         trigger = { event = draft.event, key = draft.key, move = draft.move, movekey = draft.movekey,
                     modkey = draft.modkey, maxRange = draft.maxRange,
-                    animId = draft.animId, suppress = draft.suppress, conditions = draftConditions() },
+                    animId = draft.animId, suppress = draft.suppress, ignoreWelds = draft.ignoreWelds,
+                    conditions = draftConditions() },
         actions = draftActions(),
     }
 end
@@ -547,6 +548,10 @@ rebuild = function()
     place(wrap(30, function(p) components.Toggle(p, { text = "Only while locked on",
         default = draft.conditions.locked_on == true,
         onChange = function(v) draft.conditions.locked_on = v or nil end }) end))
+    -- keep Lock-On / Rotation alive even while welded (grabs normally suppress them)
+    place(wrap(30, function(p) components.Toggle(p, { text = "Ignore welds (keep Lock-On while grabbed)",
+        default = draft.ignoreWelds == true,
+        onChange = function(v) draft.ignoreWelds = v or nil end }) end))
 
     place(components.Section(formScroll, "Steps - tap to add"))
     do
