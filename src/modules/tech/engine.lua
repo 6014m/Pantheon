@@ -20,6 +20,7 @@ local keybinds = require("core.keybinds")
 local persist  = require("core.persist")
 local log      = require("core.log")
 local Signal   = require("core.signal")
+local scanner  = require("modules.tech.scanner")
 
 local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -196,6 +197,81 @@ local function conditionsMet(tech)
     return true
 end
 
+-- ===== move buttons: fire + suppress =====
+-- Resolve a hotbar move button by the name the scanner recorded for it (e.g. TSB
+-- slot "1"). Re-scans so it tracks the live GUI.
+local function findMoveButton(name)
+    if not name then return nil end
+    local ok, res = pcall(function() return scanner.scan() end)
+    if not ok or not res then return nil end
+    for _, b in ipairs(res.buttons or {}) do
+        if b.name == name and b.button and b.button.Parent then return b.button end
+    end
+    return nil
+end
+
+-- executor connection helpers (Wave: getconnections/firesignal). Used to "cancel"
+-- a move button's own click handlers so its key/click no longer fires the move,
+-- and to fire it ourselves on demand.
+local suppressed = {}   -- [button] = { connection, ... } we've disabled
+local function getConns(sig)
+    if typeof(getconnections) ~= "function" then return nil end
+    local ok, r = pcall(getconnections, sig)
+    if ok and type(r) == "table" then return r end
+    return nil
+end
+local function suppressButton(btn)
+    if not btn or suppressed[btn] then return end
+    local cs = getConns(btn.Activated); if not cs then return end
+    for _, c in ipairs(cs) do pcall(function() c:Disable() end) end
+    suppressed[btn] = cs
+end
+local function unsuppressButton(btn)
+    local cs = suppressed[btn]; if not cs then return end
+    for _, c in ipairs(cs) do pcall(function() c:Enable() end) end
+    suppressed[btn] = nil
+end
+
+-- Fire a move button as if clicked. If it's currently suppressed, briefly re-enable
+-- its handlers so our fire lands, then re-suppress -- so a tech can be the ONLY
+-- thing that fires a move whose key we've cancelled.
+local function fireButton(btn)
+    if not btn then return end
+    local supp = suppressed[btn]
+    if supp then for _, c in ipairs(supp) do pcall(function() c:Enable() end) end end
+    local fired = false
+    if typeof(firesignal) == "function" then fired = pcall(firesignal, btn.Activated) end
+    if not fired then
+        -- fallback: a real mouse click at the button's center (GuiInset offset)
+        local p, s = btn.AbsolutePosition, btn.AbsoluteSize
+        local x, y = p.X + s.X / 2, p.Y + s.Y / 2 + 36
+        pcall(function()
+            VIM:SendMouseButtonEvent(x, y, 0, true, game, 0)
+            VIM:SendMouseButtonEvent(x, y, 0, false, game, 0)
+        end)
+    end
+    if supp then task.defer(function() for _, c in ipairs(supp) do pcall(function() c:Disable() end) end end) end
+end
+
+-- ACTION: fire a move via its GUI button (a.move = the scanned button name)
+ACTIONS.usebtn = function(a) fireButton(findMoveButton(a.move)) end
+
+-- Reconcile which move buttons should be "cancelled" right now: every ENABLED
+-- move tech whose trigger has suppress=true cancels its move button. Buttons no
+-- longer wanted get re-enabled. Best-effort -- needs getconnections + the button
+-- to exist; called from rewire and re-tried when techs change.
+function Engine.applySuppression()
+    local want = {}
+    for _, tech in pairs(techs) do
+        local tr = tech.trigger
+        if tech.enabled and tr and tr.event == "move" and tr.suppress then
+            local b = findMoveButton(tr.move); if b then want[b] = true end
+        end
+    end
+    for b in pairs(want) do suppressButton(b) end
+    for b in pairs(suppressed) do if not want[b] then unsuppressButton(b) end end
+end
+
 -- ===== runner =====
 -- Only one tech sequence drives the camera/body at a time. A second trigger
 -- while one is mid-run (e.g. during a Wait) is ignored, so two techs can't fight
@@ -236,6 +312,8 @@ local function runTech(tech, hold)
                     if mr and tr and (tr.Position - mr.Position).Magnitude <= studs then break end
                     task.wait(0.05)
                 end
+                -- a preceding During holds the look/rotate only until THIS gate clears
+                if releaseAfterWait then releaseHold(); releaseAfterWait = false end
             elseif a.type == "hold" then
                 -- press the key DOWN and keep it held until the matching Release
                 -- (or the safety release at the end), so steps in between run while held.
@@ -269,6 +347,62 @@ local function runTech(tech, hold)
         running = false
     end)
 end
+
+-- ===== animation triggers + capture =====
+-- One persistent hook on the character's Animator drives ALL "anim" techs (and the
+-- editor's "Capture" button), re-hooking on respawn. Gated on tech.enabled so
+-- there's nothing to wire/unwire per tech.
+local animCaptureCbs = {}     -- one-shot callbacks: next anim played -> cb(rawId)
+local function animIdNum(s)    -- "rbxassetid://123" / "http://...id=123" / "123" -> "123"
+    if not s then return nil end
+    return tostring(s):match("(%d+)")
+end
+-- the character's default locomotion anim ids (walk/run/idle/jump/fall/climb/sit),
+-- so Capture skips them -- otherwise it'd grab "walk" the instant you move.
+local function locomotionIds()
+    local set = {}
+    local ch = LP.Character
+    local animate = ch and ch:FindFirstChild("Animate")
+    if animate then
+        for _, d in ipairs(animate:GetDescendants()) do
+            local v = (d:IsA("Animation") and d.AnimationId) or (d:IsA("StringValue") and d.Value)
+            local n = v and animIdNum(v); if n then set[n] = true end
+        end
+    end
+    return set
+end
+local function onAnimPlayed(track)
+    local raw = track and track.Animation and track.Animation.AnimationId
+    local id = animIdNum(raw)
+    if id then
+        for _, tech in pairs(techs) do
+            local tr = tech.trigger
+            if tech.enabled and tr and tr.event == "anim" and animIdNum(tr.animId) == id
+               and modifierHeld(tech) and conditionsMet(tech) then
+                runTech(tech, false)
+            end
+        end
+    end
+    -- Capture: deliver the next NON-locomotion anim you play (so it's the move, not walk)
+    if #animCaptureCbs > 0 and raw and id and not locomotionIds()[id] then
+        local cbs = animCaptureCbs; animCaptureCbs = {}
+        for _, cb in ipairs(cbs) do pcall(cb, raw) end
+    end
+end
+local animHookConns = {}
+local function hookAnimator()
+    for _, c in ipairs(animHookConns) do pcall(function() c:Disconnect() end) end
+    animHookConns = {}
+    local ch = LP.Character
+    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+    local animator = hum and hum:FindFirstChildOfClass("Animator")
+    if animator then
+        animHookConns[#animHookConns + 1] = animator.AnimationPlayed:Connect(onAnimPlayed)
+    end
+end
+-- Arm a one-shot: the next animation you play is delivered to cb(rawId). Editor uses
+-- this for "Capture" so you bind to the move's real runtime animation id.
+function Engine.captureAnim(cb) animCaptureCbs[#animCaptureCbs + 1] = cb end
 
 -- ===== trigger wiring =====
 local function wireKey(tech)
@@ -311,8 +445,12 @@ function Engine.rewire()
         elseif ev == "move" then
             -- move trigger is keydown on the move's key -> same bind/clear gating
             if tech.enabled then wireMove(tech) else keybinds.clear("tech." .. tech.id) end
+        elseif ev == "anim" then
+            -- handled by the persistent Animator hook (gated on tech.enabled); nothing to bind
+            keybinds.clear("tech." .. tech.id)
         end
     end
+    pcall(Engine.applySuppression)   -- cancel/restore move buttons per current techs
 end
 
 -- ===== persistence =====
@@ -335,6 +473,8 @@ local function serialize(tech)
             movekey    = tech.trigger.movekey,
             modkey     = tech.trigger.modkey,
             maxRange   = tech.trigger.maxRange,
+            animId     = tech.trigger.animId,
+            suppress   = tech.trigger.suppress,
             conditions = tech.trigger.conditions or {},
         },
         actions = tech.actions or {},
@@ -355,6 +495,8 @@ local function deserialize(s)
             movekey    = s.trigger and s.trigger.movekey,
             modkey     = s.trigger and s.trigger.modkey,
             maxRange   = s.trigger and s.trigger.maxRange,
+            animId     = s.trigger and s.trigger.animId,
+            suppress   = s.trigger and s.trigger.suppress,
             conditions = (s.trigger and s.trigger.conditions) or {},
         },
         actions = s.actions or {},
@@ -434,6 +576,16 @@ end
 function Engine.init()
     if bound then return end
     RunService:BindToRenderStep(RENDER_BIND, Enum.RenderPriority.Camera.Value + 2, renderHold)
+    -- persistent Animator hook for "anim" triggers + the editor's Capture, re-hooked
+    -- on respawn (Humanoid/Animator aren't there the instant the character spawns).
+    hookAnimator()
+    LP.CharacterAdded:Connect(function(ch)
+        task.spawn(function()
+            local hum = ch:WaitForChild("Humanoid", 10)
+            if hum then hum:WaitForChild("Animator", 5) end
+            hookAnimator()
+        end)
+    end)
     bound = true
 end
 

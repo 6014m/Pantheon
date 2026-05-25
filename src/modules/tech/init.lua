@@ -126,20 +126,6 @@ local function refreshList(listFrame)
     end
 end
 
--- Built-in universal example: hold a key to snap-look 180 off the lock target
--- and auto-return on release. Demonstrates the look/hold/condition path. Off by
--- default so it doesn't claim a key until you turn it on.
-local function registerExamples()
-    engine.add({
-        id      = "reverse_look",
-        name    = "Reverse Look (hold)",
-        scope   = "universal",
-        enabled = false,
-        trigger = { event = "keyhold", key = Enum.KeyCode.V, conditions = { "locked_on" } },
-        actions = { { type = "look", x = 180, y = 0 } },
-    })
-end
-
 function module.register()
     engine.init()
 
@@ -197,7 +183,6 @@ function module.register()
     -- modules adding their techs after this point).
     engine.changed:Connect(function() refreshList(listFrame) end)
 
-    registerExamples()
     engine.loadCustom()   -- rehydrate persisted user-built techs
     refreshList(listFrame)
 

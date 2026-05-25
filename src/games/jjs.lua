@@ -18,7 +18,6 @@ local feature   = require("ui.feature")
 local state     = require("modules.aim.state")
 local targeting = require("modules.aim.targeting")
 local shiftlock = require("modules.aim.shiftlock")
-local techeng   = require("modules.tech.engine")
 local log       = require("core.log")
 
 local Players           = game:GetService("Players")
@@ -89,26 +88,6 @@ function JJS.register()
         onToggle    = function(v) enabled = v and true or false end,
         onKey       = function() ratioPointPerfect() end,
     }).root)
-    -- Tech Builder example (this-game): on Projection Breaker (yours, while locked
-    -- on) snap the camera 180 off the target, hold half a second, then return to
-    -- facing them. Listens to ProjectionBreakerService.RE.Effects and only fires
-    -- when the caster is us. Off by default; toggle it in the Tech Builder list.
-    techeng.add({
-        id      = "jjs.proj_breaker_reverse",
-        name    = "Proj. Breaker -> Look Away",
-        scope   = 3508322461,   -- JJS GameId
-        enabled = false,
-        trigger = {
-            event      = "move",
-            move       = "ProjectionBreakerService",
-            conditions = { "locked_on" },
-        },
-        actions = {
-            { type = "look", x = 180, y = 0 },
-            { type = "wait", seconds = 0.5 },
-            { type = "return" },
-        },
-    })
 
     log.info("JJS module registered -- Nanami Perfect Special (Ratio Point, 70-stud range)")
 end

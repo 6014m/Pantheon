@@ -30,10 +30,10 @@ local CONDITIONS = {
     { id = "shiftlock", label = "Shiftlock on" },
 }
 -- palette buttons (Release is added automatically with Hold, not its own button)
-local ACTION_TYPES = { "look", "rotate", "during", "wait", "within", "return", "feature", "key", "hold" }
+local ACTION_TYPES = { "look", "rotate", "during", "wait", "within", "return", "feature", "key", "hold", "usebtn" }
 local STEP_LABEL   = { look = "Look", rotate = "Rotate", wait = "Wait", during = "During",
                        within = "Within", ["return"] = "Return", feature = "Use", key = "Press",
-                       hold = "Hold", release = "Release" }
+                       hold = "Hold", release = "Release", usebtn = "Use Move" }
 local YAW_PRESETS  = { 180, 135, 90, 45, 0, -45, -90, -135, -180 }
 
 -- ---------- small helpers ----------
@@ -107,13 +107,16 @@ local function draftFromTech(t)
     for _, c in ipairs(t.trigger.conditions or {}) do conds[c] = true end
     local actions = {}
     for _, a in ipairs(t.actions or {}) do
-        actions[#actions + 1] = { type = a.type, x = a.x, y = a.y, seconds = a.seconds, feature = a.feature, key = a.key }
+        actions[#actions + 1] = { type = a.type, x = a.x, y = a.y, seconds = a.seconds,
+            studs = a.studs, feature = a.feature, key = a.key, holdId = a.holdId, move = a.move }
     end
     return {
         editId = t.id, name = t.name,
         scope = (t.scope == "universal") and "universal" or "game",
         event = t.trigger.event, key = t.trigger.key, move = t.trigger.move, movekey = t.trigger.movekey,
-        modkey = t.trigger.modkey, maxRange = t.trigger.maxRange, conditions = conds, actions = actions,
+        modkey = t.trigger.modkey, maxRange = t.trigger.maxRange,
+        animId = t.trigger.animId, suppress = t.trigger.suppress,
+        conditions = conds, actions = actions,
     }
 end
 local function draftConditions()
@@ -132,8 +135,9 @@ local function draftActions()
         elseif a.type == "return" then actions[#actions + 1] = { type = "return" }
         elseif a.type == "feature" then actions[#actions + 1] = { type = "feature", feature = a.feature }
         elseif a.type == "key" then actions[#actions + 1] = { type = "key", key = a.key }
-        elseif a.type == "hold" then actions[#actions + 1] = { type = "hold", key = a.key }
-        elseif a.type == "release" then actions[#actions + 1] = { type = "release", key = a.key }
+        elseif a.type == "hold" then actions[#actions + 1] = { type = "hold", key = a.key, holdId = a.holdId }
+        elseif a.type == "release" then actions[#actions + 1] = { type = "release", key = a.key, holdId = a.holdId }
+        elseif a.type == "usebtn" then actions[#actions + 1] = { type = "usebtn", move = a.move }
         end
     end
     return actions
@@ -143,7 +147,8 @@ local function buildTechFromDraft(id)
         id = id, name = (draft.name and #draft.name > 0) and draft.name or "Tech", custom = true,
         scope = (draft.scope == "universal") and "universal" or game.GameId, enabled = true,
         trigger = { event = draft.event, key = draft.key, move = draft.move, movekey = draft.movekey,
-                    modkey = draft.modkey, maxRange = draft.maxRange, conditions = draftConditions() },
+                    modkey = draft.modkey, maxRange = draft.maxRange,
+                    animId = draft.animId, suppress = draft.suppress, conditions = draftConditions() },
         actions = draftActions(),
     }
 end
@@ -235,6 +240,7 @@ local function previewDraft()
                 releaseAfter = true
             elseif a.type == "within" then
                 task.wait(0.3)   -- can't gauge range in the preview; brief beat
+                if releaseAfter then tweenYaw(0); releaseAfter = false end
             elseif a.type == "return" then
                 tweenYaw(0)
             end
@@ -294,6 +300,27 @@ local function buildChip(parent, i, act)
                 conn:Disconnect()
             end)
         end)
+    elseif act.type == "usebtn" then
+        -- pick which hotbar move's GUI button this step fires (from the live scan)
+        local res = scanner.cached() or scanner.scan()
+        local moveset = res.buttons or {}
+        if act.move == nil and #moveset > 0 then act.move = moveset[1].name end
+        val = Instance.new("TextButton"); val.AutoButtonColor = false
+        local function moveLabel()
+            if #moveset == 0 then return "(no moves - Dump GUI)" end
+            for _, b in ipairs(moveset) do
+                if b.name == act.move then return (b.text ~= "" and b.text) or b.name end
+            end
+            return "(pick move)"
+        end
+        val.Text = moveLabel()
+        val.MouseButton1Click:Connect(function()
+            if #moveset == 0 then return end
+            local idx = 0
+            for k, b in ipairs(moveset) do if b.name == act.move then idx = k end end
+            act.move = moveset[(idx % #moveset) + 1].name
+            val.Text = moveLabel()
+        end)
     else
         val = Instance.new("TextButton"); val.AutoButtonColor = false
         local function valText()
@@ -352,7 +379,29 @@ rebuild = function()
         onChange = function(v) draft.scope = v and "universal" or "game" end }) end))
 
     place(components.Section(formScroll, "Trigger"))
-    if draft.event == "move" then
+    if draft.event == "anim" then
+        -- bind to an animation: paste its id, or Capture the next one you play
+        place(components.Label(formScroll, "Fires when this animation plays on you:"))
+        place(textRow(formScroll, "Anim ID", draft.animId, function(t)
+            local id = t and t:match("%d+")
+            draft.animId = id or (t ~= "" and t) or nil
+        end))
+        place(wrap(30, function(p)
+            local b = Instance.new("TextButton")
+            b.Size = UDim2.new(1, 0, 0, 26); b.BackgroundColor3 = theme.bgDark; b.AutoButtonColor = true
+            b.TextColor3 = theme.accent; b.Font = theme.fontBold; b.TextSize = 12
+            b.Text = "Capture (play the move now)"; b.Parent = p; corner(b, 4)
+            b.MouseButton1Click:Connect(function()
+                b.Text = "Capturing... play the move now"
+                pcall(function() notify.info("Capturing -- play the move now", 3) end)
+                engine.captureAnim(function(raw)
+                    draft.animId = tostring(raw):match("%d+") or tostring(raw)
+                    pcall(function() notify.success("Captured anim " .. tostring(draft.animId)) end)
+                    rebuild()
+                end)
+            end)
+        end))
+    elseif draft.event == "move" then
         local res = scanner.cached() or scanner.scan()
         local moveset = res.buttons or {}
         if #moveset == 0 then
@@ -382,6 +431,11 @@ rebuild = function()
                         draft.movekey = (k and k ~= Enum.KeyCode.Unknown) and (tostring(k):gsub("Enum.KeyCode.", "")) or nil
                     end })
             end))
+            -- cancel the move's own fire so its key runs ONLY this tech (the tech
+            -- fires the move itself via a "Use Move" step). Best-effort.
+            place(wrap(30, function(p) components.Toggle(p, { text = "Cancel move's normal fire",
+                default = draft.suppress == true,
+                onChange = function(v) draft.suppress = v or nil end }) end))
         end
     else
         place(wrap(28, function(p)
@@ -396,15 +450,20 @@ rebuild = function()
                 draft.modkey = (k and k ~= Enum.KeyCode.Unknown) and (tostring(k):gsub("Enum.KeyCode.", "")) or nil
             end })
     end))
-    place(wrap(30, function(p) components.Toggle(p, { text = "Hold the key (release = return)",
-        default = draft.event == "keyhold",
-        onChange = function(v)
-            if v then draft.event = "keyhold" elseif draft.event == "keyhold" then draft.event = "key" end
-            rebuild()
-        end }) end))
+    if draft.event == "key" or draft.event == "keyhold" then
+        place(wrap(30, function(p) components.Toggle(p, { text = "Hold the key (release = return)",
+            default = draft.event == "keyhold",
+            onChange = function(v)
+                if v then draft.event = "keyhold" elseif draft.event == "keyhold" then draft.event = "key" end
+                rebuild()
+            end }) end))
+    end
     place(wrap(30, function(p) components.Toggle(p, { text = "Trigger on a move instead",
         default = draft.event == "move",
         onChange = function(v) draft.event = v and "move" or "key"; rebuild() end }) end))
+    place(wrap(30, function(p) components.Toggle(p, { text = "Trigger on an animation instead",
+        default = draft.event == "anim",
+        onChange = function(v) draft.event = v and "anim" or "key"; rebuild() end }) end))
     place(wrap(30, function(p) components.Toggle(p, { text = "Only while locked on",
         default = draft.conditions.locked_on == true,
         onChange = function(v) draft.conditions.locked_on = v or nil end }) end))
@@ -432,7 +491,8 @@ rebuild = function()
                 elseif t == "rotate" then a.x = 180
                 elseif t == "wait" then a.seconds = 0.5
                 elseif t == "within" then a.studs = 5
-                elseif t == "feature" then local fa = feature.all(); a.feature = fa[1] and fa[1].id or nil end
+                elseif t == "feature" then local fa = feature.all(); a.feature = fa[1] and fa[1].id or nil
+                elseif t == "usebtn" then local res = scanner.cached() or scanner.scan(); local m = (res.buttons or {})[1]; a.move = m and m.name or nil end
                 draft.actions[#draft.actions + 1] = a; rebuild()
             end)
         end
