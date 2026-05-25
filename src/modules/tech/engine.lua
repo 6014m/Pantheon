@@ -508,8 +508,21 @@ local function onAnimPlayed(track)
         if tech.enabled and tr and tr.event == "anim" then
             watching = true
             if animIdNum(tr.animId) == id and modifierHeld(tech) and conditionsMet(tech) then
-                log.info("[tech] anim trigger fired: " .. tostring(tech.name) .. " <- " .. id)
-                queueRun(tech, false)
+                if tr.animEnd then
+                    -- fire when THIS animation stops/finishes, not when it starts
+                    log.info("[tech] anim trigger armed on-end: " .. tostring(tech.name))
+                    local conn
+                    conn = track.Stopped:Connect(function()
+                        if conn then conn:Disconnect(); conn = nil end
+                        if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then
+                            log.info("[tech] anim trigger fired (end): " .. tostring(tech.name))
+                            queueRun(tech, false)
+                        end
+                    end)
+                else
+                    log.info("[tech] anim trigger fired: " .. tostring(tech.name) .. " <- " .. id)
+                    queueRun(tech, false)
+                end
             end
         end
     end
@@ -656,6 +669,7 @@ local function serialize(tech)
             modkey     = tech.trigger.modkey,
             maxRange   = tech.trigger.maxRange,
             animId     = tech.trigger.animId,
+            animEnd    = tech.trigger.animEnd,
             suppress   = tech.trigger.suppress,
             ignoreWelds = tech.trigger.ignoreWelds,
             conditions = tech.trigger.conditions or {},
@@ -679,6 +693,7 @@ local function deserialize(s)
             modkey     = s.trigger and s.trigger.modkey,
             maxRange   = s.trigger and s.trigger.maxRange,
             animId     = s.trigger and s.trigger.animId,
+            animEnd    = s.trigger and s.trigger.animEnd,
             suppress   = s.trigger and s.trigger.suppress,
             ignoreWelds = s.trigger and s.trigger.ignoreWelds,
             conditions = (s.trigger and s.trigger.conditions) or {},

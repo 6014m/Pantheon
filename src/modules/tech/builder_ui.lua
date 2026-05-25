@@ -24,6 +24,7 @@ local Builder = {}
 
 local gui, rootFrame, formScroll
 local draft
+local animDropOpen = false   -- is the played-anim dropdown expanded right now
 
 local CONDITIONS = {
     { id = "locked_on", label = "Locked on"    },
@@ -132,7 +133,8 @@ local function draftFromTech(t)
         scope = (t.scope == "universal") and "universal" or "game",
         event = t.trigger.event, key = t.trigger.key, move = t.trigger.move, movekey = t.trigger.movekey,
         modkey = t.trigger.modkey, maxRange = t.trigger.maxRange,
-        animId = t.trigger.animId, suppress = t.trigger.suppress, ignoreWelds = t.trigger.ignoreWelds,
+        animId = t.trigger.animId, animEnd = t.trigger.animEnd,
+        suppress = t.trigger.suppress, ignoreWelds = t.trigger.ignoreWelds,
         conditions = conds, actions = actions,
     }
 end
@@ -165,7 +167,8 @@ local function buildTechFromDraft(id)
         scope = (draft.scope == "universal") and "universal" or game.GameId, enabled = true,
         trigger = { event = draft.event, key = draft.key, move = draft.move, movekey = draft.movekey,
                     modkey = draft.modkey, maxRange = draft.maxRange,
-                    animId = draft.animId, suppress = draft.suppress, ignoreWelds = draft.ignoreWelds,
+                    animId = draft.animId, animEnd = draft.animEnd,
+                    suppress = draft.suppress, ignoreWelds = draft.ignoreWelds,
                     conditions = draftConditions() },
         actions = draftActions(),
     }
@@ -423,14 +426,26 @@ rebuild = function()
 
     place(components.Section(formScroll, "Trigger"))
     if draft.event == "anim" then
-        -- bind to an animation: pick one you've played (click = select + preview),
-        -- Capture the next one, or paste an id.
-        place(components.Label(formScroll, "Click to preview, double-click to select:"))
-        place(components.Label(formScroll, draft.animId and ("  -> selected: " .. tostring(draft.animId)) or "  -> none selected yet"))
+        -- bind to a played animation via a collapsible dropdown, Capture, or paste.
         local hist = engine.animHistory()
-        if #hist == 0 then
+        local selLabel = "(pick an animation)"
+        if draft.animId then
+            for _, h in ipairs(hist) do if tostring(h.id) == tostring(draft.animId) then selLabel = h.label end end
+            if selLabel == "(pick an animation)" then selLabel = "anim " .. tostring(draft.animId) end
+        end
+        place(wrap(28, function(p)
+            local b = Instance.new("TextButton")
+            b.Size = UDim2.new(1, 0, 0, 26); b.BackgroundColor3 = theme.bgDark; b.AutoButtonColor = true
+            b.TextColor3 = theme.fg; b.Font = theme.font; b.TextSize = 12
+            b.TextXAlignment = Enum.TextXAlignment.Left; b.TextTruncate = Enum.TextTruncate.AtEnd
+            b.Text = "  " .. selLabel .. (animDropOpen and "    [x]" or "    [v]"); b.Parent = p; corner(b, 4)
+            b.MouseButton1Click:Connect(function() animDropOpen = not animDropOpen; rebuild() end)
+        end))
+        if animDropOpen then
+          if #hist == 0 then
             place(components.Label(formScroll, "(none yet - play your moves, or hit Capture below)"))
-        else
+          else
+            place(components.Label(formScroll, "click=preview, double-click=select"))
             local n = math.min(#hist, 7)
             local listWrap = Instance.new("Frame")
             listWrap.Size = UDim2.new(1, 0, 0, n * 24 + 4); listWrap.BackgroundColor3 = theme.bgDark
@@ -453,13 +468,19 @@ rebuild = function()
                     playAnimOnRig(h.id, true)   -- preview (looped) on every click
                     if os.clock() - lastClick < 0.35 then
                         draft.animId = tostring(h.id)   -- commit the selection
-                        rebuild()                       -- repaint so this row shows selected
+                        animDropOpen = false            -- collapse the dropdown on select
+                        rebuild()
                     end
                     lastClick = os.clock()
                 end)
             end
             place(listWrap)
+          end
         end
+        -- fire when the animation ENDS instead of when it starts
+        place(wrap(30, function(p) components.Toggle(p, { text = "Fire on animation END (not start)",
+            default = draft.animEnd == true,
+            onChange = function(v) draft.animEnd = v or nil end }) end))
         place(wrap(28, function(p)
             local b = Instance.new("TextButton")
             b.Size = UDim2.new(1, 0, 0, 24); b.BackgroundColor3 = theme.bgDark; b.AutoButtonColor = true
@@ -470,6 +491,7 @@ rebuild = function()
                 pcall(function() notify.info("Capturing -- play the move now", 3) end)
                 engine.captureAnim(function(raw)
                     draft.animId = tostring(raw):match("%d+") or tostring(raw)
+                    animDropOpen = false
                     pcall(function() notify.success("Captured anim " .. tostring(draft.animId)) end)
                     rebuild()
                 end)
@@ -699,6 +721,7 @@ function Builder.open(existingTech)
     local ok, err = pcall(function()
         ensureGui()
         draft = existingTech and draftFromTech(existingTech) or newDraft()
+        animDropOpen = not (draft.animId)   -- expanded when nothing's picked yet
         rebuild()
         captureRig()
         buildRigPreview()
