@@ -448,7 +448,7 @@ local function ensureGui()
     dragBtn.Parent = header
 
     local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(1, -40, 1, 0)
+    title.Size = UDim2.new(1, -98, 1, 0)
     title.Position = UDim2.fromOffset(10, 0)
     title.BackgroundTransparency = 1
     title.Text = "Tech Builder"
@@ -458,6 +458,20 @@ local function ensureGui()
     title.TextXAlignment = Enum.TextXAlignment.Left
     title.ZIndex = 3
     title.Parent = header
+
+    -- "+ New Tech": reset the form to a blank draft without closing the window.
+    local newBtn = Instance.new("TextButton")
+    newBtn.Size = UDim2.fromOffset(58, 22)
+    newBtn.Position = UDim2.new(1, -92, 0.5, -11)
+    newBtn.BackgroundColor3 = theme.bgDark
+    newBtn.AutoButtonColor = false
+    newBtn.Text = "+ New"
+    newBtn.TextColor3 = theme.fg
+    newBtn.Font = theme.fontBold
+    newBtn.TextSize = 11
+    newBtn.ZIndex = 4
+    newBtn.Parent = header
+    newBtn.MouseButton1Click:Connect(function() Builder.open() end)
 
     local close = Instance.new("TextButton")
     close.Size = UDim2.fromOffset(26, 22)

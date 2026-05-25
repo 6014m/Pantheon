@@ -255,6 +255,12 @@ end
 -- ===== public API =====
 function Engine.add(tech)
     if not (tech and tech.id) then return end
+    -- A user-saved custom override wins over a code-defined re-add of the same id.
+    -- (Editing a built-in example saves a custom tech under the built-in's id; on
+    -- reload loadCustom() adds the override, then the game/example module re-adds
+    -- the original -- this keeps the override instead of clobbering it.)
+    local existing = techs[tech.id]
+    if existing and existing.custom and not tech.custom then return end
     if tech.enabled == nil then tech.enabled = true end
     -- a persisted enabled-state overrides the declared default
     local savedEnabled = persist.get(ENABLED_KEY .. tech.id)

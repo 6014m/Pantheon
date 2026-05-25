@@ -3846,6 +3846,12 @@ end
 -- ===== public API =====
 function Engine.add(tech)
     if not (tech and tech.id) then return end
+    -- A user-saved custom override wins over a code-defined re-add of the same id.
+    -- (Editing a built-in example saves a custom tech under the built-in's id; on
+    -- reload loadCustom() adds the override, then the game/example module re-adds
+    -- the original -- this keeps the override instead of clobbering it.)
+    local existing = techs[tech.id]
+    if existing and existing.custom and not tech.custom then return end
     if tech.enabled == nil then tech.enabled = true end
     -- a persisted enabled-state overrides the declared default
     local savedEnabled = persist.get(ENABLED_KEY .. tech.id)
@@ -4374,7 +4380,7 @@ local function ensureGui()
     dragBtn.Parent = header
 
     local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(1, -40, 1, 0)
+    title.Size = UDim2.new(1, -98, 1, 0)
     title.Position = UDim2.fromOffset(10, 0)
     title.BackgroundTransparency = 1
     title.Text = "Tech Builder"
@@ -4384,6 +4390,20 @@ local function ensureGui()
     title.TextXAlignment = Enum.TextXAlignment.Left
     title.ZIndex = 3
     title.Parent = header
+
+    -- "+ New Tech": reset the form to a blank draft without closing the window.
+    local newBtn = Instance.new("TextButton")
+    newBtn.Size = UDim2.fromOffset(58, 22)
+    newBtn.Position = UDim2.new(1, -92, 0.5, -11)
+    newBtn.BackgroundColor3 = theme.bgDark
+    newBtn.AutoButtonColor = false
+    newBtn.Text = "+ New"
+    newBtn.TextColor3 = theme.fg
+    newBtn.Font = theme.fontBold
+    newBtn.TextSize = 11
+    newBtn.ZIndex = 4
+    newBtn.Parent = header
+    newBtn.MouseButton1Click:Connect(function() Builder.open() end)
 
     local close = Instance.new("TextButton")
     close.Size = UDim2.fromOffset(26, 22)
@@ -4503,10 +4523,9 @@ local function buildRow(parent, tech)
     f.BorderSizePixel = 0
     f.Parent = parent
 
-    -- custom (user-built) techs are clickable to edit and get a delete button;
-    -- built-in examples are a plain label.
-    local name = Instance.new(tech.custom and "TextButton" or "TextLabel")
-    name.Size = UDim2.new(1, tech.custom and -76 or -52, 1, 0)
+    -- name (custom techs leave room for a delete button on top of the edit one)
+    local name = Instance.new("TextLabel")
+    name.Size = UDim2.new(1, tech.custom and -106 or -82, 1, 0)
     name.Position = UDim2.fromOffset(8, 0)
     name.BackgroundTransparency = 1
     name.Text = tech.name or tech.id
@@ -4516,22 +4535,8 @@ local function buildRow(parent, tech)
     name.TextXAlignment = Enum.TextXAlignment.Left
     name.TextTruncate = Enum.TextTruncate.AtEnd
     name.Parent = f
-    if tech.custom then
-        name.AutoButtonColor = false
-        name.MouseButton1Click:Connect(function() builder.open(tech) end)
-        local del = Instance.new("TextButton")
-        del.Size = UDim2.fromOffset(20, 18)
-        del.Position = UDim2.new(1, -68, 0.5, -9)
-        del.BackgroundColor3 = theme.danger
-        del.AutoButtonColor = false
-        del.TextColor3 = theme.fg
-        del.Font = theme.fontBold
-        del.TextSize = 10
-        del.Text = "X"
-        del.Parent = f
-        del.MouseButton1Click:Connect(function() engine.remove(tech.id) end)
-    end
 
+    -- ON/OFF toggle. Lets engine.changed rebuild the list to repaint (no per-row state).
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.fromOffset(38, 18)
     btn.Position = UDim2.new(1, -44, 0.5, -9)
@@ -4542,12 +4547,36 @@ local function buildRow(parent, tech)
     btn.TextSize = 10
     btn.Text = tech.enabled and "ON" or "OFF"
     btn.Parent = f
+    btn.MouseButton1Click:Connect(function() engine.setEnabled(tech.id, not tech.enabled) end)
 
-    -- Toggle, then let engine.changed rebuild the whole list (keeps this row in
-    -- sync without per-row state). No paint() here -- the rebuild repaints.
-    btn.MouseButton1Click:Connect(function()
-        engine.setEnabled(tech.id, not tech.enabled)
-    end)
+    -- Edit (every tech). Editing a built-in saves a persistent custom override.
+    local edit = Instance.new("TextButton")
+    edit.Size = UDim2.fromOffset(30, 18)
+    edit.Position = UDim2.new(1, -78, 0.5, -9)
+    edit.AutoButtonColor = false
+    edit.BackgroundColor3 = theme.bgDark
+    edit.TextColor3 = theme.fg
+    edit.Font = theme.font
+    edit.TextSize = 10
+    edit.Text = "Edit"
+    edit.Parent = f
+    edit.MouseButton1Click:Connect(function() builder.open(tech) end)
+
+    -- Delete (custom techs only; deleting a custom override of a built-in reverts
+    -- to the built-in on next load).
+    if tech.custom then
+        local del = Instance.new("TextButton")
+        del.Size = UDim2.fromOffset(20, 18)
+        del.Position = UDim2.new(1, -102, 0.5, -9)
+        del.BackgroundColor3 = theme.danger
+        del.AutoButtonColor = false
+        del.TextColor3 = theme.fg
+        del.Font = theme.fontBold
+        del.TextSize = 10
+        del.Text = "X"
+        del.Parent = f
+        del.MouseButton1Click:Connect(function() engine.remove(tech.id) end)
+    end
 
     return f
 end

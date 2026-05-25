@@ -33,10 +33,9 @@ local function buildRow(parent, tech)
     f.BorderSizePixel = 0
     f.Parent = parent
 
-    -- custom (user-built) techs are clickable to edit and get a delete button;
-    -- built-in examples are a plain label.
-    local name = Instance.new(tech.custom and "TextButton" or "TextLabel")
-    name.Size = UDim2.new(1, tech.custom and -76 or -52, 1, 0)
+    -- name (custom techs leave room for a delete button on top of the edit one)
+    local name = Instance.new("TextLabel")
+    name.Size = UDim2.new(1, tech.custom and -106 or -82, 1, 0)
     name.Position = UDim2.fromOffset(8, 0)
     name.BackgroundTransparency = 1
     name.Text = tech.name or tech.id
@@ -46,22 +45,8 @@ local function buildRow(parent, tech)
     name.TextXAlignment = Enum.TextXAlignment.Left
     name.TextTruncate = Enum.TextTruncate.AtEnd
     name.Parent = f
-    if tech.custom then
-        name.AutoButtonColor = false
-        name.MouseButton1Click:Connect(function() builder.open(tech) end)
-        local del = Instance.new("TextButton")
-        del.Size = UDim2.fromOffset(20, 18)
-        del.Position = UDim2.new(1, -68, 0.5, -9)
-        del.BackgroundColor3 = theme.danger
-        del.AutoButtonColor = false
-        del.TextColor3 = theme.fg
-        del.Font = theme.fontBold
-        del.TextSize = 10
-        del.Text = "X"
-        del.Parent = f
-        del.MouseButton1Click:Connect(function() engine.remove(tech.id) end)
-    end
 
+    -- ON/OFF toggle. Lets engine.changed rebuild the list to repaint (no per-row state).
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.fromOffset(38, 18)
     btn.Position = UDim2.new(1, -44, 0.5, -9)
@@ -72,12 +57,36 @@ local function buildRow(parent, tech)
     btn.TextSize = 10
     btn.Text = tech.enabled and "ON" or "OFF"
     btn.Parent = f
+    btn.MouseButton1Click:Connect(function() engine.setEnabled(tech.id, not tech.enabled) end)
 
-    -- Toggle, then let engine.changed rebuild the whole list (keeps this row in
-    -- sync without per-row state). No paint() here -- the rebuild repaints.
-    btn.MouseButton1Click:Connect(function()
-        engine.setEnabled(tech.id, not tech.enabled)
-    end)
+    -- Edit (every tech). Editing a built-in saves a persistent custom override.
+    local edit = Instance.new("TextButton")
+    edit.Size = UDim2.fromOffset(30, 18)
+    edit.Position = UDim2.new(1, -78, 0.5, -9)
+    edit.AutoButtonColor = false
+    edit.BackgroundColor3 = theme.bgDark
+    edit.TextColor3 = theme.fg
+    edit.Font = theme.font
+    edit.TextSize = 10
+    edit.Text = "Edit"
+    edit.Parent = f
+    edit.MouseButton1Click:Connect(function() builder.open(tech) end)
+
+    -- Delete (custom techs only; deleting a custom override of a built-in reverts
+    -- to the built-in on next load).
+    if tech.custom then
+        local del = Instance.new("TextButton")
+        del.Size = UDim2.fromOffset(20, 18)
+        del.Position = UDim2.new(1, -102, 0.5, -9)
+        del.BackgroundColor3 = theme.danger
+        del.AutoButtonColor = false
+        del.TextColor3 = theme.fg
+        del.Font = theme.fontBold
+        del.TextSize = 10
+        del.Text = "X"
+        del.Parent = f
+        del.MouseButton1Click:Connect(function() engine.remove(tech.id) end)
+    end
 
     return f
 end
