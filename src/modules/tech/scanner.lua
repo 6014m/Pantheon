@@ -122,18 +122,24 @@ function Scanner.scan()
     end
 
     -- PER-GAME HOOK: a game module (e.g. games/jjs.lua) may expose scanMoves(pg)
-    -- that knows the game's exact moveset layout. Runs FIRST -- if it returns a
-    -- non-empty list, we trust it and skip the generic heuristics (named slots /
-    -- cluster). The scanner still annotates `move` from service stems so the
-    -- per-game hook only has to return {button, name, text, key}.
+    -- that knows the game's exact moveset layout. Runs FIRST and is AUTHORITATIVE
+    -- for that game: if registered, we never fall through to the generic
+    -- heuristics (which would otherwise pick up unrelated clusters like the emote
+    -- wheel when the game's UI isn't ready). Empty result -> return empty WITHOUT
+    -- caching, so the next call re-scans (by which time the UI may be ready).
     if pg then
         local mod = registry.current()
         if mod and type(mod.scanMoves) == "function" then
             local ok, gameButtons = pcall(mod.scanMoves, pg)
-            if ok and type(gameButtons) == "table" and #gameButtons > 0 then
-                for _, b in ipairs(gameButtons) do annotateMove(b, stems) end
-                cached = { services = services, buttons = gameButtons, diag = { "per-game scan (" .. tostring(#gameButtons) .. ")" } }
-                return cached
+            if ok and type(gameButtons) == "table" then
+                if #gameButtons > 0 then
+                    for _, b in ipairs(gameButtons) do annotateMove(b, stems) end
+                    cached = { services = services, buttons = gameButtons, diag = { "per-game scan (" .. tostring(#gameButtons) .. ")" } }
+                    return cached
+                end
+                -- hook ran, found nothing yet -- DON'T fall through to generic and
+                -- DON'T cache the empty so next open retries
+                return { services = services, buttons = {}, diag = { "per-game scan: empty (UI not ready)" } }
             end
         end
     end
@@ -190,10 +196,19 @@ function Scanner.scan()
     if #buttons == 0 and #diag > 0 then
         log.info("scan: no move bar; clusters seen -> " .. table.concat(diag, ", "))
     end
-    cached = { services = services, buttons = buttons, diag = diag }
-    return cached
+    -- Only cache a non-empty result. Caching {buttons={}} traps the picker on a
+    -- stale empty (or worse, on a one-time pick-up of unrelated clusters that
+    -- happened to match the lower-half heuristic at scan time) for the rest of
+    -- the session.
+    local res = { services = services, buttons = buttons, diag = diag }
+    if #buttons > 0 then cached = res end
+    return res
 end
 
-function Scanner.cached() return cached end
+-- Only hand back a cache that actually has moves -- callers fall back to scan().
+function Scanner.cached()
+    if cached and #(cached.buttons or {}) > 0 then return cached end
+    return nil
+end
 
 return Scanner
