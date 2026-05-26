@@ -68,6 +68,7 @@ genv.Pantheon.shutdown = function()
     pcall(function() if persist.flush    then persist.flush()    end end)
 end
 
-notify.success("Pantheon loaded. Press RightCtrl to toggle UI.")
+local buildTag = rawget(_G, "PANTHEON_BUILD") or "?"
+notify.success("Pantheon loaded (" .. tostring(buildTag) .. "). Press RightCtrl to toggle UI.")
 
 return true

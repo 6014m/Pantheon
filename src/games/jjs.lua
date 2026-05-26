@@ -19,6 +19,7 @@ local state     = require("modules.aim.state")
 local targeting = require("modules.aim.targeting")
 local shiftlock = require("modules.aim.shiftlock")
 local log       = require("core.log")
+local notify    = require("ui.notify")
 
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -77,15 +78,24 @@ end
 -- (no inner Base button like TSB). Slot frame's Name is the move name (e.g. "Projection
 -- Breaker"); keys 1..N map to the slots LEFT-TO-RIGHT by AbsolutePosition.X. The scanner
 -- annotates `move` (Knit service name) from these entries via the shared stem matcher.
+local lastScanReport = -1
+local function scanReport(stage, n, names)
+    if n == lastScanReport then return end
+    lastScanReport = n
+    local msg = ("JJS scanMoves [%s]: %d move(s) %s"):format(stage, n, names and ("[" .. names .. "]") or "")
+    log.info(msg)
+    pcall(function() notify.info(msg, 6) end)
+end
+
 function JJS.scanMoves(pg)
     -- Be tolerant of layout shifts: descend Controls SG looking for the Moveset frame.
     local sg = pg:FindFirstChild("Controls")
-    if not sg then return nil end
+    if not sg then scanReport("no Controls SG", 0); return nil end
     local moveset
     for _, d in ipairs(sg:GetDescendants()) do
         if d.Name == "Moveset" and (d:IsA("GuiObject") or d:IsA("Folder")) then moveset = d; break end
     end
-    if not moveset then return nil end
+    if not moveset then scanReport("no Moveset frame", 0); return nil end
 
     local slots = {}
     for _, child in ipairs(moveset:GetChildren()) do
@@ -94,13 +104,15 @@ function JJS.scanMoves(pg)
             slots[#slots + 1] = { name = child.Name, button = btn, x = btn.AbsolutePosition.X }
         end
     end
-    if #slots == 0 then return nil end
+    if #slots == 0 then scanReport("Moveset empty", 0); return nil end
     table.sort(slots, function(a, b) return a.x < b.x end)
 
-    local out = {}
+    local out, names = {}, {}
     for i, s in ipairs(slots) do
         out[#out + 1] = { button = s.button, name = s.name, text = s.name, key = tostring(i) }
+        names[#names + 1] = s.name
     end
+    scanReport("ok", #out, table.concat(names, ", "))
     return out
 end
 
