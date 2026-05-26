@@ -87,15 +87,15 @@ local function scanReport(stage, n, names)
     pcall(function() notify.info(msg, 6) end)
 end
 
+-- JJS hotbar lives at PlayerGui.Main.Controls.Moveset.<MoveName>.ItemName. There's
+-- a SEPARATE ScreenGui named "Controls" in PlayerGui that's the Mobile UI (no
+-- Moveset descendant) -- earlier versions of this hook targeted the wrong SG.
 function JJS.scanMoves(pg)
-    -- Be tolerant of layout shifts: descend Controls SG looking for the Moveset frame.
-    local sg = pg:FindFirstChild("Controls")
-    if not sg then scanReport("no Controls SG", 0); return nil end
-    local moveset
-    for _, d in ipairs(sg:GetDescendants()) do
-        if d.Name == "Moveset" and (d:IsA("GuiObject") or d:IsA("Folder")) then moveset = d; break end
-    end
-    if not moveset then scanReport("no Moveset frame", 0); return nil end
+    local main = pg:FindFirstChild("Main")
+    if not main then scanReport("no Main SG", 0); return nil end
+    local controls = main:FindFirstChild("Controls")
+    local moveset  = controls and controls:FindFirstChild("Moveset")
+    if not moveset then scanReport("no Main.Controls.Moveset", 0); return nil end
 
     local slots = {}
     for _, child in ipairs(moveset:GetChildren()) do
