@@ -102,36 +102,35 @@ local function ensureBodyConstraint(root)
     end
 end
 
-local function renderHold()
-    if held.cam then
-        local cam = Workspace.CurrentCamera
-        local base = camBaseFlat()
-        if cam and base.Magnitude > 1e-3 then
-            local dir = offsetDir(base, held.cam.yaw)
-            local pitch = math.rad(held.cam.pitch or 0)
-            local look = Vector3.new(dir.X * math.cos(pitch), math.sin(pitch), dir.Z * math.cos(pitch))
-            cam.CFrame = CFrame.new(cam.CFrame.Position, cam.CFrame.Position + look)
-        end
-    end
-    if held.body then
-        local root = myRoot()
-        local base = bodyBaseFlat()
-        if root and base.Magnitude > 1e-3 then
-            -- stop the humanoid auto-rotating back while we hold the facing
-            local ch = myChar()
-            local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-            if hum and hum.AutoRotate then hum.AutoRotate = false; bodyARDisabled = true end
-            local dir = offsetDir(base, held.body.yaw)
-            -- same rotation type as Lock-On+: rigid AlignOrientation + CFrame nudge
-            ensureBodyConstraint(root)
-            techAlign.Enabled = true
-            techAlign.CFrame = CFrame.lookAt(Vector3.zero, dir)
-            local cf = CFrame.lookAt(root.Position, root.Position + dir)
-            local _, yAngle = cf:ToEulerAnglesYXZ()
-            root.CFrame = CFrame.new(root.Position) * CFrame.Angles(0, yAngle, 0)
-        end
+local function applyCamHold()
+    if not held.cam then return end
+    local cam = Workspace.CurrentCamera
+    local base = camBaseFlat()
+    if cam and base.Magnitude > 1e-3 then
+        local dir = offsetDir(base, held.cam.yaw)
+        local pitch = math.rad(held.cam.pitch or 0)
+        local look = Vector3.new(dir.X * math.cos(pitch), math.sin(pitch), dir.Z * math.cos(pitch))
+        cam.CFrame = CFrame.new(cam.CFrame.Position, cam.CFrame.Position + look)
     end
 end
+local function applyBodyHold()
+    if not held.body then return end
+    local root = myRoot()
+    local base = bodyBaseFlat()
+    if root and base.Magnitude > 1e-3 then
+        local ch = myChar()
+        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+        if hum and hum.AutoRotate then hum.AutoRotate = false; bodyARDisabled = true end
+        local dir = offsetDir(base, held.body.yaw)
+        ensureBodyConstraint(root)
+        techAlign.Enabled = true
+        techAlign.CFrame = CFrame.lookAt(Vector3.zero, dir)
+        local cf = CFrame.lookAt(root.Position, root.Position + dir)
+        local _, yAngle = cf:ToEulerAnglesYXZ()
+        root.CFrame = CFrame.new(root.Position) * CFrame.Angles(0, yAngle, 0)
+    end
+end
+local function renderHold() applyCamHold(); applyBodyHold() end
 
 -- Releases cam/body override flags. If `snap` is true (explicit Return / bounded
 -- During->Wait / keyhold release / shutdown), also snaps cam+body back to where
@@ -179,8 +178,12 @@ end
 
 -- ===== actions =====
 local ACTIONS = {}
-ACTIONS.look   = function(a) held.cam  = { yaw = a.x or 0, pitch = a.y or 0 }; state.techCamOverride  = true end
-ACTIONS.rotate = function(a) held.body = { yaw = a.x or 0, pitch = a.y or 0 }; state.techBodyOverride = true end
+-- Apply immediately (in addition to setting the held state for renderhold to
+-- re-apply each frame), so a single-step Rotate/Look with no Wait after still
+-- visibly turns the body/camera -- runner had time to finish the action and
+-- restoreAll BEFORE the next render frame ever fired renderhold.
+ACTIONS.look   = function(a) held.cam  = { yaw = a.x or 0, pitch = a.y or 0 }; state.techCamOverride  = true; applyCamHold()  end
+ACTIONS.rotate = function(a) held.body = { yaw = a.x or 0, pitch = a.y or 0 }; state.techBodyOverride = true; applyBodyHold() end
 ACTIONS.wait   = function(a) task.wait(a.seconds or a.x or 0.5) end
 ACTIONS["return"] = function() releaseHold(true) end
 ACTIONS.feature = function(a)
