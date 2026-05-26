@@ -332,37 +332,29 @@ local function fireButton(btn)
     if supp then task.defer(function() for _, c in ipairs(supp) do pcall(function() c:Disable() end) end end) end
 end
 
--- Forward decls so fireKeyBypass can call into the wire fns defined later.
-local wireKey, wireMove
+-- Flag-based CAS sink bypass: while bypassKeys[kc] is true, any Pantheon CAS
+-- sink for that key returns Pass instead of Sink, so the VIM-sent key reaches
+-- the game's handler instead of being swallowed (and re-triggering us). Cleaner
+-- than unbind/rebind -- no race window, sink stays bound throughout.
+Engine.bypassKeys = {}
+local bypassKeys = Engine.bypassKeys
 
--- Send a VIM key with any Pantheon CAS sink for that key temporarily UNBOUND,
--- so the GAME's handler receives the key instead of our sink swallowing it +
--- re-firing the same tech. Used by Use Move when a per-game scan tagged the
--- entry with useKey=true (e.g. JJS, where the button's MB1Down handler is
--- just visual feedback and the actual move fires from the keypress).
 local function fireKeyBypass(kc)
     if not kc or kc == Enum.KeyCode.Unknown then return end
-    local toRebind = {}
-    for techId, action in pairs(casBound) do
-        local tech = techs[techId]
-        if tech and tech.trigger then
-            local tk = (tech.trigger.event == "move") and safeKeyCode(tech.trigger.movekey)
-                       or ((tech.trigger.event == "key" or tech.trigger.event == "keyhold") and tech.trigger.key)
-            if tk == kc then
-                pcall(function() CAS:UnbindAction(action) end)
-                casBound[techId] = nil
-                toRebind[#toRebind + 1] = tech
-            end
-        end
-    end
+    -- Restore AutoRotate during the VIM send -- some games' move handlers won't
+    -- start their move animation/cast while AutoRotate is false (Rotate sets it
+    -- false to hold the facing). We re-disable after so a tech can keep its
+    -- rotation past the move.
+    local ch = myChar()
+    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+    local wasAR = hum and (not hum.AutoRotate) and bodyARDisabled
+    if wasAR then hum.AutoRotate = true end
+    bypassKeys[kc] = true
     pcall(function() VIM:SendKeyEvent(true, kc, false, game) end)
-    task.wait(0.04)
+    task.wait(0.06)
     pcall(function() VIM:SendKeyEvent(false, kc, false, game) end)
-    for _, tech in ipairs(toRebind) do
-        if tech.enabled then
-            if tech.trigger.event == "move" then wireMove(tech) else wireKey(tech) end
-        end
-    end
+    bypassKeys[kc] = nil
+    if wasAR and hum and hum.Parent then hum.AutoRotate = false end
 end
 
 -- ACTION: fire a move via its scanned entry. Default = click the GUI button
@@ -648,17 +640,20 @@ end
 function Engine.captureAnim(cb) animCaptureCbs[#animCaptureCbs + 1] = cb end
 
 -- ===== trigger wiring =====
-function wireKey(tech)
+local function wireKey(tech)
     local key = tech.trigger.key
     if not key or key == Enum.KeyCode.Unknown then return end
     local isHold = tech.trigger.event == "keyhold"
     if tech.trigger.suppress then
         -- "Block this key's normal action": intercept the key with a high-priority
         -- CAS bind + Sink, so the press runs THIS tech and the game never sees the
-        -- key (so it can't fire the move). The tech fires the move via Use Move.
+        -- key (so it can't fire the move). The tech fires the move via Use Move,
+        -- which sets bypassKeys[kc]=true so the sink passes the VIM-sent key
+        -- through instead of swallowing + re-triggering us.
         keybinds.clear("tech." .. tech.id)
         local action = "PantheonTech_" .. tech.id
         CAS:BindActionAtPriority(action, function(_, inputState)
+            if bypassKeys[key] then return Enum.ContextActionResult.Pass end
             if inputState == Enum.UserInputState.Begin then
                 if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then queueRun(tech, isHold) end
             elseif inputState == Enum.UserInputState.End and isHold then
@@ -681,7 +676,7 @@ end
 -- scanned moveset (for the label); trigger.movekey is that move's key (auto-filled
 -- from the scan, editable). Bound through the keybind dispatcher (UIS.InputBegan)
 -- exactly like a key trigger, so it lands on keydown.
-function wireMove(tech)
+local function wireMove(tech)
     local keyName = tech.trigger.movekey
     local kc = keyName and safeKeyCode(keyName)
     if not kc or kc == Enum.KeyCode.Unknown then
@@ -692,12 +687,11 @@ function wireMove(tech)
         keybinds.clear("tech." .. tech.id)   -- drop any prior UIS bind (mode switch)
         -- "Cancel the move's normal fire": intercept the key with a high-priority
         -- ContextActionService bind and SINK it, so the press runs THIS tech and the
-        -- game's own keybind for the move never sees it. The tech fires the move
-        -- itself via a Use Move step. (Sink only blocks lower CAS binds, not raw
-        -- UserInputService listeners -- see notes; applySuppression covers the button
-        -- path too.) This is the "fast filter": key down -> us -> sink.
+        -- game's own keybind for the move never sees it. Use Move flips
+        -- bypassKeys[kc] while VIM-sending so this sink passes the key through.
         local action = "PantheonTech_" .. tech.id
         CAS:BindActionAtPriority(action, function(_, inputState)
+            if bypassKeys[kc] then return Enum.ContextActionResult.Pass end
             if inputState == Enum.UserInputState.Begin
                and tech.enabled and modifierHeld(tech) and conditionsMet(tech) then
                 queueRun(tech, false)
