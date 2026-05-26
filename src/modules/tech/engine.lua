@@ -534,8 +534,22 @@ local function onAnimPlayed(track)
     -- diagnostic: with an anim tech ON, log every id that plays so you can see
     -- whether the hook catches your move and what id to bind it to.
     if watching then log.info("[tech] anim played: " .. id .. (animIdNum(raw) ~= id and "" or "")) end
-    -- below: moves only -- skip locomotion so the dropdown/Capture stay clean
+    -- below: moves only -- skip locomotion AND emotes so the dropdown/Capture
+    -- stay clean. Emote anims live under paths containing "Emote" (e.g.
+    -- ReplicatedStorage.Emotes.* in JJS); a played emote was flooding the picker
+    -- as the moveset list. Note: existing anim techs bound to an emote id still
+    -- fire (the firing check above runs before this filter); we just don't add
+    -- new emote anims to history or hand them to Capture.
     if locomotionIds()[id] then return end
+    do
+        local path = animNameMap[id]
+        if not path then
+            local a = track and track.Animation
+            local ok, full = pcall(function() return a and a:GetFullName() end)
+            if ok and full then path = full end
+        end
+        if path and path:lower():find("emote", 1, true) then return end
+    end
     recordAnim(track, id, raw)
     if #animCaptureCbs > 0 then
         local cbs = animCaptureCbs; animCaptureCbs = {}
