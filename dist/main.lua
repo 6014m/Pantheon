@@ -2581,11 +2581,14 @@ end
 
 -- PAIR mode: hide the GAME's own shiftlock icon while Pantheon's shiftlock is
 -- active, so only our icon shows -- WITHOUT destroying it (we still pair with the
--- game's shiftlock state for sync + rotation). Heuristic: any ScreenGui/GuiObject
--- under PlayerGui whose name contains "shiftlock". Remembers exactly what it hid
--- and restores it when Pantheon's shiftlock goes inactive.
--- NOTE: if JJS names its icon something without "shiftlock" in it, this won't
--- catch it -- grab the icon's instance name (Dex/explorer) and we target it.
+-- game's shiftlock state for sync + rotation). Match: ScreenGui/GuiObject under
+-- PlayerGui whose own OR parent's name contains "shiftlock". Remembers exactly
+-- what it hid and restores it when Pantheon's shiftlock goes inactive.
+-- NOTE: dropped the "small image near screen center" heuristic -- it was a JJS
+-- fallback that caught everything else near center (crosshairs / status icons /
+-- hit markers) since JJS has no visible PC shiftlock icon at all. If a future
+-- game has one with an off-pattern name, grab it via [Dev] explorer and we add
+-- to a per-game name list instead of guessing by position.
 local hiddenStore = {}   -- { {inst, prop, originalValue}, ... }
 local iconScanT = 0
 
@@ -2596,39 +2599,24 @@ local lastReportedN = -1
 local function scanShiftlockIcons()
     local pg = lp():FindFirstChildOfClass("PlayerGui")
     if not pg then return end
-    local cam = workspace.CurrentCamera
-    local center = cam and (cam.ViewportSize / 2) or Vector2.new(960, 540)
     local known = {}
     for _, e in ipairs(hiddenStore) do known[e[1]] = true end
     for _, gobj in ipairs(pg:GetDescendants()) do
         if not known[gobj] then
             local isSG = gobj:IsA("ScreenGui")
-            local hit = false
-            -- (1) name OR parent name contains "shiftlock" (the 'Lock' image sits
-            --     inside a 'ShiftLock' container)
             if isSG or gobj:IsA("GuiObject") then
-                hit = (string.find(nameClean(gobj.Name), "shiftlock") ~= nil)
+                local hit = (string.find(nameClean(gobj.Name), "shiftlock") ~= nil)
                     or (gobj.Parent and string.find(nameClean(gobj.Parent.Name), "shiftlock") ~= nil)
-            end
-            -- (2) name-independent: a SMALL image near SCREEN CENTER is the shiftlock
-            --     crosshair/lock indicator whatever it's called. This is the reliable
-            --     catch since JJS's icon name didn't match.
-            if not hit and (gobj:IsA("ImageLabel") or gobj:IsA("ImageButton")) then
-                local sz = gobj.AbsoluteSize
-                if sz.X > 0 and sz.X <= 80 and sz.Y <= 80 then
-                    local c = gobj.AbsolutePosition + sz / 2
-                    if (c - center).Magnitude <= 90 then hit = true end
+                if hit then
+                    local prop = isSG and "Enabled" or "Visible"
+                    local ok, cur = pcall(function() return gobj[prop] end)
+                    if ok then hiddenStore[#hiddenStore + 1] = { gobj, prop, cur } end
                 end
-            end
-            if hit then
-                local prop = isSG and "Enabled" or "Visible"
-                local ok, cur = pcall(function() return gobj[prop] end)
-                if ok then hiddenStore[#hiddenStore + 1] = { gobj, prop, cur } end
             end
         end
     end
     -- report (toast + log) whenever the hidden-count changes, so we can SEE on
-    -- screen whether it's actually finding JJS's icon.
+    -- screen whether it's actually finding the game's icon.
     if #hiddenStore ~= lastReportedN then
         lastReportedN = #hiddenStore
         local names = {}
@@ -4606,9 +4594,10 @@ _MODULES["modules.tech.scanner"] = function()
 -- (ReplicatedStorage.Knit.Knit.Services that own an RE). Plus skill-bar / cooldown
 -- / keybind cues. You confirm the matches.
 
-local Players = game:GetService("Players")
-local RS      = game:GetService("ReplicatedStorage")
-local log     = require("core.log")
+local Players  = game:GetService("Players")
+local RS       = game:GetService("ReplicatedStorage")
+local log      = require("core.log")
+local registry = require("games.registry")
 
 local Scanner = {}
 local cached = nil
@@ -4696,6 +4685,20 @@ end
 --     buttons in the lower screen, or a solo button with a keybind letter +
 --     cooldown. Service names only label a match. Closed menus skipped (onScreen).
 -- Returns { services, buttons = {{button,name,text,move,key},...}, diag = {...} }
+-- Annotate a button entry's `move` (Knit service name) by matching its name/text
+-- against service stems (e.g. "Projection Breaker" -> "ProjectionBreakerService"),
+-- so per-game scans don't have to duplicate this logic.
+local function annotateMove(b, stems)
+    if b.move then return end
+    local nm  = clean(b.name or "")
+    local txt = clean(b.text or "")
+    for stem, svc in pairs(stems) do
+        if (nm ~= "" and nm:find(stem, 1, true)) or (txt ~= "" and txt:find(stem, 1, true)) then
+            b.move = svc; return
+        end
+    end
+end
+
 function Scanner.scan()
     local LP = Players.LocalPlayer
     local pg = LP:FindFirstChildOfClass("PlayerGui")
@@ -4704,6 +4707,23 @@ function Scanner.scan()
     for _, svc in ipairs(services) do
         local stem = clean((svc:gsub("Service$", "")))
         if #stem >= 3 then stems[stem] = svc end
+    end
+
+    -- PER-GAME HOOK: a game module (e.g. games/jjs.lua) may expose scanMoves(pg)
+    -- that knows the game's exact moveset layout. Runs FIRST -- if it returns a
+    -- non-empty list, we trust it and skip the generic heuristics (named slots /
+    -- cluster). The scanner still annotates `move` from service stems so the
+    -- per-game hook only has to return {button, name, text, key}.
+    if pg then
+        local mod = registry.current()
+        if mod and type(mod.scanMoves) == "function" then
+            local ok, gameButtons = pcall(mod.scanMoves, pg)
+            if ok and type(gameButtons) == "table" and #gameButtons > 0 then
+                for _, b in ipairs(gameButtons) do annotateMove(b, stems) end
+                cached = { services = services, buttons = gameButtons, diag = { "per-game scan (" .. tostring(#gameButtons) .. ")" } }
+                return cached
+            end
+        end
     end
 
     local buttons, diag, cand = {}, {}, {}
@@ -6040,6 +6060,40 @@ local function ratioPointPerfect()
             ReplicatedStorage.Knit.Knit.Services.NanamiService.RE.RightActivated:FireServer(tChar)
         end)
     end)
+end
+
+-- Per-game move scanner hook (called by modules.tech.scanner first; generic scan is
+-- the fallback). JJS's hotbar: PlayerGui.Controls (SG) > Controls > Moveset > <MoveName>
+-- > ItemName -- the inner "Controls" Frame matters (the SG and its Frame child share a
+-- name). Each ItemName TextButton has the real MouseButton1Down handler on it directly
+-- (no inner Base button like TSB). Slot frame's Name is the move name (e.g. "Projection
+-- Breaker"); keys 1..N map to the slots LEFT-TO-RIGHT by AbsolutePosition.X. The scanner
+-- annotates `move` (Knit service name) from these entries via the shared stem matcher.
+function JJS.scanMoves(pg)
+    -- Be tolerant of layout shifts: descend Controls SG looking for the Moveset frame.
+    local sg = pg:FindFirstChild("Controls")
+    if not sg then return nil end
+    local moveset
+    for _, d in ipairs(sg:GetDescendants()) do
+        if d.Name == "Moveset" and (d:IsA("GuiObject") or d:IsA("Folder")) then moveset = d; break end
+    end
+    if not moveset then return nil end
+
+    local slots = {}
+    for _, child in ipairs(moveset:GetChildren()) do
+        local btn = child:FindFirstChild("ItemName")
+        if btn and (btn:IsA("TextButton") or btn:IsA("ImageButton")) then
+            slots[#slots + 1] = { name = child.Name, button = btn, x = btn.AbsolutePosition.X }
+        end
+    end
+    if #slots == 0 then return nil end
+    table.sort(slots, function(a, b) return a.x < b.x end)
+
+    local out = {}
+    for i, s in ipairs(slots) do
+        out[#out + 1] = { button = s.button, name = s.name, text = s.name, key = tostring(i) }
+    end
+    return out
 end
 
 function JJS.register()

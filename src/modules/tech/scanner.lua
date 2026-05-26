@@ -6,9 +6,10 @@
 -- (ReplicatedStorage.Knit.Knit.Services that own an RE). Plus skill-bar / cooldown
 -- / keybind cues. You confirm the matches.
 
-local Players = game:GetService("Players")
-local RS      = game:GetService("ReplicatedStorage")
-local log     = require("core.log")
+local Players  = game:GetService("Players")
+local RS       = game:GetService("ReplicatedStorage")
+local log      = require("core.log")
+local registry = require("games.registry")
 
 local Scanner = {}
 local cached = nil
@@ -96,6 +97,20 @@ end
 --     buttons in the lower screen, or a solo button with a keybind letter +
 --     cooldown. Service names only label a match. Closed menus skipped (onScreen).
 -- Returns { services, buttons = {{button,name,text,move,key},...}, diag = {...} }
+-- Annotate a button entry's `move` (Knit service name) by matching its name/text
+-- against service stems (e.g. "Projection Breaker" -> "ProjectionBreakerService"),
+-- so per-game scans don't have to duplicate this logic.
+local function annotateMove(b, stems)
+    if b.move then return end
+    local nm  = clean(b.name or "")
+    local txt = clean(b.text or "")
+    for stem, svc in pairs(stems) do
+        if (nm ~= "" and nm:find(stem, 1, true)) or (txt ~= "" and txt:find(stem, 1, true)) then
+            b.move = svc; return
+        end
+    end
+end
+
 function Scanner.scan()
     local LP = Players.LocalPlayer
     local pg = LP:FindFirstChildOfClass("PlayerGui")
@@ -104,6 +119,23 @@ function Scanner.scan()
     for _, svc in ipairs(services) do
         local stem = clean((svc:gsub("Service$", "")))
         if #stem >= 3 then stems[stem] = svc end
+    end
+
+    -- PER-GAME HOOK: a game module (e.g. games/jjs.lua) may expose scanMoves(pg)
+    -- that knows the game's exact moveset layout. Runs FIRST -- if it returns a
+    -- non-empty list, we trust it and skip the generic heuristics (named slots /
+    -- cluster). The scanner still annotates `move` from service stems so the
+    -- per-game hook only has to return {button, name, text, key}.
+    if pg then
+        local mod = registry.current()
+        if mod and type(mod.scanMoves) == "function" then
+            local ok, gameButtons = pcall(mod.scanMoves, pg)
+            if ok and type(gameButtons) == "table" and #gameButtons > 0 then
+                for _, b in ipairs(gameButtons) do annotateMove(b, stems) end
+                cached = { services = services, buttons = gameButtons, diag = { "per-game scan (" .. tostring(#gameButtons) .. ")" } }
+                return cached
+            end
+        end
     end
 
     local buttons, diag, cand = {}, {}, {}

@@ -70,6 +70,40 @@ local function ratioPointPerfect()
     end)
 end
 
+-- Per-game move scanner hook (called by modules.tech.scanner first; generic scan is
+-- the fallback). JJS's hotbar: PlayerGui.Controls (SG) > Controls > Moveset > <MoveName>
+-- > ItemName -- the inner "Controls" Frame matters (the SG and its Frame child share a
+-- name). Each ItemName TextButton has the real MouseButton1Down handler on it directly
+-- (no inner Base button like TSB). Slot frame's Name is the move name (e.g. "Projection
+-- Breaker"); keys 1..N map to the slots LEFT-TO-RIGHT by AbsolutePosition.X. The scanner
+-- annotates `move` (Knit service name) from these entries via the shared stem matcher.
+function JJS.scanMoves(pg)
+    -- Be tolerant of layout shifts: descend Controls SG looking for the Moveset frame.
+    local sg = pg:FindFirstChild("Controls")
+    if not sg then return nil end
+    local moveset
+    for _, d in ipairs(sg:GetDescendants()) do
+        if d.Name == "Moveset" and (d:IsA("GuiObject") or d:IsA("Folder")) then moveset = d; break end
+    end
+    if not moveset then return nil end
+
+    local slots = {}
+    for _, child in ipairs(moveset:GetChildren()) do
+        local btn = child:FindFirstChild("ItemName")
+        if btn and (btn:IsA("TextButton") or btn:IsA("ImageButton")) then
+            slots[#slots + 1] = { name = child.Name, button = btn, x = btn.AbsolutePosition.X }
+        end
+    end
+    if #slots == 0 then return nil end
+    table.sort(slots, function(a, b) return a.x < b.x end)
+
+    local out = {}
+    for i, s in ipairs(slots) do
+        out[#out + 1] = { button = s.button, name = s.name, text = s.name, key = tostring(i) }
+    end
+    return out
+end
+
 function JJS.register()
     -- JJS ships its own shiftlock, which overlapped Pantheon's. Auto-engage PAIR mode
     -- so Pantheon syncs its shiftlock to the game's and keeps rotating in lockstep

@@ -332,11 +332,14 @@ end
 
 -- PAIR mode: hide the GAME's own shiftlock icon while Pantheon's shiftlock is
 -- active, so only our icon shows -- WITHOUT destroying it (we still pair with the
--- game's shiftlock state for sync + rotation). Heuristic: any ScreenGui/GuiObject
--- under PlayerGui whose name contains "shiftlock". Remembers exactly what it hid
--- and restores it when Pantheon's shiftlock goes inactive.
--- NOTE: if JJS names its icon something without "shiftlock" in it, this won't
--- catch it -- grab the icon's instance name (Dex/explorer) and we target it.
+-- game's shiftlock state for sync + rotation). Match: ScreenGui/GuiObject under
+-- PlayerGui whose own OR parent's name contains "shiftlock". Remembers exactly
+-- what it hid and restores it when Pantheon's shiftlock goes inactive.
+-- NOTE: dropped the "small image near screen center" heuristic -- it was a JJS
+-- fallback that caught everything else near center (crosshairs / status icons /
+-- hit markers) since JJS has no visible PC shiftlock icon at all. If a future
+-- game has one with an off-pattern name, grab it via [Dev] explorer and we add
+-- to a per-game name list instead of guessing by position.
 local hiddenStore = {}   -- { {inst, prop, originalValue}, ... }
 local iconScanT = 0
 
@@ -347,39 +350,24 @@ local lastReportedN = -1
 local function scanShiftlockIcons()
     local pg = lp():FindFirstChildOfClass("PlayerGui")
     if not pg then return end
-    local cam = workspace.CurrentCamera
-    local center = cam and (cam.ViewportSize / 2) or Vector2.new(960, 540)
     local known = {}
     for _, e in ipairs(hiddenStore) do known[e[1]] = true end
     for _, gobj in ipairs(pg:GetDescendants()) do
         if not known[gobj] then
             local isSG = gobj:IsA("ScreenGui")
-            local hit = false
-            -- (1) name OR parent name contains "shiftlock" (the 'Lock' image sits
-            --     inside a 'ShiftLock' container)
             if isSG or gobj:IsA("GuiObject") then
-                hit = (string.find(nameClean(gobj.Name), "shiftlock") ~= nil)
+                local hit = (string.find(nameClean(gobj.Name), "shiftlock") ~= nil)
                     or (gobj.Parent and string.find(nameClean(gobj.Parent.Name), "shiftlock") ~= nil)
-            end
-            -- (2) name-independent: a SMALL image near SCREEN CENTER is the shiftlock
-            --     crosshair/lock indicator whatever it's called. This is the reliable
-            --     catch since JJS's icon name didn't match.
-            if not hit and (gobj:IsA("ImageLabel") or gobj:IsA("ImageButton")) then
-                local sz = gobj.AbsoluteSize
-                if sz.X > 0 and sz.X <= 80 and sz.Y <= 80 then
-                    local c = gobj.AbsolutePosition + sz / 2
-                    if (c - center).Magnitude <= 90 then hit = true end
+                if hit then
+                    local prop = isSG and "Enabled" or "Visible"
+                    local ok, cur = pcall(function() return gobj[prop] end)
+                    if ok then hiddenStore[#hiddenStore + 1] = { gobj, prop, cur } end
                 end
-            end
-            if hit then
-                local prop = isSG and "Enabled" or "Visible"
-                local ok, cur = pcall(function() return gobj[prop] end)
-                if ok then hiddenStore[#hiddenStore + 1] = { gobj, prop, cur } end
             end
         end
     end
     -- report (toast + log) whenever the hidden-count changes, so we can SEE on
-    -- screen whether it's actually finding JJS's icon.
+    -- screen whether it's actually finding the game's icon.
     if #hiddenStore ~= lastReportedN then
         lastReportedN = #hiddenStore
         local names = {}
