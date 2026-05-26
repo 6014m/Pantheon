@@ -117,6 +117,21 @@ function JJS.scanMoves(pg)
 end
 
 function JJS.register()
+    -- LOUD load-time toast so we can SEE whether this code path actually ran in
+    -- the executor. If you see "Pantheon loaded" but NOT "JJS registered" then
+    -- registry.current() didn't find us for this PlaceId/GameId.
+    local buildTag = tostring(rawget(_G, "PANTHEON_BUILD") or "?")
+    pcall(function() notify.success("JJS registered (build " .. buildTag .. ")", 8) end)
+    log.info("JJS module REGISTER on PlaceId=" .. tostring(game.PlaceId) .. " GameId=" .. tostring(game.GameId))
+
+    -- Eagerly run scanMoves once now so the diagnostic toast fires at load
+    -- (instead of waiting for the user to open the picker).
+    pcall(function()
+        local Players = game:GetService("Players")
+        local pg = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        if pg then JJS.scanMoves(pg) end
+    end)
+
     -- JJS ships its own shiftlock, which overlapped Pantheon's. Auto-engage PAIR mode
     -- so Pantheon syncs its shiftlock to the game's and keeps rotating in lockstep
     -- (instead of running a second competing one or fighting it). Per-game patch:
