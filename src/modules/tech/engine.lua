@@ -140,6 +140,20 @@ end
 -- never adds a Return -- otherwise a 180 instantly snaps back at one-shot end.
 local function releaseHold(snap)
     local didRotate = bodyARDisabled   -- a Rotate step actually turned the body
+    -- Persist mode (snap=false) under shiftlock: the body is currently held at the
+    -- rotated yaw via the override, but the camera is wherever the user's mouse
+    -- left it. The moment we clear the override, shiftlock's per-frame pin will
+    -- re-align body to camera (snapping the body back). To make the rotation
+    -- actually persist, snap the CAMERA to match the body's final yaw FIRST --
+    -- then when shiftlock takes over they're already aligned, no fight.
+    if not snap and didRotate and state.shiftlock_active then
+        local root = myRoot()
+        local cam = Workspace.CurrentCamera
+        if root and cam then
+            local _, ya = root.CFrame:ToEulerAnglesYXZ()
+            cam.CFrame = CFrame.new(cam.CFrame.Position) * CFrame.Angles(0, ya, 0)
+        end
+    end
     held.cam, held.body = nil, nil
     state.techCamOverride = false
     state.techBodyOverride = false
