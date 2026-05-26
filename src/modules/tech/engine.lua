@@ -71,12 +71,13 @@ local function camBaseFlat()
     return cam and Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z) or Vector3.zAxis
 end
 
+-- Rotate is BODY-ONLY: yaw is an offset from the body's facing CAPTURED AT TECH
+-- START (yaw 0 = same as start, 180 = opposite). NOT camera-relative, NOT
+-- target-relative (Look handles target-relative camera). Anchoring to the start
+-- facing (not live LookVector) avoids per-frame yaw compounding -> spin.
 local function bodyBaseFlat()
-    local r, tr = myRoot(), targetRoot()
-    if r and tr then local d = tr.Position - r.Position; return Vector3.new(d.X, 0, d.Z) end
-    -- No target: anchor to the facing CAPTURED AT TECH START, not the live LookVector.
-    -- Re-reading the live look each frame compounds the yaw -> the body spins.
     if startBodyLook then return Vector3.new(startBodyLook.X, 0, startBodyLook.Z) end
+    local r = myRoot()
     if r then local l = r.CFrame.LookVector; return Vector3.new(l.X, 0, l.Z) end
     return Vector3.zAxis
 end
