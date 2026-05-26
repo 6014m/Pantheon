@@ -107,9 +107,12 @@ function JJS.scanMoves(pg)
     if #slots == 0 then scanReport("Moveset empty", 0); return nil end
     table.sort(slots, function(a, b) return a.x < b.x end)
 
+    -- useKey=true tells the engine's Use Move action to VIM-send the slot key
+    -- instead of clicking the button. JJS's ItemName button MB1Down handler is
+    -- visual-only; the actual move fires from the keypress.
     local out, names = {}, {}
     for i, s in ipairs(slots) do
-        out[#out + 1] = { button = s.button, name = s.name, text = s.name, key = tostring(i) }
+        out[#out + 1] = { button = s.button, name = s.name, text = s.name, key = tostring(i), useKey = true }
         names[#names + 1] = s.name
     end
     scanReport("ok", #out, table.concat(names, ", "))

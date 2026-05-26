@@ -133,13 +133,16 @@ local function renderHold()
     end
 end
 
-local function releaseHold()
+-- Releases cam/body override flags. If `snap` is true (explicit Return / bounded
+-- During->Wait / keyhold release / shutdown), also snaps cam+body back to where
+-- the tech started. Default false: rotation PERSISTS until the next move/input
+-- naturally turns you, which is the desired behavior when a tech rotates and
+-- never adds a Return -- otherwise a 180 instantly snaps back at one-shot end.
+local function releaseHold(snap)
     local didRotate = bodyARDisabled   -- a Rotate step actually turned the body
     held.cam, held.body = nil, nil
     state.techCamOverride = false
     state.techBodyOverride = false
-    -- hand auto-rotate back if a Rotate step took it (lockon/shiftlock re-manage
-    -- it next frame if they're active, since the override flags are now clear).
     if bodyARDisabled then
         local ch = myChar()
         local hum = ch and ch:FindFirstChildOfClass("Humanoid")
@@ -147,9 +150,7 @@ local function releaseHold()
         bodyARDisabled = false
     end
     if techAlign then techAlign.Enabled = false end
-    -- no Lock-On to re-aim us? snap the camera AND body back to where we started, so
-    -- a Rotate (e.g. 180) doesn't leave you stuck facing that way until you move.
-    if not (state.lockon_enabled and state.target) then
+    if snap and not (state.lockon_enabled and state.target) then
         local cam = Workspace.CurrentCamera
         if cam and startCamLook then cam.CFrame = CFrame.new(cam.CFrame.Position, cam.CFrame.Position + startCamLook) end
         if didRotate and startBodyLook then
@@ -167,7 +168,7 @@ local ACTIONS = {}
 ACTIONS.look   = function(a) held.cam  = { yaw = a.x or 0, pitch = a.y or 0 }; state.techCamOverride  = true end
 ACTIONS.rotate = function(a) held.body = { yaw = a.x or 0, pitch = a.y or 0 }; state.techBodyOverride = true end
 ACTIONS.wait   = function(a) task.wait(a.seconds or a.x or 0.5) end
-ACTIONS["return"] = function() releaseHold() end
+ACTIONS["return"] = function() releaseHold(true) end
 ACTIONS.feature = function(a)
     if a.value == nil then feature.fire(a.feature) else feature.setEnabled(a.feature, a.value) end
 end
@@ -313,8 +314,56 @@ local function fireButton(btn)
     if supp then task.defer(function() for _, c in ipairs(supp) do pcall(function() c:Disable() end) end end) end
 end
 
--- ACTION: fire a move via its GUI button (a.move = the scanned button name)
-ACTIONS.usebtn = function(a) fireButton(findMoveButton(a.move)) end
+-- Forward decls so fireKeyBypass can call into the wire fns defined later.
+local wireKey, wireMove
+
+-- Send a VIM key with any Pantheon CAS sink for that key temporarily UNBOUND,
+-- so the GAME's handler receives the key instead of our sink swallowing it +
+-- re-firing the same tech. Used by Use Move when a per-game scan tagged the
+-- entry with useKey=true (e.g. JJS, where the button's MB1Down handler is
+-- just visual feedback and the actual move fires from the keypress).
+local function fireKeyBypass(kc)
+    if not kc or kc == Enum.KeyCode.Unknown then return end
+    local toRebind = {}
+    for techId, action in pairs(casBound) do
+        local tech = techs[techId]
+        if tech and tech.trigger then
+            local tk = (tech.trigger.event == "move") and safeKeyCode(tech.trigger.movekey)
+                       or ((tech.trigger.event == "key" or tech.trigger.event == "keyhold") and tech.trigger.key)
+            if tk == kc then
+                pcall(function() CAS:UnbindAction(action) end)
+                casBound[techId] = nil
+                toRebind[#toRebind + 1] = tech
+            end
+        end
+    end
+    pcall(function() VIM:SendKeyEvent(true, kc, false, game) end)
+    task.wait(0.04)
+    pcall(function() VIM:SendKeyEvent(false, kc, false, game) end)
+    for _, tech in ipairs(toRebind) do
+        if tech.enabled then
+            if tech.trigger.event == "move" then wireMove(tech) else wireKey(tech) end
+        end
+    end
+end
+
+-- ACTION: fire a move via its scanned entry. Default = click the GUI button
+-- (TSB-style: button click fires the move). If the per-game scan tagged the
+-- entry with useKey=true (JJS-style: keypress fires the move, button is
+-- visual-only), VIM-send the key with CAS bypass instead.
+ACTIONS.usebtn = function(a)
+    local res = scanner.cached() or scanner.scan()
+    local entry
+    for _, b in ipairs(res.buttons or {}) do
+        if b.name == a.move then entry = b; break end
+    end
+    if not entry then return end
+    if entry.useKey and entry.key then
+        local kc = safeKeyCode(entry.key)
+        if kc then fireKeyBypass(kc); return end
+    end
+    fireButton(entry.button)
+end
 
 -- Reconcile which move buttons should be "cancelled" right now: every ENABLED
 -- move tech whose trigger has suppress=true cancels its move button. Buttons no
@@ -352,8 +401,8 @@ local function runTech(tech, hold)
         local releaseAfterWait = false
         local heldKeys = {}    -- keys pressed by a Hold step, released by a Release (or at the end)
         local featRestore = {} -- [featureId] = state BEFORE this tech toggled it, for Return/end
-        local function restoreAll()
-            releaseHold()
+        local function restoreAll(snap)
+            releaseHold(snap)
             for id, prev in pairs(featRestore) do pcall(function() feature.setEnabled(id, prev) end); featRestore[id] = nil end
             for kc in pairs(heldKeys) do pcall(function() VIM:SendKeyEvent(false, kc, false, game) end); heldKeys[kc] = nil end
         end
@@ -365,7 +414,7 @@ local function runTech(tech, hold)
                 releaseAfterWait = true
             elseif a.type == "wait" then
                 task.wait(a.seconds or a.x or 0.5)
-                if releaseAfterWait then releaseHold(); releaseAfterWait = false end
+                if releaseAfterWait then releaseHold(true); releaseAfterWait = false end
             elseif a.type == "within" then
                 -- gate: hold here until the target is within `studs`, then continue
                 -- (e.g. rotate 90 -> Within 6 -> Use Rotation Lock -> side-dash).
@@ -378,7 +427,7 @@ local function runTech(tech, hold)
                     task.wait(0.05)
                 end
                 -- a preceding During holds the look/rotate only until THIS gate clears
-                if releaseAfterWait then releaseHold(); releaseAfterWait = false end
+                if releaseAfterWait then releaseHold(true); releaseAfterWait = false end
             elseif a.type == "hold" then
                 -- press the key DOWN and keep it held until the matching Release
                 -- (or the safety release at the end), so steps in between run while held.
@@ -395,18 +444,19 @@ local function runTech(tech, hold)
                     if a.value == nil then feature.fire(a.feature) else feature.setEnabled(a.feature, a.value) end
                 end
             elseif a.type == "return" then
-                -- Return = restore EVERYTHING to how it was before: drop the held
-                -- facing, undo every feature this tech toggled, release held keys.
-                restoreAll()
+                -- Return = restore EVERYTHING to how it was before: snap facing
+                -- back, undo every feature this tech toggled, release held keys.
+                restoreAll(true)
             else
                 local fn = ACTIONS[a.type]
                 if fn then local ok, err = pcall(fn, a); if not ok then log.warn("[tech] action " .. tostring(a.type) .. ": " .. tostring(err)) end end
             end
         end
-        -- one-shot techs auto-restore at the end (in case there's no explicit
-        -- Return) -- facing, feature toggles, and held keys all reset. Hold techs
-        -- keep their facing until the key is released.
-        if not hold then restoreAll() else
+        -- one-shot techs auto-clean at the end -- features toggled go back, held
+        -- keys release. Rotation does NOT snap back (snap = false): if the tech
+        -- ends without an explicit Return, the last Rotate persists until the
+        -- next move/input naturally turns you. Hold techs keep facing until key release.
+        if not hold then restoreAll(false) else
             for kc in pairs(heldKeys) do pcall(function() VIM:SendKeyEvent(false, kc, false, game) end) end
         end
         -- one-shot: release the weld-ignore now; hold techs keep it until key release
@@ -580,7 +630,7 @@ end
 function Engine.captureAnim(cb) animCaptureCbs[#animCaptureCbs + 1] = cb end
 
 -- ===== trigger wiring =====
-local function wireKey(tech)
+function wireKey(tech)
     local key = tech.trigger.key
     if not key or key == Enum.KeyCode.Unknown then return end
     local isHold = tech.trigger.event == "keyhold"
@@ -594,7 +644,7 @@ local function wireKey(tech)
             if inputState == Enum.UserInputState.Begin then
                 if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then queueRun(tech, isHold) end
             elseif inputState == Enum.UserInputState.End and isHold then
-                releaseHold()
+                releaseHold(true)
                 if tech.trigger.ignoreWelds then state.techIgnoreWelds = false end
             end
             return Enum.ContextActionResult.Sink
@@ -604,7 +654,7 @@ local function wireKey(tech)
     end
     keybinds.set("tech." .. tech.id, key,
         function() if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then queueRun(tech, isHold) end end,
-        function() if isHold then releaseHold(); if tech.trigger.ignoreWelds then state.techIgnoreWelds = false end end end)
+        function() if isHold then releaseHold(true); if tech.trigger.ignoreWelds then state.techIgnoreWelds = false end end end)
 end
 
 -- The "move" trigger fires the INSTANT the move's KEY is pressed (keydown), so the
@@ -613,7 +663,7 @@ end
 -- scanned moveset (for the label); trigger.movekey is that move's key (auto-filled
 -- from the scan, editable). Bound through the keybind dispatcher (UIS.InputBegan)
 -- exactly like a key trigger, so it lands on keydown.
-local function wireMove(tech)
+function wireMove(tech)
     local keyName = tech.trigger.movekey
     local kc = keyName and safeKeyCode(keyName)
     if not kc or kc == Enum.KeyCode.Unknown then
@@ -825,7 +875,7 @@ function Engine.destroy()
     if drainConn then pcall(function() drainConn:Disconnect() end); drainConn = nil end
     for _, list in pairs(conns) do for _, c in ipairs(list) do pcall(function() c:Disconnect() end) end end
     conns = {}
-    releaseHold()
+    releaseHold(true)
     if techAlign then pcall(function() techAlign:Destroy() end); techAlign = nil end
     if techAttach then pcall(function() techAttach:Destroy() end); techAttach = nil end
 end
