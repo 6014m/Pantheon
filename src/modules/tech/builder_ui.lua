@@ -27,8 +27,9 @@ local draft
 local animDropOpen = false   -- is the played-anim dropdown expanded right now
 
 local CONDITIONS = {
-    { id = "locked_on", label = "Locked on"    },
-    { id = "shiftlock", label = "Shiftlock on" },
+    { id = "locked_on",      label = "Locked on"          },
+    { id = "shiftlock",      label = "Shiftlock on"       },
+    { id = "target_playing", label = "Target playing anim" },
 }
 -- palette buttons (Release is added automatically with Hold, not its own button)
 local ACTION_TYPES = { "look", "rotate", "during", "wait", "within", "return", "feature", "key", "hold", "usebtn" }
@@ -115,6 +116,19 @@ local function toKeyCode(name)
     return ok and kc or nil
 end
 
+-- Resolve the current character name from the active per-game module's
+-- detectCharacter() hook, used by char-scoped techs. Returns nil when there's
+-- no per-game module or it can't determine the character yet.
+local function detectCurrentCharacter()
+    local ok, registry = pcall(require, "games.registry")
+    if not ok or not registry then return nil end
+    local mod = registry.current()
+    local fn = mod and mod.detectCharacter
+    if type(fn) ~= "function" then return nil end
+    local ok2, name = pcall(fn)
+    return ok2 and name or nil
+end
+
 -- ---------- draft <-> tech ----------
 local function newDraft()
     return { name = "New Tech", scope = "game", event = "key",
@@ -128,12 +142,23 @@ local function draftFromTech(t)
         actions[#actions + 1] = { type = a.type, x = a.x, y = a.y, seconds = a.seconds,
             studs = a.studs, feature = a.feature, key = a.key, holdId = a.holdId, move = a.move }
     end
+    -- Decode scope. Numeric or unspecified -> "game" (saved as PlaceId/GameId on
+    -- save). "universal" stays as-is. "char:<name>" maps to "char" and the
+    -- pinned name (so editing preserves the char binding even if we're not
+    -- currently playing as that character).
+    local scope, pinChar = "game", nil
+    if t.scope == "universal" then scope = "universal"
+    elseif type(t.scope) == "string" then
+        local cn = t.scope:match("^char:(.+)$")
+        if cn then scope = "char"; pinChar = cn end
+    end
     return {
         editId = t.id, name = t.name,
-        scope = (t.scope == "universal") and "universal" or "game",
+        scope = scope, pinChar = pinChar,
         event = t.trigger.event, key = t.trigger.key, move = t.trigger.move, movekey = t.trigger.movekey,
         modkey = t.trigger.modkey, maxRange = t.trigger.maxRange,
         animId = t.trigger.animId, animEnd = t.trigger.animEnd,
+        targetAnimId = t.trigger.targetAnimId,
         suppress = t.trigger.suppress, ignoreWelds = t.trigger.ignoreWelds,
         conditions = conds, actions = actions,
     }
@@ -162,12 +187,26 @@ local function draftActions()
     return actions
 end
 local function buildTechFromDraft(id)
+    -- Resolve scope to its persisted form. char-scope pins the character name
+    -- captured at save time (pinChar if set, else the live detected name); we
+    -- fall back to game scope when neither is available so a char-locked save
+    -- with no detection can't accidentally become a universal/no-op tech.
+    local scope
+    if draft.scope == "universal" then
+        scope = "universal"
+    elseif draft.scope == "char" then
+        local cn = draft.pinChar or detectCurrentCharacter()
+        scope = cn and ("char:" .. cn) or game.GameId
+    else
+        scope = game.GameId
+    end
     return {
         id = id, name = (draft.name and #draft.name > 0) and draft.name or "Tech", custom = true,
-        scope = (draft.scope == "universal") and "universal" or game.GameId, enabled = true,
+        scope = scope, enabled = true,
         trigger = { event = draft.event, key = draft.key, move = draft.move, movekey = draft.movekey,
                     modkey = draft.modkey, maxRange = draft.maxRange,
                     animId = draft.animId, animEnd = draft.animEnd,
+                    targetAnimId = draft.targetAnimId,
                     suppress = draft.suppress, ignoreWelds = draft.ignoreWelds,
                     conditions = draftConditions() },
         actions = draftActions(),
@@ -420,9 +459,35 @@ rebuild = function()
     local function place(inst) ord = ord + 1; inst.LayoutOrder = ord; inst.Parent = formScroll; return inst end
 
     place(textRow(formScroll, "Name", draft.name, function(t) draft.name = t end))
-    place(wrap(30, function(p) components.Toggle(p, { text = "Use in all games (universal)",
-        default = draft.scope == "universal",
-        onChange = function(v) draft.scope = v and "universal" or "game" end }) end))
+    -- Scope: This Game / This Character / Universal. "This Character" pins the
+    -- name detected by the active per-game module (so the tech only triggers
+    -- when you're playing as that character); when no char is detectable, the
+    -- cycle hides the option and falls back to This Game on save.
+    do
+        local detectedChar = detectCurrentCharacter()
+        local pinned = draft.pinChar
+        local labels = { "This Game" }
+        local keys   = { "game" }
+        if detectedChar or pinned then
+            local cn = pinned or detectedChar
+            labels[#labels + 1] = "This Char (" .. tostring(cn) .. ")"
+            keys[#keys + 1] = "char"
+        end
+        labels[#labels + 1] = "Universal"
+        keys[#keys + 1] = "universal"
+        local idx = 1
+        for i, k in ipairs(keys) do if draft.scope == k then idx = i end end
+        if not (draft.scope == "char" and (detectedChar or pinned)) and draft.scope ~= "universal" then idx = 1 end
+        place(cycleRow(formScroll, "Scope", labels, idx, function(i)
+            draft.scope = keys[i]
+            if keys[i] == "char" then
+                draft.pinChar = pinned or detectedChar
+            else
+                draft.pinChar = nil
+            end
+            rebuild()
+        end))
+    end
 
     place(components.Section(formScroll, "Trigger"))
     if draft.event == "anim" then
@@ -508,6 +573,61 @@ rebuild = function()
             local id = t and t:match("%d+")
             draft.animId = id or (t ~= "" and t) or nil
         end))
+    elseif draft.event == "target_anim" then
+        -- mirror of the anim branch but the picker uses the TARGET'S anim
+        -- history (Engine.targetAnimHistory) and Capture binds via captureTarget
+        -- Anim, so you bind to an opponent's animation. Falls back to a paste
+        -- box if you haven't seen any target anims yet (no lock-on / Target
+        -- Select target ever held during this session).
+        local hist = engine.targetAnimHistory and engine.targetAnimHistory() or {}
+        place(components.Label(formScroll, "Hint: lock onto an opponent so their played anims show up below."))
+        place(wrap(28, function(p)
+            local b = Instance.new("TextButton")
+            b.Size = UDim2.new(1, 0, 0, 24); b.BackgroundColor3 = theme.bgDark; b.AutoButtonColor = true
+            b.TextColor3 = theme.accent; b.Font = theme.fontBold; b.TextSize = 12
+            b.Text = "Capture target anim (play it on the opponent)"; b.Parent = p; corner(b, 4)
+            b.MouseButton1Click:Connect(function()
+                b.Text = "Capturing... bait the move on opponent"
+                pcall(function() notify.info("Capturing target anim", 4) end)
+                if engine.captureTargetAnim then
+                    engine.captureTargetAnim(function(raw)
+                        draft.animId = tostring(raw):match("%d+") or tostring(raw)
+                        pcall(function() notify.success("Captured target anim " .. tostring(draft.animId)) end)
+                        rebuild()
+                    end)
+                end
+            end)
+        end))
+        place(textRow(formScroll, "Or paste ID", draft.animId, function(t)
+            local id = t and t:match("%d+")
+            draft.animId = id or (t ~= "" and t) or nil
+        end))
+        if #hist > 0 then
+            place(components.Label(formScroll, "Recently seen on target (click=set):"))
+            local n = math.min(#hist, 7)
+            local sf = Instance.new("ScrollingFrame")
+            sf.Size = UDim2.new(1, 0, 0, n * 22 + 4); sf.BackgroundColor3 = theme.bgDark
+            sf.BorderSizePixel = 0; sf.ScrollBarThickness = 4
+            sf.CanvasSize = UDim2.new(0, 0, 0, 0); sf.AutomaticCanvasSize = Enum.AutomaticSize.Y
+            corner(sf, 4)
+            local sl = Instance.new("UIListLayout", sf); sl.Padding = UDim.new(0, 2)
+            for hi, h in ipairs(hist) do
+                local row = Instance.new("TextButton")
+                row.Size = UDim2.new(1, 0, 0, 20); row.LayoutOrder = hi
+                row.BackgroundColor3 = (tostring(draft.animId) == tostring(h.id)) and theme.accent or theme.bgAlt
+                row.TextColor3 = theme.fg; row.Font = theme.font; row.TextSize = 11
+                row.TextXAlignment = Enum.TextXAlignment.Left; row.TextTruncate = Enum.TextTruncate.AtEnd
+                row.Text = "  " .. (h.label or tostring(h.id)) .. "  (" .. tostring(h.id) .. ")"
+                row.Parent = sf
+                row.MouseButton1Click:Connect(function()
+                    draft.animId = tostring(h.id); rebuild()
+                end)
+            end
+            place(sf)
+        end
+        place(wrap(30, function(p) components.Toggle(p, { text = "Fire on animation END (not start)",
+            default = draft.animEnd == true,
+            onChange = function(v) draft.animEnd = v or nil end }) end))
     elseif draft.event == "move" then
         local res = scanner.cached() or scanner.scan()
         local moveset = res.buttons or {}
@@ -574,9 +694,45 @@ rebuild = function()
     place(wrap(30, function(p) components.Toggle(p, { text = "Trigger on an animation instead",
         default = draft.event == "anim",
         onChange = function(v) draft.event = v and "anim" or "key"; rebuild() end }) end))
+    place(wrap(30, function(p) components.Toggle(p, { text = "Trigger on TARGET's animation instead",
+        default = draft.event == "target_anim",
+        onChange = function(v) draft.event = v and "target_anim" or "key"; rebuild() end }) end))
     place(wrap(30, function(p) components.Toggle(p, { text = "Only while locked on",
         default = draft.conditions.locked_on == true,
         onChange = function(v) draft.conditions.locked_on = v or nil end }) end))
+    -- "Within X studs" gate: pair with target_playing to get the
+    -- "within 5 studs AND target plays anim X" check the user asked for.
+    place(textRow(formScroll, "Within X studs (0=any)", tostring(draft.maxRange or 0), function(t)
+        local n = tonumber(t); draft.maxRange = (n and n > 0) and n or nil
+    end))
+    -- target_playing condition: parametrized; the anim id lives separately
+    -- from the trigger's animId so you can fire on one anim and gate on
+    -- another. Empty id = no-op (condition auto-passes).
+    place(wrap(30, function(p) components.Toggle(p, { text = "Only while target is playing an anim",
+        default = draft.conditions.target_playing == true,
+        onChange = function(v) draft.conditions.target_playing = v or nil; rebuild() end }) end))
+    if draft.conditions.target_playing then
+        place(textRow(formScroll, "  Target anim ID (gate)", draft.targetAnimId, function(t)
+            local id = t and t:match("%d+")
+            draft.targetAnimId = id or (t ~= "" and t) or nil
+        end))
+        place(wrap(28, function(p)
+            local b = Instance.new("TextButton")
+            b.Size = UDim2.new(1, 0, 0, 24); b.BackgroundColor3 = theme.bgDark; b.AutoButtonColor = true
+            b.TextColor3 = theme.accent; b.Font = theme.fontBold; b.TextSize = 12
+            b.Text = "  Capture (target plays the gate move now)"; b.Parent = p; corner(b, 4)
+            b.MouseButton1Click:Connect(function()
+                b.Text = "  Capturing gate anim..."
+                pcall(function() notify.info("Capturing target anim (gate)", 4) end)
+                if engine.captureTargetAnim then
+                    engine.captureTargetAnim(function(raw)
+                        draft.targetAnimId = tostring(raw):match("%d+") or tostring(raw)
+                        rebuild()
+                    end)
+                end
+            end)
+        end))
+    end
     -- keep Lock-On / Rotation alive even while welded (grabs normally suppress them)
     place(wrap(30, function(p) components.Toggle(p, { text = "Ignore welds (keep Lock-On while grabbed)",
         default = draft.ignoreWelds == true,

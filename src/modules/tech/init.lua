@@ -22,9 +22,28 @@ local log        = require("core.log")
 
 local module = {}
 
-local function inThisGame(scope)
-    if scope == "universal" then return true end
-    return scope == game.PlaceId or scope == game.GameId
+-- Bucketize a scope for the list. Returns "here" (this game / this character),
+-- "uni" (universal), or "other" (different game / different char -> hidden).
+-- char-scoped techs go into "here" while you're playing as that character so
+-- they appear in the same This Game section; out-of-game / out-of-character
+-- techs are hidden so the list stays tight.
+local registry = require("games.registry")
+local function classifyScope(scope)
+    if scope == "universal" then return "uni" end
+    if scope == game.PlaceId or scope == game.GameId then return "here" end
+    if type(scope) == "string" then
+        local want = scope:match("^char:(.+)$")
+        if want then
+            local mod = registry.current()
+            local fn = mod and mod.detectCharacter
+            if type(fn) == "function" then
+                local ok, name = pcall(fn)
+                if ok and name == want then return "here" end
+            end
+            return "other"
+        end
+    end
+    return "other"
 end
 
 -- A single tech row: name on the left, an ON/OFF button on the right.
@@ -100,11 +119,9 @@ local function refreshList(listFrame)
 
     local here, uni = {}, {}
     for _, t in pairs(engine.all()) do
-        if t.scope == "universal" then
-            uni[#uni + 1] = t
-        elseif inThisGame(t.scope) then
-            here[#here + 1] = t
-        end
+        local cls = classifyScope(t.scope)
+        if cls == "here" then here[#here + 1] = t
+        elseif cls == "uni" then uni[#uni + 1] = t end
     end
     local byName = function(a, b) return (a.name or a.id) < (b.name or b.id) end
     table.sort(here, byName)
