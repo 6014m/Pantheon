@@ -240,32 +240,11 @@ function Canvas.new(parent, opts)
     self.blockClicked = Signal.new()       -- (block) on click without drag
     self.editBranchesRequested = Signal.new() -- (andBlock) when AND's branch-edit button is clicked
     self._uid = 0
-
-    -- Trash zone (top-right corner of canvas): drop a block on it during
-    -- drag to delete it. Always visible so the affordance is obvious.
-    self.trash = Instance.new("Frame")
-    self.trash.Size = UDim2.fromOffset(56, 28)
-    self.trash.Position = UDim2.new(1, -64, 0, 8)
-    self.trash.BackgroundColor3 = theme.danger
-    self.trash.BorderSizePixel = 0
-    self.trash.ZIndex = 50
-    self.trash.Parent = self.frame
-    corner(self.trash, 6)
-    local trashL = Instance.new("TextLabel")
-    trashL.Size = UDim2.new(1, 0, 1, 0); trashL.BackgroundTransparency = 1
-    trashL.Text = "[Trash]"; trashL.TextColor3 = theme.fg
-    trashL.Font = theme.fontBold; trashL.TextSize = 11; trashL.ZIndex = 51
-    trashL.Parent = self.trash
-
+    -- (Global trash zone removed -- per-block trash icons are the delete UX
+    -- now; see _renderBlock. Drag-onto-trash was unreliable because the
+    -- dragged block visually covered the trash zone and the user's cursor
+    -- was offset by their click origin.)
     return self
-end
-
--- True if the given GLOBAL mouse point is inside the trash zone.
-function Canvas:_isOverTrash(mx, my)
-    if not self.trash then return false end
-    local tl = self.trash.AbsolutePosition
-    local br = tl + self.trash.AbsoluteSize
-    return mx >= tl.X and mx <= br.X and my >= tl.Y and my <= br.Y
 end
 
 function Canvas:_nextId() self._uid = self._uid + 1; return "blk_" .. self._uid end
@@ -393,18 +372,14 @@ function Canvas:_wireDrag(blk)
             self.blockClicked:Fire(blk)
             return
         end
-        -- drag finish: trash zone deletes; otherwise try-snap then settle.
-        -- Brief click-guard window prevents the MB1Up over a value button
-        -- (now sitting under the cursor after the drag) from firing its
-        -- onClick handler -- that was blanking the label on key blocks and
-        -- cycling values on look/rotate/feature blocks.
+        -- drag finish: try-snap then settle. Brief click-guard window
+        -- prevents the MB1Up over a value button (now sitting under the
+        -- cursor after the drag) from firing its onClick handler -- that
+        -- was blanking the label on key blocks and cycling values on
+        -- look/rotate/feature blocks. Delete is now per-block via the
+        -- trash icon (top-right corner).
         dragJustEnded = true
         task.delay(0.12, function() dragJustEnded = false end)
-        local mp = UIS:GetMouseLocation()
-        if self:_isOverTrash(mp.X, mp.Y) then
-            self:_destroyBlock(blk)
-            return
-        end
         self:_trySnap(blk)
         blk.frame.ZIndex = 2
         local cur = blk.next; while cur do cur.frame.ZIndex = 2; cur = cur.next end
@@ -455,7 +430,12 @@ function Canvas:_renderBlock(blk)
     lbl.Size = UDim2.new(0, 78, 1, 0); lbl.Position = UDim2.fromOffset(10, 0)
     lbl.BackgroundTransparency = 1; lbl.Text = STEP_LABEL[blk.type] or blk.type
     lbl.TextColor3 = theme.fg; lbl.Font = theme.fontBold; lbl.TextSize = 13
-    lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Parent = f
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    -- Pin label above the rest of the block's children (the val Frame and
+    -- the trash icon both render in the same parent; sibling ZIndex ties
+    -- can occasionally hide a label in screenshots -- defensive bump).
+    lbl.ZIndex = 5
+    lbl.Parent = f
     blk.lbl = lbl
 
     -- bottom tab decoration (visual connector cue)
@@ -463,11 +443,15 @@ function Canvas:_renderBlock(blk)
     tab.Size = UDim2.fromOffset(TAB_W, 3); tab.Position = UDim2.new(0, TAB_INSET_X, 1, 0)
     tab.BackgroundColor3 = colorOf(blk.type); tab.BorderSizePixel = 0; tab.Parent = f
 
-    -- delete button (top-right corner)
+    -- Per-block trash icon (top-right corner of every block). The global
+    -- drag-to-trash zone was removed -- this is the only delete affordance
+    -- now and we make it readable: bigger, with a clearer label, higher
+    -- ZIndex so it always lands above the inline value button on its left.
     local del = Instance.new("TextButton")
-    del.Size = UDim2.fromOffset(18, 18); del.Position = UDim2.new(1, -22, 0, 4)
-    del.BackgroundColor3 = theme.danger; del.AutoButtonColor = false
-    del.TextColor3 = theme.fg; del.Font = theme.fontBold; del.TextSize = 11; del.Text = "X"
+    del.Size = UDim2.fromOffset(22, 22); del.Position = UDim2.new(1, -26, 0, 4)
+    del.BackgroundColor3 = theme.danger; del.AutoButtonColor = true
+    del.TextColor3 = theme.fg; del.Font = theme.fontBold; del.TextSize = 13
+    del.Text = "X"; del.ZIndex = 10
     del.Parent = f; corner(del, 4)
     guardedClick(del, function() self:_destroyBlock(blk) end)
 
@@ -477,6 +461,10 @@ end
 function Canvas:addBlock(blockType, params, x, y)
     local f = Instance.new("Frame")
     f.Size = UDim2.fromOffset(BLOCK_W, BLOCK_H)
+    -- Explicitly pin AutomaticSize off so no parent layout / inherited size
+    -- mode can shrink the block to 0 height (which was the most plausible
+    -- explanation for the "thin sliver" rendering in the user's screenshot).
+    f.AutomaticSize = Enum.AutomaticSize.None
     f.Position = UDim2.fromOffset(x or 12, y or (#self.blocks * (BLOCK_H + 4) + 12))
     f.BackgroundColor3 = colorOf(blockType); f.BorderSizePixel = 0
     f.ZIndex = 2; f.Parent = self.frame

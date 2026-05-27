@@ -1233,6 +1233,12 @@ end
 function Builder.open(existingTech)
     local ok, err = pcall(function()
         ensureGui()
+        -- Force a fresh hotbar scan every Open. The scanner caches a non-
+        -- empty result for the session; on first Open the game's UI is
+        -- often mid-build and we capture a stale snapshot (or worse, the
+        -- pre-loadout one) which then survives every subsequent Open until
+        -- script re-execute. Clearing forces re-scan against the LIVE PG.
+        pcall(function() scanner.clearCache() end)
         draft = existingTech and draftFromTech(existingTech) or newDraft()
         animDropOpen = not (draft.animId)   -- expanded when nothing's picked yet
         -- Discard the canvas from a prior session if it exists. Use the

@@ -211,4 +211,11 @@ function Scanner.cached()
     return nil
 end
 
+-- Clear the cached scan so the next .scan() rebuilds from the LIVE PlayerGui.
+-- Called from Builder.open(): without it, the first scan (often taken before
+-- the game's hotbar UI is rebuilt for the current character / server) became
+-- sticky for the rest of the session and the Use Move picker showed stale
+-- (or empty) move names.
+function Scanner.clearCache() cached = nil end
+
 return Scanner
