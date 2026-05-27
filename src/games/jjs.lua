@@ -159,6 +159,24 @@ local function findKnitRE(svcName, remoteName)
     return re and re:FindFirstChild(remoteName) or nil
 end
 
+-- Detect which JJS character we're playing as, for char-locked techs. The
+-- HUD's Ultimate.Title text is the awakening name and is character-unique
+-- (verified via reference_jjs_autoblock: "HUD swap signal = ultimate Title;
+-- stable thru variant switches"). Returns the name or nil if not yet built.
+function JJS.detectCharacter()
+    local pg = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if not pg then return nil end
+    local main = pg:FindFirstChild("Main")
+    local controls = main and main:FindFirstChild("Controls")
+    local ult = controls and controls:FindFirstChild("Ultimate")
+    local title = ult and ult:FindFirstChild("Title")
+    if title and title:IsA("TextLabel") then
+        local t = title.Text
+        if t and t ~= "" then return t end
+    end
+    return nil
+end
+
 function JJS.useMove(name)
     local pin = MOVE_REMOTE[name]
     if not pin then return false end

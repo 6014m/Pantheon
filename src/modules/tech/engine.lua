@@ -39,7 +39,8 @@ local conns = {}     -- id -> { Connection, ... } (move-trigger listeners)
 local casBound = {}  -- id -> CAS action name (suppress move triggers that sink the key)
 local RENDER_BIND = "PantheonTechHold"
 local bound = false
-local drainConn      -- Heartbeat that runs queued techs off the trigger signal thread
+local drainConn          -- Heartbeat that runs queued techs off the trigger signal thread
+local targetChangedConn  -- state.onTargetChanged subscription (re-hooks target_anim)
 
 -- held camera/body facings; the render loop enforces these each frame while set.
 local held = { cam = nil, body = nil }   -- each = { yaw, pitch } degrees, target-relative
@@ -196,9 +197,37 @@ end
 Engine.ACTIONS = ACTIONS
 
 -- ===== conditions =====
+-- Conditions receive the firing tech so parametrized checks (e.g. target
+-- playing a specific anim) can read the id out of trigger.<field>. Stateless
+-- checks just ignore the arg.
 local CONDITIONS = {}
 CONDITIONS.locked_on = function() return state.target ~= nil end
 CONDITIONS.shiftlock = function() return state.shiftlock_active == true end
+
+-- target_playing: TRUE iff the current target's Animator currently has a track
+-- playing whose AnimationId contains the configured trigger.targetAnimId. Pairs
+-- naturally with trigger.maxRange to give "within X studs AND target playing Y".
+CONDITIONS.target_playing = function(tech)
+    local want = tech and tech.trigger and tech.trigger.targetAnimId
+    if not want or want == "" then return true end
+    local t = state.target
+    if not t then return false end
+    local ch = (state.target_type == "npc") and t or t.Character
+    if not ch then return false end
+    local hum = ch:FindFirstChildOfClass("Humanoid")
+    local animator = hum and hum:FindFirstChildOfClass("Animator")
+    if not animator then return false end
+    local idNum = tostring(want):match("(%d+)")
+    if not idNum then return false end
+    local ok, tracks = pcall(function() return animator:GetPlayingAnimationTracks() end)
+    if not ok or not tracks then return false end
+    for _, track in ipairs(tracks) do
+        local a = track.Animation
+        if a and tostring(a.AnimationId):find(idNum, 1, true) then return true end
+    end
+    return false
+end
+
 Engine.CONDITIONS = CONDITIONS
 
 -- A move key hint can be a DIGIT ("1".."9") but Enum.KeyCode["1"] THROWS (the
@@ -225,7 +254,7 @@ end
 local function conditionsMet(tech)
     for _, c in ipairs(tech.trigger.conditions or {}) do
         local fn = CONDITIONS[c]
-        if fn and not fn() then return false end
+        if fn and not fn(tech) then return false end
     end
     -- distance gate: only fire within maxRange studs of the target (0/nil = any).
     -- Needs a target (lock-on / target select); fails closed if there's none.
@@ -237,6 +266,29 @@ local function conditionsMet(tech)
     end
     return true
 end
+
+-- Scope gate at trigger fire time. Universal techs always match; numeric scopes
+-- match by PlaceId or GameId; "char:<name>" scopes call the current game's
+-- detectCharacter() and compare. Unknown / unmatched scopes block the fire.
+local function scopeMatches(tech)
+    local s = tech.scope
+    if s == nil or s == "universal" then return true end
+    if s == game.PlaceId or s == game.GameId then return true end
+    if type(s) == "string" then
+        local want = s:match("^char:(.+)$")
+        if want then
+            local ok_reg, registry = pcall(require, "games.registry")
+            if not ok_reg or not registry then return false end
+            local mod = registry.current()
+            local detect = mod and mod.detectCharacter
+            if type(detect) ~= "function" then return false end
+            local ok, cur = pcall(detect)
+            return ok and cur == want or false
+        end
+    end
+    return false
+end
+Engine.scopeMatches = scopeMatches
 
 -- ===== move buttons: fire + suppress =====
 -- Resolve a hotbar move button by the name the scanner recorded for it (e.g. TSB
@@ -419,6 +471,72 @@ end
 -- over the held facing. Hold techs run their (instant) actions and finish the
 -- coroutine immediately, so `running` clears right away and re-pressing works.
 local running = false
+
+-- Single-step runner used by both the top-level action loop AND recursive
+-- contexts (AND branches). ctx carries per-run state shared across branches
+-- (releaseAfterWait flag, heldKeys, featRestore, restoreAll thunk) so e.g. a
+-- key held in one branch is releasable from another or by the safety cleanup.
+local function runStep(a, ctx)
+    if a.type == "during" then
+        -- the preceding Look/Rotate lasts only as long as the NEXT Wait,
+        -- then auto-returns (so "Rotate -> During -> Wait 0.5" rotates for
+        -- exactly 0.5s).
+        ctx.releaseAfterWait = true
+    elseif a.type == "wait" then
+        task.wait(a.seconds or a.x or 0.5)
+        if ctx.releaseAfterWait then releaseHold(true); ctx.releaseAfterWait = false end
+    elseif a.type == "within" then
+        -- gate: hold here until the target is within `studs`, then continue
+        -- (e.g. rotate 90 -> Within 6 -> Use Rotation Lock -> side-dash).
+        -- 6s cap so it can't hang if you never close the distance.
+        local studs = tonumber(a.studs) or 5
+        local t0 = os.clock()
+        while os.clock() - t0 < 6 do
+            local mr, tr = myRoot(), targetRoot()
+            if mr and tr and (tr.Position - mr.Position).Magnitude <= studs then break end
+            task.wait(0.05)
+        end
+        if ctx.releaseAfterWait then releaseHold(true); ctx.releaseAfterWait = false end
+    elseif a.type == "hold" then
+        -- press the key DOWN and keep it held until the matching Release
+        -- (or the safety release at the end), so steps in between run while held.
+        local kc = a.key and Enum.KeyCode[a.key]
+        if kc then pcall(function() VIM:SendKeyEvent(true, kc, false, game) end); ctx.heldKeys[kc] = true end
+    elseif a.type == "release" then
+        local kc = a.key and Enum.KeyCode[a.key]
+        if kc then pcall(function() VIM:SendKeyEvent(false, kc, false, game) end); ctx.heldKeys[kc] = nil end
+    elseif a.type == "feature" then
+        if a.feature then
+            if ctx.featRestore[a.feature] == nil then ctx.featRestore[a.feature] = feature.getEnabled(a.feature) end
+            if a.value == nil then feature.fire(a.feature) else feature.setEnabled(a.feature, a.value) end
+        end
+    elseif a.type == "return" then
+        ctx.restoreAll(true)
+    elseif a.type == "and" then
+        -- AND step: run each branch as a parallel coroutine; the step finishes
+        -- when ALL branches have completed. ctx is shared, so any Hold step
+        -- in one branch is released by Release in another (or by the safety
+        -- cleanup at tech end).
+        local branches = a.branches or {}
+        local n = #branches
+        if n == 0 then return end
+        local done = 0
+        for _, branch in ipairs(branches) do
+            task.spawn(function()
+                for _, step in ipairs(branch or {}) do runStep(step, ctx) end
+                done = done + 1
+            end)
+        end
+        while done < n do task.wait(0.03) end
+    else
+        local fn = ACTIONS[a.type]
+        if fn then
+            local ok, err = pcall(fn, a)
+            if not ok then log.warn("[tech] action " .. tostring(a.type) .. ": " .. tostring(err)) end
+        end
+    end
+end
+
 local function runTech(tech, hold)
     if running then return end
     running = true
@@ -430,60 +548,16 @@ local function runTech(tech, hold)
         -- "Ignore welds": keep Lock-On/Rotation alive even while welded for this run
         local ignoreWelds = tech.trigger and tech.trigger.ignoreWelds
         if ignoreWelds then state.techIgnoreWelds = true end
-        local releaseAfterWait = false
         local heldKeys = {}    -- keys pressed by a Hold step, released by a Release (or at the end)
         local featRestore = {} -- [featureId] = state BEFORE this tech toggled it, for Return/end
-        local function restoreAll(snap)
+        local ctx = { releaseAfterWait = false, heldKeys = heldKeys, featRestore = featRestore }
+        ctx.restoreAll = function(snap)
             releaseHold(snap)
             for id, prev in pairs(featRestore) do pcall(function() feature.setEnabled(id, prev) end); featRestore[id] = nil end
             for kc in pairs(heldKeys) do pcall(function() VIM:SendKeyEvent(false, kc, false, game) end); heldKeys[kc] = nil end
         end
-        for _, a in ipairs(tech.actions or {}) do
-            if a.type == "during" then
-                -- the preceding Look/Rotate lasts only as long as the NEXT Wait,
-                -- then auto-returns (so "Rotate -> During -> Wait 0.5" rotates for
-                -- exactly 0.5s).
-                releaseAfterWait = true
-            elseif a.type == "wait" then
-                task.wait(a.seconds or a.x or 0.5)
-                if releaseAfterWait then releaseHold(true); releaseAfterWait = false end
-            elseif a.type == "within" then
-                -- gate: hold here until the target is within `studs`, then continue
-                -- (e.g. rotate 90 -> Within 6 -> Use Rotation Lock -> side-dash).
-                -- 6s cap so it can't hang if you never close the distance.
-                local studs = tonumber(a.studs) or 5
-                local t0 = os.clock()
-                while os.clock() - t0 < 6 do
-                    local mr, tr = myRoot(), targetRoot()
-                    if mr and tr and (tr.Position - mr.Position).Magnitude <= studs then break end
-                    task.wait(0.05)
-                end
-                -- a preceding During holds the look/rotate only until THIS gate clears
-                if releaseAfterWait then releaseHold(true); releaseAfterWait = false end
-            elseif a.type == "hold" then
-                -- press the key DOWN and keep it held until the matching Release
-                -- (or the safety release at the end), so steps in between run while held.
-                local kc = a.key and Enum.KeyCode[a.key]
-                if kc then pcall(function() VIM:SendKeyEvent(true, kc, false, game) end); heldKeys[kc] = true end
-            elseif a.type == "release" then
-                local kc = a.key and Enum.KeyCode[a.key]
-                if kc then pcall(function() VIM:SendKeyEvent(false, kc, false, game) end); heldKeys[kc] = nil end
-            elseif a.type == "feature" then
-                -- remember the feature's state before we touch it, so Return/end
-                -- can put it back exactly how it was.
-                if a.feature then
-                    if featRestore[a.feature] == nil then featRestore[a.feature] = feature.getEnabled(a.feature) end
-                    if a.value == nil then feature.fire(a.feature) else feature.setEnabled(a.feature, a.value) end
-                end
-            elseif a.type == "return" then
-                -- Return = restore EVERYTHING to how it was before: snap facing
-                -- back, undo every feature this tech toggled, release held keys.
-                restoreAll(true)
-            else
-                local fn = ACTIONS[a.type]
-                if fn then local ok, err = pcall(fn, a); if not ok then log.warn("[tech] action " .. tostring(a.type) .. ": " .. tostring(err)) end end
-            end
-        end
+        for _, a in ipairs(tech.actions or {}) do runStep(a, ctx) end
+        local restoreAll = ctx.restoreAll
         -- one-shot techs auto-clean at the end -- features toggled go back, held
         -- keys release. If a Rotate ran, hold the rotation briefly past tech
         -- end so it is VISIBLE under shiftlock (the game's shiftlock script
@@ -601,14 +675,14 @@ local function onAnimPlayed(track)
         local tr = tech.trigger
         if tech.enabled and tr and tr.event == "anim" then
             watching = true
-            if animIdNum(tr.animId) == id and modifierHeld(tech) and conditionsMet(tech) then
+            if animIdNum(tr.animId) == id and modifierHeld(tech) and conditionsMet(tech) and scopeMatches(tech) then
                 if tr.animEnd then
                     -- fire when THIS animation stops/finishes, not when it starts
                     log.info("[tech] anim trigger armed on-end: " .. tostring(tech.name))
                     local conn
                     conn = track.Stopped:Connect(function()
                         if conn then conn:Disconnect(); conn = nil end
-                        if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then
+                        if tech.enabled and modifierHeld(tech) and conditionsMet(tech) and scopeMatches(tech) then
                             log.info("[tech] anim trigger fired (end): " .. tostring(tech.name))
                             queueRun(tech, false)
                         end
@@ -668,6 +742,100 @@ end
 -- this for "Capture" so you bind to the move's real runtime animation id.
 function Engine.captureAnim(cb) animCaptureCbs[#animCaptureCbs + 1] = cb end
 
+-- ===== target_anim event =====
+-- Mirror of the local-player anim hook but watching state.target's Animator,
+-- re-hooked whenever the target changes (state.onTargetChanged). The dispatcher
+-- only fires target_anim-event techs (NOT the LP anim techs). target anim
+-- history is kept separately so the editor picker doesn't conflate them.
+local targetAnimLog, targetAnimLogSeen = {}, {}
+local targetAnimCaptureCbs = {}
+function Engine.targetAnimHistory() return targetAnimLog end
+function Engine.clearTargetAnimHistory()
+    for i = #targetAnimLog, 1, -1 do targetAnimLog[i] = nil end
+    for k in pairs(targetAnimLogSeen) do targetAnimLogSeen[k] = nil end
+end
+function Engine.captureTargetAnim(cb) targetAnimCaptureCbs[#targetAnimCaptureCbs + 1] = cb end
+
+local function recordTargetAnim(track, id, raw)
+    if targetAnimLogSeen[id] then return end
+    loadAnimNames()
+    local label = animNameMap[id] and shortPath(animNameMap[id])
+    if not label then
+        local a = track and track.Animation
+        local ok, full = pcall(function() return a and a:GetFullName() end)
+        if ok and full and full ~= "" and full ~= "Animation" then label = shortPath(full)
+        elseif a and a.Name and a.Name ~= "" and a.Name ~= "Animation" then label = a.Name end
+    end
+    targetAnimLogSeen[id] = true
+    targetAnimLog[#targetAnimLog + 1] = { id = id, raw = raw, label = label or ("anim " .. id) }
+end
+
+local function onTargetAnimPlayed(track)
+    local raw = track and track.Animation and track.Animation.AnimationId
+    local id = animIdNum(raw)
+    if not id then return end
+    for _, tech in pairs(techs) do
+        local tr = tech.trigger
+        if tech.enabled and tr and tr.event == "target_anim" then
+            if animIdNum(tr.animId) == id and modifierHeld(tech) and conditionsMet(tech) and scopeMatches(tech) then
+                if tr.animEnd then
+                    local conn
+                    conn = track.Stopped:Connect(function()
+                        if conn then conn:Disconnect(); conn = nil end
+                        if tech.enabled and modifierHeld(tech) and conditionsMet(tech) and scopeMatches(tech) then
+                            log.info("[tech] target_anim trigger fired (end): " .. tostring(tech.name))
+                            queueRun(tech, false)
+                        end
+                    end)
+                else
+                    log.info("[tech] target_anim trigger fired: " .. tostring(tech.name) .. " <- " .. id)
+                    queueRun(tech, false)
+                end
+            end
+        end
+    end
+    recordTargetAnim(track, id, raw)
+    if #targetAnimCaptureCbs > 0 then
+        local cbs = targetAnimCaptureCbs; targetAnimCaptureCbs = {}
+        for _, cb in ipairs(cbs) do pcall(cb, raw) end
+    end
+end
+
+local targetAnimConns = {}
+local function clearTargetAnimHook()
+    for _, c in ipairs(targetAnimConns) do pcall(function() c:Disconnect() end) end
+    targetAnimConns = {}
+end
+local function hookTargetAnimator()
+    clearTargetAnimHook()
+    local t = state.target
+    if not t then return end
+    local ch = (state.target_type == "npc") and t or t.Character
+    if not ch then
+        -- Player target whose Character hasn't spawned yet -- wait for it.
+        if state.target_type ~= "npc" and t.CharacterAdded then
+            targetAnimConns[#targetAnimConns + 1] = t.CharacterAdded:Connect(function() hookTargetAnimator() end)
+        end
+        return
+    end
+    local hum = ch:FindFirstChildOfClass("Humanoid")
+    if not hum then
+        targetAnimConns[#targetAnimConns + 1] = ch.ChildAdded:Connect(function(c)
+            if c:IsA("Humanoid") then hookTargetAnimator() end
+        end)
+        return
+    end
+    local animator = hum:FindFirstChildOfClass("Animator")
+    if animator then
+        targetAnimConns[#targetAnimConns + 1] = animator.AnimationPlayed:Connect(onTargetAnimPlayed)
+        log.info("[tech] target_anim hook connected (" .. tostring(ch.Name) .. ")")
+    else
+        targetAnimConns[#targetAnimConns + 1] = hum.ChildAdded:Connect(function(c)
+            if c:IsA("Animator") then hookTargetAnimator() end
+        end)
+    end
+end
+
 -- ===== trigger wiring =====
 local function wireKey(tech)
     local key = tech.trigger.key
@@ -684,7 +852,7 @@ local function wireKey(tech)
         CAS:BindActionAtPriority(action, function(_, inputState)
             if bypassKeys[key] then return Enum.ContextActionResult.Pass end
             if inputState == Enum.UserInputState.Begin then
-                if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then queueRun(tech, isHold) end
+                if tech.enabled and modifierHeld(tech) and conditionsMet(tech) and scopeMatches(tech) then queueRun(tech, isHold) end
             elseif inputState == Enum.UserInputState.End and isHold then
                 releaseHold(true)
                 if tech.trigger.ignoreWelds then state.techIgnoreWelds = false end
@@ -695,7 +863,7 @@ local function wireKey(tech)
         return
     end
     keybinds.set("tech." .. tech.id, key,
-        function() if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then queueRun(tech, isHold) end end,
+        function() if tech.enabled and modifierHeld(tech) and conditionsMet(tech) and scopeMatches(tech) then queueRun(tech, isHold) end end,
         function() if isHold then releaseHold(true); if tech.trigger.ignoreWelds then state.techIgnoreWelds = false end end end)
 end
 
@@ -731,7 +899,7 @@ local function wireMove(tech)
         return
     end
     keybinds.set("tech." .. tech.id, kc,
-        function() if tech.enabled and modifierHeld(tech) and conditionsMet(tech) then queueRun(tech, false) end end,
+        function() if tech.enabled and modifierHeld(tech) and conditionsMet(tech) and scopeMatches(tech) then queueRun(tech, false) end end,
         nil)
 end
 
@@ -750,8 +918,9 @@ function Engine.rewire()
         elseif ev == "move" then
             -- move trigger is keydown on the move's key -> same bind/clear gating
             if tech.enabled then wireMove(tech) else keybinds.clear("tech." .. tech.id) end
-        elseif ev == "anim" then
-            -- handled by the persistent Animator hook (gated on tech.enabled); nothing to bind
+        elseif ev == "anim" or ev == "target_anim" then
+            -- handled by the persistent (local / target) Animator hooks
+            -- (gated on tech.enabled); nothing to bind
             keybinds.clear("tech." .. tech.id)
         end
     end
@@ -780,6 +949,7 @@ local function serialize(tech)
             maxRange   = tech.trigger.maxRange,
             animId     = tech.trigger.animId,
             animEnd    = tech.trigger.animEnd,
+            targetAnimId = tech.trigger.targetAnimId,
             suppress   = tech.trigger.suppress,
             ignoreWelds = tech.trigger.ignoreWelds,
             conditions = tech.trigger.conditions or {},
@@ -804,6 +974,7 @@ local function deserialize(s)
             maxRange   = s.trigger and s.trigger.maxRange,
             animId     = s.trigger and s.trigger.animId,
             animEnd    = s.trigger and s.trigger.animEnd,
+            targetAnimId = s.trigger and s.trigger.targetAnimId,
             suppress   = s.trigger and s.trigger.suppress,
             ignoreWelds = s.trigger and s.trigger.ignoreWelds,
             conditions = (s.trigger and s.trigger.conditions) or {},
@@ -908,12 +1079,22 @@ function Engine.init()
             hookAnimator()
         end)
     end)
+    -- target_anim hook: re-arm whenever the lock-on/target-select target changes
+    -- so triggers can fire on the opponent's animation. Hook the initial target
+    -- (if Target Select is already active when init runs) and reset on target
+    -- becoming nil too (clearTargetAnimHook).
+    hookTargetAnimator()
+    targetChangedConn = state.onTargetChanged:Connect(function()
+        hookTargetAnimator()
+    end)
     bound = true
 end
 
 function Engine.destroy()
     if bound then pcall(function() RunService:UnbindFromRenderStep(RENDER_BIND) end); bound = false end
     if drainConn then pcall(function() drainConn:Disconnect() end); drainConn = nil end
+    if targetChangedConn then pcall(function() targetChangedConn:Disconnect() end); targetChangedConn = nil end
+    clearTargetAnimHook()
     for _, list in pairs(conns) do for _, c in ipairs(list) do pcall(function() c:Disconnect() end) end end
     conns = {}
     releaseHold(true)

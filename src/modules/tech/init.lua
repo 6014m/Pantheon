@@ -159,13 +159,10 @@ function module.register()
     end })
     dumpGuiBtn.LayoutOrder = 2
 
-    local dumpAnimBtn = components.Button(holder, { text = "Dump Anims (all)", onClick = function()
-        local n = dumper.dumpAnims()
-        status.Visible = true
-        status.Text = "Anims dumped (" .. n .. ") -> pantheon_anim_dump.txt"
-        pcall(function() notify.info("Anims dumped: " .. n, 4) end)
-    end })
-    dumpAnimBtn.LayoutOrder = 3
+    -- Static anim dumper removed -- the editor's active anim logging (animLog +
+    -- Capture) covers what the dump file was for, and friendly names now fall
+    -- back to Animation:GetFullName() live in recordAnim. The Dump GUI button
+    -- stays since per-game hotbar setup still needs the GUI tree dump.
 
     local listFrame = Instance.new("Frame")
     listFrame.Size = UDim2.new(1, 0, 0, 0)
