@@ -659,13 +659,21 @@ local function openBranchEditor(andBlock)
     local rowL = Instance.new("UIListLayout", btnRow); rowL.FillDirection = Enum.FillDirection.Horizontal
     rowL.HorizontalAlignment = Enum.HorizontalAlignment.Right; rowL.Padding = UDim.new(0, 8)
 
+    -- Tear down both mini canvases (drag conns + frames) and then drop
+    -- the modal. Called from both Save and Cancel so the cleanup is the
+    -- same regardless of which button closed the dialog.
+    local function closeModal()
+        for _, mc in ipairs(miniCanvases) do pcall(function() mc:destroy() end) end
+        modal:Destroy()
+    end
+
     local cancel = Instance.new("TextButton")
     cancel.Size = UDim2.fromOffset(80, 26); cancel.BackgroundColor3 = theme.bgAlt
     cancel.AutoButtonColor = false; cancel.TextColor3 = theme.fg
     cancel.Font = theme.font; cancel.TextSize = 12; cancel.Text = "Cancel"
     cancel.LayoutOrder = 1; cancel.ZIndex = 202; cancel.Parent = btnRow
     corner(cancel, 4)
-    cancel.MouseButton1Click:Connect(function() modal:Destroy() end)
+    cancel.MouseButton1Click:Connect(closeModal)
 
     local save = Instance.new("TextButton")
     save.Size = UDim2.fromOffset(80, 26); save.BackgroundColor3 = theme.accent
@@ -680,7 +688,7 @@ local function openBranchEditor(andBlock)
         }
         if andBlock._refreshAndLabel then andBlock._refreshAndLabel() end
         if draft and canvas then draft.actions = canvas:toActions() end
-        modal:Destroy()
+        closeModal()
     end)
 end
 
@@ -1227,10 +1235,13 @@ function Builder.open(existingTech)
         ensureGui()
         draft = existingTech and draftFromTech(existingTech) or newDraft()
         animDropOpen = not (draft.animId)   -- expanded when nothing's picked yet
-        -- Discard the canvas from a prior session if it exists, so the new
-        -- tech starts with a clean canvas. Each Open creates a fresh canvas
-        -- inside the rebuild() palette-section.
-        if canvasContainer then pcall(function() canvasContainer:Destroy() end); canvasContainer = nil; canvas = nil end
+        -- Discard the canvas from a prior session if it exists. Use the
+        -- explicit Canvas:destroy() to disconnect each block's UIS drag
+        -- conns -- a bare Frame:Destroy() leaves the UIS connections
+        -- registered (they internally check `dragging` and no-op, but
+        -- they still fire on every mouse move + accumulate per re-open).
+        if canvas then pcall(function() canvas:destroy() end); canvas = nil end
+        if canvasContainer then pcall(function() canvasContainer:Destroy() end); canvasContainer = nil end
         rebuild()
         captureRig()
         buildRigPreview()
@@ -1245,8 +1256,10 @@ end
 function Builder.close()
     if rootFrame then rootFrame.Visible = false end
     if curRig then pcall(function() curRig:Destroy() end); curRig = nil end
-    -- Drop the canvas on close too -- next Open rebuilds fresh.
-    if canvasContainer then pcall(function() canvasContainer:Destroy() end); canvasContainer = nil; canvas = nil end
+    -- Drop the canvas on close too -- next Open rebuilds fresh. Canvas:
+    -- destroy() before the container Destroy() to disconnect drag conns.
+    if canvas then pcall(function() canvas:destroy() end); canvas = nil end
+    if canvasContainer then pcall(function() canvasContainer:Destroy() end); canvasContainer = nil end
 end
 
 function Builder.destroy()

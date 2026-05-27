@@ -890,7 +890,7 @@ local function wireMove(tech)
         CAS:BindActionAtPriority(action, function(_, inputState)
             if bypassKeys[kc] then return Enum.ContextActionResult.Pass end
             if inputState == Enum.UserInputState.Begin
-               and tech.enabled and modifierHeld(tech) and conditionsMet(tech) then
+               and tech.enabled and modifierHeld(tech) and conditionsMet(tech) and scopeMatches(tech) then
                 queueRun(tech, false)
             end
             return Enum.ContextActionResult.Sink

@@ -415,15 +415,32 @@ function Canvas:_wireDrag(blk)
 end
 
 function Canvas:_destroyBlock(blk)
-    if blk.prev then blk.prev.next = nil end
-    if blk.next then blk.next.prev = nil end
+    -- Re-knit prev and next so a middle-block delete keeps the chain
+    -- continuous instead of leaving the tail floating where it was.
+    local prev, nxt = blk.prev, blk.next
+    if prev and nxt then prev.next = nxt; nxt.prev = prev
+    elseif prev then prev.next = nil
+    elseif nxt then nxt.prev = nil
+    end
     if blk._dragConns then
         for _, c in ipairs(blk._dragConns) do pcall(function() c:Disconnect() end) end
     end
     blk.frame:Destroy()
     for i, b in ipairs(self.blocks) do if b == blk then table.remove(self.blocks, i); break end end
+    -- Tighten layout: chain prev belonged to gets re-laid so the tail
+    -- moves up to fill the gap. Free-floating tail (no prev) stays where
+    -- it was -- that's a deliberate gap the user can re-snap if desired.
+    if prev then self:_layoutChain(chainHead(prev)) end
     self:_resizeToContent()
     self:_fireChanged()
+end
+
+-- Explicit teardown: clear all blocks (disconnects drag conns) and destroy
+-- the canvas frame. Use from Builder.open/close + the AND branch sub-modal
+-- so re-opens don't leak per-block UIS.InputChanged/InputEnded connections.
+function Canvas:destroy()
+    self:clear()
+    if self.frame then pcall(function() self.frame:Destroy() end); self.frame = nil end
 end
 
 -- Render the visual block (rounded fill, label, decorative top notch + bottom
