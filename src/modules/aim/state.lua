@@ -92,9 +92,17 @@ local state = {
     -- lead via the angular-velocity term (close + fast = high angular
     -- rate, the regime where lock-on+ alone falls behind). predictionTime
     -- (slider) is the manual fallback when auto is off.
-    predictionAuto   = true,
-    predictionFactor = 0.003, -- seconds of lead per stud/sec of tangential speed
-    predictionCap    = 0.3,   -- hard cap (seconds) on the lead
+    predictionAuto      = true,
+    predictionFactor    = 0.003, -- seconds of lead per stud/sec of tangential speed
+    predictionCap       = 0.3,   -- hard cap (seconds) on the lead
+    -- Deadzone: target must be moving faster than this (stud/s, TANGENTIAL
+    -- speed = perpendicular orbit/strafe relative to you) before auto
+    -- prediction kicks in. Below the threshold lead = 0 -- lock-on+ alone
+    -- handles slow movement and casual approach without prediction churn.
+    -- 20 stud/s defaults below sprint (~30 stud/s) but above walk (~16),
+    -- so casual movement skips prediction and aggressive movement triggers
+    -- it. Slider in the Lock-On cog persists it.
+    predictionThreshold = 20,
 
     -- Signals
     onTargetChanged = Signal.new(),
@@ -174,6 +182,12 @@ function state.getLeadTime()
     local radialDir = toTarget.Unit
     local radialSpeed = relVel:Dot(radialDir)
     local tangentialSpeed = (relVel - radialDir * radialSpeed).Magnitude
+
+    -- Deadzone: target moving slower than threshold? lock-on+ alone covers it;
+    -- prediction would just add jitter on a stationary or casually-walking
+    -- opponent. Returns 0 lead (= raw replicated position).
+    local threshold = state.predictionThreshold or 20
+    if tangentialSpeed < threshold then lastReadV = 0; return 0 end
 
     local factor      = state.predictionFactor or 0.003
     local linearLead  = tangentialSpeed * factor

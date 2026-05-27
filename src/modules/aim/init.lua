@@ -156,6 +156,13 @@ function module.register()
             -- fallback used only when Auto is off.
             { type = "toggle", name = "Auto prediction (velocity-based)", default = true,
               onChange = function(v) state.predictionAuto = v end },
+            -- Below this tangential speed (stud/s, orbit/strafe component
+            -- relative to you), auto prediction returns 0 lead -- so casual
+            -- walking targets don't get pre-judged. Persists via feature.lua
+            -- like every other slider in this panel.
+            { type = "slider", name = "Auto prediction threshold (stud/s)",
+              key = "prediction_threshold", min = 0, max = 50, step = 1, default = 20,
+              onChange = function(v) state.predictionThreshold = v end },
             { type = "slider", name = "Aim prediction (s, manual)",
               key = "prediction", min = 0, max = 0.3, step = 0.01, default = 0.1,
               onChange = function(v) state.predictionTime = v end },
