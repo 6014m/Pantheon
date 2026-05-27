@@ -243,12 +243,27 @@ local function safeKeyCode(name)
 end
 
 -- optional modifier key that must be HELD for a key/move trigger to fire
--- (e.g. hold A + press Q). trigger.modkey is the short key name, or nil.
-local function modifierHeld(tech)
-    local m = tech.trigger and tech.trigger.modkey
+-- (e.g. hold A + press Q). Takes a TRIGGER (not the whole tech) so multi-
+-- trigger "or" techs can have per-subtrigger modkeys.
+local function modifierHeld(trig)
+    local m = trig and trig.modkey
     if not m then return true end
     local kc = safeKeyCode(m)
     return kc ~= nil and UIS:IsKeyDown(kc)
+end
+
+-- Iterate every trigger registered on a tech. For event="or" techs the
+-- subtriggers[] array is the actual fire list; for legacy single-trigger
+-- techs it's just {tech.trigger}. Yields (index, trig) so callers can
+-- pass the index down to queueRun -> runTech.ctx.triggerIndex.
+local function techTriggers(tech)
+    local trig = tech.trigger
+    if trig and trig.event == "or" and type(trig.subtriggers) == "table" then
+        return trig.subtriggers
+    elseif trig then
+        return { trig }
+    end
+    return {}
 end
 
 local function conditionsMet(tech)
@@ -528,6 +543,18 @@ local function runStep(a, ctx)
             end)
         end
         while done < n do task.wait(0.03) end
+    elseif a.type == "or" then
+        -- OR step: picks ONE branch based on which subtrigger fired this run.
+        -- ctx.triggerIndex was set by runTech from the trigger that queueRun'd
+        -- us. Branches and triggers are indexed 1:1; out-of-range falls
+        -- through (no-op). Steps after the OR keep running in the main flow,
+        -- so common "post-merge" actions can follow.
+        local branches = a.branches or {}
+        local idx = ctx.triggerIndex or 1
+        local branch = branches[idx]
+        if branch then
+            for _, step in ipairs(branch) do runStep(step, ctx) end
+        end
     else
         local fn = ACTIONS[a.type]
         if fn then
@@ -537,7 +564,7 @@ local function runStep(a, ctx)
     end
 end
 
-local function runTech(tech, hold)
+local function runTech(tech, hold, triggerIndex)
     if running then return end
     running = true
     task.spawn(function()
@@ -545,12 +572,18 @@ local function runTech(tech, hold)
         startCamLook = cam and cam.CFrame.LookVector or nil
         local r0 = myRoot()
         startBodyLook = r0 and r0.CFrame.LookVector or nil
-        -- "Ignore welds": keep Lock-On/Rotation alive even while welded for this run
-        local ignoreWelds = tech.trigger and tech.trigger.ignoreWelds
+        -- "Ignore welds": keep Lock-On/Rotation alive even while welded for this run.
+        -- For multi-trigger techs, the firing subtrigger's ignoreWelds wins.
+        local triggers = techTriggers(tech)
+        local firingTrig = triggers[triggerIndex or 1] or tech.trigger
+        local ignoreWelds = firingTrig and firingTrig.ignoreWelds
         if ignoreWelds then state.techIgnoreWelds = true end
         local heldKeys = {}    -- keys pressed by a Hold step, released by a Release (or at the end)
         local featRestore = {} -- [featureId] = state BEFORE this tech toggled it, for Return/end
-        local ctx = { releaseAfterWait = false, heldKeys = heldKeys, featRestore = featRestore }
+        local ctx = {
+            releaseAfterWait = false, heldKeys = heldKeys, featRestore = featRestore,
+            triggerIndex = triggerIndex or 1,   -- which subtrigger fired (OR step reads this)
+        }
         ctx.restoreAll = function(snap)
             releaseHold(snap)
             for id, prev in pairs(featRestore) do pcall(function() feature.setEnabled(id, prev) end); featRestore[id] = nil end
@@ -585,13 +618,17 @@ end
 -- techs just set a facing instantly (no meaningful wait), so they run immediately
 -- to avoid a 1-frame gap / fast-tap stuck-facing.
 local pendingRuns = {}
-local function queueRun(tech, hold)
-    if hold then runTech(tech, true) else pendingRuns[#pendingRuns + 1] = tech end
+local function queueRun(tech, hold, triggerIndex)
+    if hold then
+        runTech(tech, true, triggerIndex)
+    else
+        pendingRuns[#pendingRuns + 1] = { tech = tech, triggerIndex = triggerIndex or 1 }
+    end
 end
 local function drainPending()
     if #pendingRuns == 0 then return end
     local q = pendingRuns; pendingRuns = {}
-    for _, t in ipairs(q) do runTech(t, false) end
+    for _, item in ipairs(q) do runTech(item.tech, false, item.triggerIndex) end
 end
 
 -- ===== animation triggers + capture =====
@@ -672,24 +709,26 @@ local function onAnimPlayed(track)
     if not id then return end
     local watching = false
     for _, tech in pairs(techs) do
-        local tr = tech.trigger
-        if tech.enabled and tr and tr.event == "anim" then
-            watching = true
-            if animIdNum(tr.animId) == id and modifierHeld(tech) and conditionsMet(tech) and scopeMatches(tech) then
-                if tr.animEnd then
-                    -- fire when THIS animation stops/finishes, not when it starts
-                    log.info("[tech] anim trigger armed on-end: " .. tostring(tech.name))
-                    local conn
-                    conn = track.Stopped:Connect(function()
-                        if conn then conn:Disconnect(); conn = nil end
-                        if tech.enabled and modifierHeld(tech) and conditionsMet(tech) and scopeMatches(tech) then
-                            log.info("[tech] anim trigger fired (end): " .. tostring(tech.name))
-                            queueRun(tech, false)
+        if tech.enabled then
+            for tidx, trig in ipairs(techTriggers(tech)) do
+                if trig.event == "anim" then
+                    watching = true
+                    if animIdNum(trig.animId) == id and modifierHeld(trig) and conditionsMet(tech) and scopeMatches(tech) then
+                        if trig.animEnd then
+                            log.info("[tech] anim trigger armed on-end: " .. tostring(tech.name))
+                            local conn
+                            conn = track.Stopped:Connect(function()
+                                if conn then conn:Disconnect(); conn = nil end
+                                if tech.enabled and modifierHeld(trig) and conditionsMet(tech) and scopeMatches(tech) then
+                                    log.info("[tech] anim trigger fired (end): " .. tostring(tech.name))
+                                    queueRun(tech, false, tidx)
+                                end
+                            end)
+                        else
+                            log.info("[tech] anim trigger fired: " .. tostring(tech.name) .. " <- " .. id)
+                            queueRun(tech, false, tidx)
                         end
-                    end)
-                else
-                    log.info("[tech] anim trigger fired: " .. tostring(tech.name) .. " <- " .. id)
-                    queueRun(tech, false)
+                    end
                 end
             end
         end
@@ -775,21 +814,24 @@ local function onTargetAnimPlayed(track)
     local id = animIdNum(raw)
     if not id then return end
     for _, tech in pairs(techs) do
-        local tr = tech.trigger
-        if tech.enabled and tr and tr.event == "target_anim" then
-            if animIdNum(tr.animId) == id and modifierHeld(tech) and conditionsMet(tech) and scopeMatches(tech) then
-                if tr.animEnd then
-                    local conn
-                    conn = track.Stopped:Connect(function()
-                        if conn then conn:Disconnect(); conn = nil end
-                        if tech.enabled and modifierHeld(tech) and conditionsMet(tech) and scopeMatches(tech) then
-                            log.info("[tech] target_anim trigger fired (end): " .. tostring(tech.name))
-                            queueRun(tech, false)
+        if tech.enabled then
+            for tidx, trig in ipairs(techTriggers(tech)) do
+                if trig.event == "target_anim" then
+                    if animIdNum(trig.animId) == id and modifierHeld(trig) and conditionsMet(tech) and scopeMatches(tech) then
+                        if trig.animEnd then
+                            local conn
+                            conn = track.Stopped:Connect(function()
+                                if conn then conn:Disconnect(); conn = nil end
+                                if tech.enabled and modifierHeld(trig) and conditionsMet(tech) and scopeMatches(tech) then
+                                    log.info("[tech] target_anim trigger fired (end): " .. tostring(tech.name))
+                                    queueRun(tech, false, tidx)
+                                end
+                            end)
+                        else
+                            log.info("[tech] target_anim trigger fired: " .. tostring(tech.name) .. " <- " .. id)
+                            queueRun(tech, false, tidx)
                         end
-                    end)
-                else
-                    log.info("[tech] target_anim trigger fired: " .. tostring(tech.name) .. " <- " .. id)
-                    queueRun(tech, false)
+                    end
                 end
             end
         end
@@ -837,69 +879,60 @@ local function hookTargetAnimator()
 end
 
 -- ===== trigger wiring =====
-local function wireKey(tech)
-    local key = tech.trigger.key
+-- All trigger wiring takes (tech, trig, tidx) so multi-trigger "or" techs
+-- bind each subtrigger with a unique keybind id + CAS action name. tidx
+-- flows down to queueRun -> runTech.ctx.triggerIndex so the OR step picks
+-- the right branch on fire.
+local function wireKey(tech, trig, tidx)
+    local key = trig.key
     if not key or key == Enum.KeyCode.Unknown then return end
-    local isHold = tech.trigger.event == "keyhold"
-    if tech.trigger.suppress then
-        -- "Block this key's normal action": intercept the key with a high-priority
-        -- CAS bind + Sink, so the press runs THIS tech and the game never sees the
-        -- key (so it can't fire the move). The tech fires the move via Use Move,
-        -- which sets bypassKeys[kc]=true so the sink passes the VIM-sent key
-        -- through instead of swallowing + re-triggering us.
-        keybinds.clear("tech." .. tech.id)
-        local action = "PantheonTech_" .. tech.id
+    local isHold = trig.event == "keyhold"
+    local bindId = "tech." .. tech.id .. "." .. tidx
+    if trig.suppress then
+        keybinds.clear(bindId)
+        local action = "PantheonTech_" .. tech.id .. "_" .. tidx
         CAS:BindActionAtPriority(action, function(_, inputState)
             if bypassKeys[key] then return Enum.ContextActionResult.Pass end
             if inputState == Enum.UserInputState.Begin then
-                if tech.enabled and modifierHeld(tech) and conditionsMet(tech) and scopeMatches(tech) then queueRun(tech, isHold) end
+                if tech.enabled and modifierHeld(trig) and conditionsMet(tech) and scopeMatches(tech) then queueRun(tech, isHold, tidx) end
             elseif inputState == Enum.UserInputState.End and isHold then
                 releaseHold(true)
-                if tech.trigger.ignoreWelds then state.techIgnoreWelds = false end
+                if trig.ignoreWelds then state.techIgnoreWelds = false end
             end
             return Enum.ContextActionResult.Sink
         end, false, 3000, key)
-        casBound[tech.id] = action
+        casBound[tech.id .. ".." .. tidx] = action
         return
     end
-    keybinds.set("tech." .. tech.id, key,
-        function() if tech.enabled and modifierHeld(tech) and conditionsMet(tech) and scopeMatches(tech) then queueRun(tech, isHold) end end,
-        function() if isHold then releaseHold(true); if tech.trigger.ignoreWelds then state.techIgnoreWelds = false end end end)
+    keybinds.set(bindId, key,
+        function() if tech.enabled and modifierHeld(trig) and conditionsMet(tech) and scopeMatches(tech) then queueRun(tech, isHold, tidx) end end,
+        function() if isHold then releaseHold(true); if trig.ignoreWelds then state.techIgnoreWelds = false end end end)
 end
 
--- The "move" trigger fires the INSTANT the move's KEY is pressed (keydown), so the
--- tech runs BEFORE the move starts -- NOT on the move's button click or its Effects
--- broadcast (both happen after the move begins). The move is picked from your
--- scanned moveset (for the label); trigger.movekey is that move's key (auto-filled
--- from the scan, editable). Bound through the keybind dispatcher (UIS.InputBegan)
--- exactly like a key trigger, so it lands on keydown.
-local function wireMove(tech)
-    local keyName = tech.trigger.movekey
+local function wireMove(tech, trig, tidx)
+    local keyName = trig.movekey
     local kc = keyName and safeKeyCode(keyName)
     if not kc or kc == Enum.KeyCode.Unknown then
         log.warn("[tech] '" .. tostring(tech.name) .. "': move trigger has no key set -- pick the move's key")
         return
     end
-    if tech.trigger.suppress then
-        keybinds.clear("tech." .. tech.id)   -- drop any prior UIS bind (mode switch)
-        -- "Cancel the move's normal fire": intercept the key with a high-priority
-        -- ContextActionService bind and SINK it, so the press runs THIS tech and the
-        -- game's own keybind for the move never sees it. Use Move flips
-        -- bypassKeys[kc] while VIM-sending so this sink passes the key through.
-        local action = "PantheonTech_" .. tech.id
+    local bindId = "tech." .. tech.id .. "." .. tidx
+    if trig.suppress then
+        keybinds.clear(bindId)
+        local action = "PantheonTech_" .. tech.id .. "_" .. tidx
         CAS:BindActionAtPriority(action, function(_, inputState)
             if bypassKeys[kc] then return Enum.ContextActionResult.Pass end
             if inputState == Enum.UserInputState.Begin
-               and tech.enabled and modifierHeld(tech) and conditionsMet(tech) and scopeMatches(tech) then
-                queueRun(tech, false)
+               and tech.enabled and modifierHeld(trig) and conditionsMet(tech) and scopeMatches(tech) then
+                queueRun(tech, false, tidx)
             end
             return Enum.ContextActionResult.Sink
         end, false, 3000, kc)
-        casBound[tech.id] = action
+        casBound[tech.id .. ".." .. tidx] = action
         return
     end
-    keybinds.set("tech." .. tech.id, kc,
-        function() if tech.enabled and modifierHeld(tech) and conditionsMet(tech) and scopeMatches(tech) then queueRun(tech, false) end end,
+    keybinds.set(bindId, kc,
+        function() if tech.enabled and modifierHeld(trig) and conditionsMet(tech) and scopeMatches(tech) then queueRun(tech, false, tidx) end end,
         nil)
 end
 
@@ -909,19 +942,23 @@ function Engine.rewire()
     for _, action in pairs(casBound) do pcall(function() CAS:UnbindAction(action) end) end
     casBound = {}
     for _, tech in pairs(techs) do
-        local ev = tech.trigger and tech.trigger.event
-        if ev == "key" or ev == "keyhold" then
-            -- Only bind the key while the tech is ON; clear it when OFF so a
-            -- disabled tech's key is genuinely unbound (can't fire), matching how
-            -- move techs are gated.
-            if tech.enabled then wireKey(tech) else keybinds.clear("tech." .. tech.id) end
-        elseif ev == "move" then
-            -- move trigger is keydown on the move's key -> same bind/clear gating
-            if tech.enabled then wireMove(tech) else keybinds.clear("tech." .. tech.id) end
-        elseif ev == "anim" or ev == "target_anim" then
-            -- handled by the persistent (local / target) Animator hooks
-            -- (gated on tech.enabled); nothing to bind
-            keybinds.clear("tech." .. tech.id)
+        -- Clear any prior trigger keybinds (legacy single-slot + multi-slot
+        -- 1..8 for safety -- a tech that was an "or" with 5 subtriggers but
+        -- got edited down to 2 shouldn't leave 3..5 bound).
+        keybinds.clear("tech." .. tech.id)
+        for i = 1, 8 do keybinds.clear("tech." .. tech.id .. "." .. i) end
+        if tech.enabled then
+            for tidx, trig in ipairs(techTriggers(tech)) do
+                local ev = trig.event
+                if ev == "key" or ev == "keyhold" then
+                    wireKey(tech, trig, tidx)
+                elseif ev == "move" then
+                    wireMove(tech, trig, tidx)
+                end
+                -- anim / target_anim are dispatched by the persistent Animator
+                -- hooks (onAnimPlayed / onTargetAnimPlayed) and don't need
+                -- per-trigger wiring here.
+            end
         end
     end
     pcall(Engine.applySuppression)   -- cancel/restore move buttons per current techs
@@ -934,51 +971,76 @@ end
 local ENABLED_KEY = "tech.enabled."
 local CUSTOM_KEY  = "tech.custom"
 
+-- Serialize a single trigger table (used for tech.trigger AND each entry in
+-- tech.trigger.subtriggers for "or" techs). Same field shape either way.
+local function serializeTrigger(trig)
+    if not trig then return {} end
+    return {
+        event      = trig.event,
+        key        = persist.keyToString(trig.key),
+        move       = trig.move,
+        movekey    = trig.movekey,
+        modkey     = trig.modkey,
+        maxRange   = trig.maxRange,
+        animId     = trig.animId,
+        animEnd    = trig.animEnd,
+        targetAnimId = trig.targetAnimId,
+        suppress   = trig.suppress,
+        ignoreWelds = trig.ignoreWelds,
+    }
+end
+local function deserializeTrigger(s)
+    if not s then return nil end
+    return {
+        event      = s.event,
+        key        = persist.stringToKey(s.key),
+        move       = s.move,
+        movekey    = s.movekey,
+        modkey     = s.modkey,
+        maxRange   = s.maxRange,
+        animId     = s.animId,
+        animEnd    = s.animEnd,
+        targetAnimId = s.targetAnimId,
+        suppress   = s.suppress,
+        ignoreWelds = s.ignoreWelds,
+    }
+end
+
 local function serialize(tech)
+    local trig = tech.trigger or {}
+    local serTrig = serializeTrigger(trig)
+    serTrig.conditions = trig.conditions or {}
+    -- "or" techs carry an array of subtriggers; serialize each.
+    if trig.event == "or" and type(trig.subtriggers) == "table" then
+        local sub = {}
+        for i, st in ipairs(trig.subtriggers) do sub[i] = serializeTrigger(st) end
+        serTrig.subtriggers = sub
+    end
     return {
         id      = tech.id,
         name    = tech.name,
         scope   = tech.scope,
         enabled = tech.enabled,
-        trigger = {
-            event      = tech.trigger.event,
-            key        = persist.keyToString(tech.trigger.key),
-            move       = tech.trigger.move,
-            movekey    = tech.trigger.movekey,
-            modkey     = tech.trigger.modkey,
-            maxRange   = tech.trigger.maxRange,
-            animId     = tech.trigger.animId,
-            animEnd    = tech.trigger.animEnd,
-            targetAnimId = tech.trigger.targetAnimId,
-            suppress   = tech.trigger.suppress,
-            ignoreWelds = tech.trigger.ignoreWelds,
-            conditions = tech.trigger.conditions or {},
-        },
+        trigger = serTrig,
         actions = tech.actions or {},
     }
 end
 
 local function deserialize(s)
+    local trigOut = deserializeTrigger(s.trigger) or {}
+    trigOut.conditions = (s.trigger and s.trigger.conditions) or {}
+    if s.trigger and s.trigger.event == "or" and type(s.trigger.subtriggers) == "table" then
+        local sub = {}
+        for i, st in ipairs(s.trigger.subtriggers) do sub[i] = deserializeTrigger(st) end
+        trigOut.subtriggers = sub
+    end
     return {
         id      = s.id,
         name    = s.name,
         scope   = s.scope,
         enabled = s.enabled,
         custom  = true,
-        trigger = {
-            event      = s.trigger and s.trigger.event,
-            key        = s.trigger and persist.stringToKey(s.trigger.key),
-            move       = s.trigger and s.trigger.move,
-            movekey    = s.trigger and s.trigger.movekey,
-            modkey     = s.trigger and s.trigger.modkey,
-            maxRange   = s.trigger and s.trigger.maxRange,
-            animId     = s.trigger and s.trigger.animId,
-            animEnd    = s.trigger and s.trigger.animEnd,
-            targetAnimId = s.trigger and s.trigger.targetAnimId,
-            suppress   = s.trigger and s.trigger.suppress,
-            ignoreWelds = s.trigger and s.trigger.ignoreWelds,
-            conditions = (s.trigger and s.trigger.conditions) or {},
-        },
+        trigger = trigOut,
         actions = s.actions or {},
     }
 end

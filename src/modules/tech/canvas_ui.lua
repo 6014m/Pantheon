@@ -241,6 +241,23 @@ do
                 end
             end)
             blk._refreshAndLabel = function() b.Text = label() end
+        elseif t == "or" then
+            -- OR block: forks between branches based on which trigger fired.
+            -- Like AND, the block is a single tile on the main chain; the
+            -- branches (each = a trigger + its action chain) are edited in
+            -- a modal opened from the inline summary button.
+            local function label()
+                local n = math.max(#(p.triggers or {}), #(p.branches or {}))
+                if n == 0 then n = 2 end
+                return string.format("[%d-way fork] - click to edit", n)
+            end
+            local b = valBtn(blk, label())
+            guardedClick(b, function()
+                if blk.canvas and blk.canvas.editBranchesRequested then
+                    blk.canvas.editBranchesRequested:Fire(blk)
+                end
+            end)
+            blk._refreshAndLabel = function() b.Text = label() end
         elseif isHat(t) then
             -- Hat blocks (yellow, top of every chain) carry the trigger
             -- params (key / animId / move / etc.). The inline button is a

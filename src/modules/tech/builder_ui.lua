@@ -214,22 +214,41 @@ local function draftFromTech(t)
     local conds = {}
     for _, c in ipairs(t.trigger.conditions or {}) do conds[c] = true end
     local actions = {}
-    -- Prepend a hat block carrying the existing trigger params so the user
-    -- sees the trigger as a real block on the canvas (and can drag/configure
-    -- /delete it like any other step). Legacy techs that load this way
-    -- round-trip back to the same trigger fields on Save via the inverse
-    -- transform in buildTechFromDraft.
-    local hatType = hatTypeForEvent(t.trigger and t.trigger.event)
-    if hatType then
-        local hat = { type = hatType }
-        for k, v in pairs(t.trigger or {}) do
-            if k ~= "event" and k ~= "conditions" then hat[k] = v end
+    local trigEvent = t.trigger and t.trigger.event
+    if trigEvent == "or" then
+        -- Multi-trigger OR tech. Reconstruct the OR block carrying
+        -- subtriggers + branches; the engine "or" step in t.actions[1]
+        -- gets folded into the OR block (its branches list lives there
+        -- in the canvas representation). Post-OR actions stay as a tail.
+        local first = t.actions and t.actions[1]
+        local branches = (first and first.type == "or" and first.branches) or {}
+        local subts = {}
+        for i, s in ipairs(t.trigger.subtriggers or {}) do
+            local copy = {}
+            for k, v in pairs(s) do copy[k] = v end
+            subts[i] = copy
         end
-        if hatType == "event_key" then hat.event = t.trigger.event end   -- "key" vs "keyhold"
-        actions[#actions + 1] = hat
-    end
-    for _, a in ipairs(t.actions or {}) do
-        actions[#actions + 1] = copyAction(a)
+        actions[#actions + 1] = { type = "or", triggers = subts, branches = branches }
+        local startAt = (first and first.type == "or") and 2 or 1
+        for i = startAt, #(t.actions or {}) do
+            actions[#actions + 1] = copyAction(t.actions[i])
+        end
+    else
+        -- Single-trigger flow: prepend a hat block carrying the trigger
+        -- params so the user sees the trigger as a real block on the canvas
+        -- (and can drag/configure/delete it like any other step).
+        local hatType = hatTypeForEvent(trigEvent)
+        if hatType then
+            local hat = { type = hatType }
+            for k, v in pairs(t.trigger or {}) do
+                if k ~= "event" and k ~= "conditions" and k ~= "subtriggers" then hat[k] = v end
+            end
+            if hatType == "event_key" then hat.event = t.trigger.event end   -- "key" vs "keyhold"
+            actions[#actions + 1] = hat
+        end
+        for _, a in ipairs(t.actions or {}) do
+            actions[#actions + 1] = copyAction(a)
+        end
     end
     -- Decode scope. Numeric or unspecified -> "game" (saved as PlaceId/GameId on
     -- save). "universal" stays as-is. "char:<name>" maps to "char" and the
@@ -292,11 +311,19 @@ local function buildTechFromDraft(id)
     }
 
     local actions = draftActions()
-    -- Hat-block extraction: if the canvas chain starts with a hat block,
-    -- its params ARE the trigger. We strip the hat off the action list so
-    -- the engine sees a clean actions[] (engine still expects trigger and
-    -- actions as separate fields).
-    if actions[1] and CanvasUI.isHat(actions[1].type) then
+    -- Canvas head extraction. Three cases:
+    --  * OR block at top  -> multi-trigger fork: subtriggers move to
+    --    tech.trigger.subtriggers (event="or"), and the engine OR step
+    --    {type="or", branches=...} re-inserts at actions[1] so runStep
+    --    can pick branches[ctx.triggerIndex] at fire time.
+    --  * Hat block at top -> single trigger: hat params become tech.trigger.
+    --  * Neither           -> trigger came from legacy form fields (untouched).
+    if actions[1] and actions[1].type == "or" then
+        local orBlock = table.remove(actions, 1)
+        trigger.event = "or"
+        trigger.subtriggers = orBlock.triggers or {}
+        table.insert(actions, 1, { type = "or", branches = orBlock.branches or {} })
+    elseif actions[1] and CanvasUI.isHat(actions[1].type) then
         local hat = table.remove(actions, 1)
         trigger.event = eventForHat(hat)
         for k, v in pairs(hat) do
@@ -743,6 +770,167 @@ local function openHatEditor(hatBlock)
         if hatBlock._refreshHatLabel then hatBlock._refreshHatLabel() end
         if draft and canvas then draft.actions = canvas:toActions() end
         modal:Destroy()
+    end)
+end
+
+-- ---------- OR fork editor (sub-modal) ----------
+-- Each branch = a SUBTRIGGER (hat block at the top) + an action chain. Two
+-- branches by default; engine wires each subtrigger independently and the
+-- OR step picks branch[ctx.triggerIndex] at fire time. Mini canvases reuse
+-- the main CanvasUI class so hat / action blocks behave identically inside.
+local function openOrEditor(orBlock)
+    local modal = Instance.new("Frame")
+    modal.Size = UDim2.new(1, -16, 1, -52)
+    modal.Position = UDim2.fromOffset(8, 44)
+    modal.BackgroundColor3 = theme.bg; modal.BorderSizePixel = 0
+    modal.ZIndex = 200; modal.Parent = rootFrame
+    corner(modal, 8); stroke(modal, theme.accent, 2)
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -20, 0, 26); title.Position = UDim2.fromOffset(10, 6)
+    title.BackgroundTransparency = 1
+    title.Text = "OR fork - configure triggers + per-branch chains"
+    title.TextColor3 = theme.fg; title.Font = theme.fontBold; title.TextSize = 14
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.ZIndex = 201; title.Parent = modal
+
+    local hint = Instance.new("TextLabel")
+    hint.Size = UDim2.new(1, -20, 0, 16); hint.Position = UDim2.fromOffset(10, 32)
+    hint.BackgroundTransparency = 1
+    hint.Text = "Each branch starts with a hat (its trigger), then steps. Engine fires the branch whose trigger fired."
+    hint.TextColor3 = theme.fgDim; hint.Font = theme.font; hint.TextSize = 11
+    hint.TextXAlignment = Enum.TextXAlignment.Left
+    hint.ZIndex = 201; hint.Parent = modal
+
+    local scroll = Instance.new("ScrollingFrame")
+    scroll.Size = UDim2.new(1, -20, 1, -88); scroll.Position = UDim2.fromOffset(10, 54)
+    scroll.BackgroundTransparency = 1; scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 4; scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y; scroll.ZIndex = 201; scroll.Parent = modal
+    local scrollLay = Instance.new("UIListLayout", scroll); scrollLay.Padding = UDim.new(0, 8); scrollLay.SortOrder = Enum.SortOrder.LayoutOrder
+
+    local miniCanvases = {}
+
+    local function makeBranchSection(idx)
+        local sec = Instance.new("Frame")
+        sec.Size = UDim2.new(1, 0, 0, 0); sec.AutomaticSize = Enum.AutomaticSize.Y
+        sec.BackgroundTransparency = 1; sec.LayoutOrder = idx; sec.Parent = scroll
+        local secLay = Instance.new("UIListLayout", sec); secLay.Padding = UDim.new(0, 4); secLay.SortOrder = Enum.SortOrder.LayoutOrder
+
+        local hdr = Instance.new("TextLabel")
+        hdr.Size = UDim2.new(1, 0, 0, 20); hdr.BackgroundTransparency = 1
+        hdr.Text = "Branch " .. idx .. " (trigger + steps)"; hdr.TextColor3 = theme.accent
+        hdr.Font = theme.fontBold; hdr.TextSize = 12
+        hdr.TextXAlignment = Enum.TextXAlignment.Left
+        hdr.LayoutOrder = 1; hdr.Parent = sec
+
+        local pal = Instance.new("Frame")
+        pal.Size = UDim2.new(1, 0, 0, 0); pal.AutomaticSize = Enum.AutomaticSize.Y
+        pal.BackgroundTransparency = 1; pal.LayoutOrder = 2; pal.Parent = sec
+        local pl = Instance.new("UIGridLayout", pal)
+        pl.CellSize = UDim2.new(0, 84, 0, 32); pl.CellPadding = UDim2.new(0, 4, 0, 4)
+
+        local mc = CanvasUI.new(sec, {})
+        mc.frame.LayoutOrder = 3
+        -- Mini canvas's editHatRequested -> reuse the main openHatEditor.
+        mc.editHatRequested:Connect(function(h) openHatEditor(h) end)
+
+        -- Pre-populate from orBlock.params: triggers[idx] -> hat block,
+        -- branches[idx] -> action chain after the hat.
+        local triggers = orBlock.params.triggers or {}
+        local branches = orBlock.params.branches or {}
+        local trig = triggers[idx]
+        local hatActions = {}
+        if trig then
+            local hatType = hatTypeForEvent(trig.event)
+            if hatType then
+                local hat = { type = hatType }
+                for k, v in pairs(trig) do if k ~= "event" then hat[k] = v end end
+                if hatType == "event_key" then hat.event = trig.event end
+                hatActions[#hatActions + 1] = hat
+            end
+        end
+        for _, a in ipairs(branches[idx] or {}) do hatActions[#hatActions + 1] = copyAction(a) end
+        mc:loadActions(hatActions)
+        miniCanvases[idx] = mc
+
+        -- Palette: include hat types (so a new branch can pick a trigger
+        -- type) AND the same action set the AND modal exposes.
+        local function defaultParamsFor(t)
+            if t == "look" then return { x = 180, y = 0 }
+            elseif t == "rotate" then return { x = 180 }
+            elseif t == "wait" then return { seconds = 0.5 }
+            elseif t == "within" then return { studs = 5 }
+            end
+            return {}
+        end
+        local function paletteBtn(t)
+            local c = colorOf(t)
+            local b = Instance.new("TextButton")
+            b.BackgroundColor3 = Color3.fromRGB(math.floor(c.R*255*0.78), math.floor(c.G*255*0.78), math.floor(c.B*255*0.78))
+            b.AutoButtonColor = true; b.TextColor3 = theme.fg
+            b.Font = theme.fontBold; b.TextSize = 12
+            b.Text = "+ " .. (CanvasUI.STEP_LABEL[t] or STEP_LABEL[t] or t); b.Parent = pal
+            corner(b, 8)
+            b.MouseButton1Click:Connect(function() mc:addBlock(t, defaultParamsFor(t)) end)
+        end
+        for _, t in ipairs(CanvasUI.HAT_TYPES) do paletteBtn(t) end
+        for _, t in ipairs({ "look", "rotate", "wait", "within", "return", "feature", "key", "usebtn" }) do paletteBtn(t) end
+    end
+
+    makeBranchSection(1)
+    makeBranchSection(2)
+
+    -- buttons
+    local btnRow = Instance.new("Frame")
+    btnRow.Size = UDim2.new(1, -20, 0, 28); btnRow.Position = UDim2.new(0, 10, 1, -34)
+    btnRow.BackgroundTransparency = 1; btnRow.ZIndex = 201; btnRow.Parent = modal
+    local rowL = Instance.new("UIListLayout", btnRow); rowL.FillDirection = Enum.FillDirection.Horizontal
+    rowL.HorizontalAlignment = Enum.HorizontalAlignment.Right; rowL.Padding = UDim.new(0, 8)
+
+    local function closeModal()
+        for _, mc in ipairs(miniCanvases) do pcall(function() mc:destroy() end) end
+        modal:Destroy()
+    end
+
+    local cancel = Instance.new("TextButton")
+    cancel.Size = UDim2.fromOffset(80, 26); cancel.BackgroundColor3 = theme.bgAlt
+    cancel.AutoButtonColor = false; cancel.TextColor3 = theme.fg
+    cancel.Font = theme.font; cancel.TextSize = 12; cancel.Text = "Cancel"
+    cancel.LayoutOrder = 1; cancel.ZIndex = 202; cancel.Parent = btnRow
+    corner(cancel, 4)
+    cancel.MouseButton1Click:Connect(closeModal)
+
+    local save = Instance.new("TextButton")
+    save.Size = UDim2.fromOffset(80, 26); save.BackgroundColor3 = theme.accent
+    save.AutoButtonColor = false; save.TextColor3 = theme.fg
+    save.Font = theme.fontBold; save.TextSize = 12; save.Text = "Save"
+    save.LayoutOrder = 2; save.ZIndex = 202; save.Parent = btnRow
+    corner(save, 4)
+    save.MouseButton1Click:Connect(function()
+        -- For each branch's mini canvas, extract its hat (if present) into
+        -- a subtrigger + the remaining steps into branches[idx]. A branch
+        -- without a hat saves an empty subtrigger (no event) which the
+        -- engine ignores -- the user can re-open the modal and pick a hat.
+        local triggers, branches = {}, {}
+        for i, mc in ipairs(miniCanvases) do
+            local acts = mc:toActions()
+            local sub = {}
+            if acts[1] and CanvasUI.isHat(acts[1].type) then
+                local hat = table.remove(acts, 1)
+                sub.event = eventForHat(hat)
+                for k, v in pairs(hat) do
+                    if k ~= "type" and k ~= "event" then sub[k] = v end
+                end
+            end
+            triggers[i] = sub
+            branches[i] = acts
+        end
+        orBlock.params.triggers = triggers
+        orBlock.params.branches = branches
+        if orBlock._refreshAndLabel then orBlock._refreshAndLabel() end
+        if draft and canvas then draft.actions = canvas:toActions() end
+        closeModal()
     end)
 end
 
@@ -1230,7 +1418,12 @@ rebuild = function()
         -- "[N branches] - click to edit" button on the main canvas fires
         -- editBranchesRequested with that block. We open a modal with one
         -- mini canvas per branch so each branch can be authored visually.
-        canvas.editBranchesRequested:Connect(function(andBlock) openBranchEditor(andBlock) end)
+        -- AND and OR both fire editBranchesRequested; route to the right
+        -- modal based on block.type.
+        canvas.editBranchesRequested:Connect(function(block)
+            if block.type == "or" then openOrEditor(block)
+            else openBranchEditor(block) end
+        end)
 
         -- Hat-block trigger editor: clicking a hat block's inline summary
         -- button fires editHatRequested with that block. Opens a per-type
@@ -1312,6 +1505,10 @@ rebuild = function()
         -- yet support branch editing inside the block (placeholder text on
         -- the block; configure via nested editor in V2).
         spawnDraggable("and")
+        -- OR palette entry (V3.2). Multi-trigger fork: drop the OR on the
+        -- canvas, click its summary, configure each branch (trigger + its
+        -- action chain) in the modal. Each branch wires its own subtrigger.
+        spawnDraggable("or")
 
         -- initial load: hydrate from draft.actions
         canvas:loadActions(draft.actions)
