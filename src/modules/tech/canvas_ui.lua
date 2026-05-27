@@ -187,9 +187,21 @@ do
                 b.Text = label()
             end)
         elseif t == "and" then
-            -- V1: AND is a leaf-looking block with placeholder text. Branch
-            -- editing is the V2 nested-slot job.
-            valBtn(blk, "AND -- branches (V2)")
+            -- V2: clicking the param button opens a sub-editor modal where
+            -- each branch is its own mini canvas. The block itself stays a
+            -- single tile in the main chain (so flow stays linear); the
+            -- modal handles the nested complexity.
+            local function label()
+                local n = #(p.branches or {})
+                return string.format("[%d branches] - click to edit", n)
+            end
+            local b = valBtn(blk, label())
+            b.MouseButton1Click:Connect(function()
+                if blk.canvas and blk.canvas.editBranchesRequested then
+                    blk.canvas.editBranchesRequested:Fire(blk)
+                end
+            end)
+            blk._refreshAndLabel = function() b.Text = label() end
         end
     end
 end
@@ -211,8 +223,35 @@ function Canvas.new(parent, opts)
 
     self.blocks = {}   -- list of blocks, in insertion order
     self.changed = Signal.new()
+    self.blockClicked = Signal.new()       -- (block) on click without drag
+    self.editBranchesRequested = Signal.new() -- (andBlock) when AND's branch-edit button is clicked
     self._uid = 0
+
+    -- Trash zone (top-right corner of canvas): drop a block on it during
+    -- drag to delete it. Always visible so the affordance is obvious.
+    self.trash = Instance.new("Frame")
+    self.trash.Size = UDim2.fromOffset(56, 28)
+    self.trash.Position = UDim2.new(1, -64, 0, 8)
+    self.trash.BackgroundColor3 = theme.danger
+    self.trash.BorderSizePixel = 0
+    self.trash.ZIndex = 50
+    self.trash.Parent = self.frame
+    corner(self.trash, 6)
+    local trashL = Instance.new("TextLabel")
+    trashL.Size = UDim2.new(1, 0, 1, 0); trashL.BackgroundTransparency = 1
+    trashL.Text = "[Trash]"; trashL.TextColor3 = theme.fg
+    trashL.Font = theme.fontBold; trashL.TextSize = 11; trashL.ZIndex = 51
+    trashL.Parent = self.trash
+
     return self
+end
+
+-- True if the given GLOBAL mouse point is inside the trash zone.
+function Canvas:_isOverTrash(mx, my)
+    if not self.trash then return false end
+    local tl = self.trash.AbsolutePosition
+    local br = tl + self.trash.AbsoluteSize
+    return mx >= tl.X and mx <= br.X and my >= tl.Y and my <= br.Y
 end
 
 function Canvas:_nextId() self._uid = self._uid + 1; return "blk_" .. self._uid end
@@ -308,30 +347,49 @@ function Canvas:_wireDrag(blk)
         dragging = {
             startMouse = UIS:GetMouseLocation(),
             startPos = blk.frame.Position,
+            moved = false,
         }
-        self:_detach(blk)
-        blk.frame.ZIndex = 100   -- float above siblings while dragging
-        local cur = blk.next; while cur do cur.frame.ZIndex = 100; cur = cur.next end
+        -- defer detach + ZIndex bump until we know it's a real drag (so a
+        -- click-without-move can fire :blockClicked cleanly)
     end)
     moveConn = UIS.InputChanged:Connect(function(input)
         if not dragging or input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
         local mm = UIS:GetMouseLocation()
         local dx = mm.X - dragging.startMouse.X
         local dy = mm.Y - dragging.startMouse.Y
-        blk.frame.Position = UDim2.fromOffset(
-            dragging.startPos.X.Offset + dx,
-            dragging.startPos.Y.Offset + dy
-        )
-        self:_layoutChain(blk)
+        if not dragging.moved and (dx * dx + dy * dy) > 36 then
+            dragging.moved = true
+            self:_detach(blk)
+            blk.frame.ZIndex = 100
+            local cur = blk.next; while cur do cur.frame.ZIndex = 100; cur = cur.next end
+        end
+        if dragging.moved then
+            blk.frame.Position = UDim2.fromOffset(
+                dragging.startPos.X.Offset + dx,
+                dragging.startPos.Y.Offset + dy
+            )
+            self:_layoutChain(blk)
+        end
     end)
     endConn = UIS.InputEnded:Connect(function(input)
         if not dragging or input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+        local moved = dragging.moved
         dragging = nil
+        if not moved then
+            self.blockClicked:Fire(blk)
+            return
+        end
+        -- drag finish: trash zone deletes; otherwise try-snap then settle
+        local mp = UIS:GetMouseLocation()
+        if self:_isOverTrash(mp.X, mp.Y) then
+            self:_destroyBlock(blk)
+            return
+        end
         self:_trySnap(blk)
         blk.frame.ZIndex = 2
         local cur = blk.next; while cur do cur.frame.ZIndex = 2; cur = cur.next end
         self:_resizeToContent()
-    self:_fireChanged()
+        self:_fireChanged()
     end)
     blk._dragConns = { moveConn, endConn }
 end

@@ -535,6 +535,132 @@ local function buildHatHeader(parent, label)
     return f
 end
 
+-- ---------- AND branch editor (sub-modal) ----------
+-- Click on an AND block's branch button -> open this modal. Two mini Canvas
+-- instances, one per branch, each with its own palette. Save serializes
+-- branch contents back into andBlock.params.branches. Cancel discards.
+local function openBranchEditor(andBlock)
+    local modal = Instance.new("Frame")
+    modal.Size = UDim2.new(1, -16, 1, -52)
+    modal.Position = UDim2.fromOffset(8, 44)
+    modal.BackgroundColor3 = theme.bg; modal.BorderSizePixel = 0
+    modal.ZIndex = 200; modal.Parent = rootFrame
+    corner(modal, 8); stroke(modal, theme.accent, 2)
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -20, 0, 26); title.Position = UDim2.fromOffset(10, 6)
+    title.BackgroundTransparency = 1
+    title.Text = "AND step - configure parallel branches"
+    title.TextColor3 = theme.fg; title.Font = theme.fontBold; title.TextSize = 14
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.ZIndex = 201; title.Parent = modal
+
+    local hint = Instance.new("TextLabel")
+    hint.Size = UDim2.new(1, -20, 0, 16); hint.Position = UDim2.fromOffset(10, 32)
+    hint.BackgroundTransparency = 1
+    hint.Text = "Each branch runs in parallel; the AND finishes when both branches do."
+    hint.TextColor3 = theme.fgDim; hint.Font = theme.font; hint.TextSize = 11
+    hint.TextXAlignment = Enum.TextXAlignment.Left
+    hint.ZIndex = 201; hint.Parent = modal
+
+    local scroll = Instance.new("ScrollingFrame")
+    scroll.Size = UDim2.new(1, -20, 1, -88); scroll.Position = UDim2.fromOffset(10, 54)
+    scroll.BackgroundTransparency = 1; scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 4; scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y; scroll.ZIndex = 201; scroll.Parent = modal
+    local scrollLay = Instance.new("UIListLayout", scroll); scrollLay.Padding = UDim.new(0, 8); scrollLay.SortOrder = Enum.SortOrder.LayoutOrder
+
+    local miniCanvases = {}
+
+    -- Helper: make a "Branch N" section with its own header + mini canvas +
+    -- palette of draggable blocks. Mini canvases reuse the same CanvasUI
+    -- class so drag/snap/trash all work identically; their onChange writes
+    -- back into the AND block's branches array at save-time.
+    local function makeBranchSection(idx)
+        local sec = Instance.new("Frame")
+        sec.Size = UDim2.new(1, 0, 0, 0); sec.AutomaticSize = Enum.AutomaticSize.Y
+        sec.BackgroundTransparency = 1; sec.LayoutOrder = idx; sec.Parent = scroll
+        local secLay = Instance.new("UIListLayout", sec); secLay.Padding = UDim.new(0, 4); secLay.SortOrder = Enum.SortOrder.LayoutOrder
+
+        local hdr = Instance.new("TextLabel")
+        hdr.Size = UDim2.new(1, 0, 0, 20); hdr.BackgroundTransparency = 1
+        hdr.Text = "Branch " .. idx; hdr.TextColor3 = theme.accent
+        hdr.Font = theme.fontBold; hdr.TextSize = 12
+        hdr.TextXAlignment = Enum.TextXAlignment.Left
+        hdr.LayoutOrder = 1; hdr.Parent = sec
+
+        -- Palette inside the branch section, scoped to its mini canvas.
+        local pal = Instance.new("Frame")
+        pal.Size = UDim2.new(1, 0, 0, 0); pal.AutomaticSize = Enum.AutomaticSize.Y
+        pal.BackgroundTransparency = 1; pal.LayoutOrder = 2; pal.Parent = sec
+        local pl = Instance.new("UIGridLayout", pal)
+        pl.CellSize = UDim2.new(0, 84, 0, 32); pl.CellPadding = UDim2.new(0, 4, 0, 4)
+
+        local mc = CanvasUI.new(sec, {})
+        mc.frame.LayoutOrder = 3
+        if andBlock.params.branches and andBlock.params.branches[idx] then
+            mc:loadActions(andBlock.params.branches[idx])
+        end
+        miniCanvases[idx] = mc
+
+        local function defaultParamsFor(t)
+            if t == "look" then return { x = 180, y = 0 }
+            elseif t == "rotate" then return { x = 180 }
+            elseif t == "wait" then return { seconds = 0.5 }
+            elseif t == "within" then return { studs = 5 }
+            end
+            return {}
+        end
+
+        for _, t in ipairs({ "look", "rotate", "wait", "within", "return", "feature", "key", "usebtn" }) do
+            local c = colorOf(t)
+            local b = Instance.new("TextButton")
+            b.BackgroundColor3 = Color3.fromRGB(math.floor(c.R*255*0.78), math.floor(c.G*255*0.78), math.floor(c.B*255*0.78))
+            b.AutoButtonColor = true; b.TextColor3 = theme.fg
+            b.Font = theme.fontBold; b.TextSize = 12
+            b.Text = "+ " .. (STEP_LABEL[t] or t); b.Parent = pal
+            corner(b, 8)
+            b.MouseButton1Click:Connect(function()
+                mc:addBlock(t, defaultParamsFor(t))
+            end)
+        end
+    end
+
+    makeBranchSection(1)
+    makeBranchSection(2)
+
+    -- Save / Cancel buttons at the bottom of the modal.
+    local btnRow = Instance.new("Frame")
+    btnRow.Size = UDim2.new(1, -20, 0, 28); btnRow.Position = UDim2.new(0, 10, 1, -34)
+    btnRow.BackgroundTransparency = 1; btnRow.ZIndex = 201; btnRow.Parent = modal
+    local rowL = Instance.new("UIListLayout", btnRow); rowL.FillDirection = Enum.FillDirection.Horizontal
+    rowL.HorizontalAlignment = Enum.HorizontalAlignment.Right; rowL.Padding = UDim.new(0, 8)
+
+    local cancel = Instance.new("TextButton")
+    cancel.Size = UDim2.fromOffset(80, 26); cancel.BackgroundColor3 = theme.bgAlt
+    cancel.AutoButtonColor = false; cancel.TextColor3 = theme.fg
+    cancel.Font = theme.font; cancel.TextSize = 12; cancel.Text = "Cancel"
+    cancel.LayoutOrder = 1; cancel.ZIndex = 202; cancel.Parent = btnRow
+    corner(cancel, 4)
+    cancel.MouseButton1Click:Connect(function() modal:Destroy() end)
+
+    local save = Instance.new("TextButton")
+    save.Size = UDim2.fromOffset(80, 26); save.BackgroundColor3 = theme.accent
+    save.AutoButtonColor = false; save.TextColor3 = theme.fg
+    save.Font = theme.fontBold; save.TextSize = 12; save.Text = "Save"
+    save.LayoutOrder = 2; save.ZIndex = 202; save.Parent = btnRow
+    corner(save, 4)
+    save.MouseButton1Click:Connect(function()
+        andBlock.params.branches = {
+            miniCanvases[1]:toActions(),
+            miniCanvases[2]:toActions(),
+        }
+        if andBlock._refreshAndLabel then andBlock._refreshAndLabel() end
+        if draft and canvas then draft.actions = canvas:toActions() end
+        modal:Destroy()
+    end)
+end
+
 -- ---------- form (left pane) ----------
 rebuild = function()
     for _, c in ipairs(formScroll:GetChildren()) do
@@ -884,6 +1010,12 @@ rebuild = function()
             onChange = function() if draft then draft.actions = canvas:toActions() end end,
         })
         canvas.frame.LayoutOrder = 2
+
+        -- Wire the AND-block branch editor: clicking an AND block's
+        -- "[N branches] - click to edit" button on the main canvas fires
+        -- editBranchesRequested with that block. We open a modal with one
+        -- mini canvas per branch so each branch can be authored visually.
+        canvas.editBranchesRequested:Connect(function(andBlock) openBranchEditor(andBlock) end)
 
         -- Drag a palette button -> spawn a ghost that follows the mouse,
         -- and on release inside the canvas bounds, addBlock at the
