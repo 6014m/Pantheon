@@ -136,42 +136,91 @@ function JJS.scanMoves(pg)
     return out
 end
 
--- Map JJS hotbar move name -> Knit Service name. Per reference_jjs_autoblock
--- the Knit pattern is `ReplicatedStorage.Knit.Knit.Services.<Service>.RE.
--- Activated:FireServer()` and "most services are named after the move"; the
--- BlockService remote is verified by the public autoblock. Add entries as we
--- confirm them. JJS.useMove looks them up and fires the RE directly, which is
--- more reliable than VIM-sending the slot key (PB wasn't firing on VIM).
-local MOVE_SERVICE = {
-    ["Projection Breaker"] = "ProjectionBreakerService",
-}
+-- Knit Service discovery for the per-game useMove hook. JJS's Knit pattern
+-- (verified for BlockService by the public autoblock + dumped Knit.Services
+-- list, ~190 services mostly one-per-move named after the move):
+--   ReplicatedStorage.Knit.Knit.Services.<MoveNoSpaces>Service.RE.Activated
+-- Some moves drop the "Service" suffix or sit under a character service; we
+-- try a small ladder of guesses + a substring match against service stems
+-- before giving up. MOVE_SERVICE pins an exact name when we KNOW it (no
+-- discovery needed).
+local MOVE_SERVICE = {}    -- known move name -> exact service name
 
-local function findKnitService(svcName)
+local function knitServices()
     local knit = ReplicatedStorage:FindFirstChild("Knit")
     if not knit then return nil end
     local inner = knit:FindFirstChild("Knit") or knit
-    local svcs = inner:FindFirstChild("Services")
-    return svcs and svcs:FindFirstChild(svcName) or nil
+    return inner:FindFirstChild("Services")
+end
+
+-- Look up the service that handles `moveName`. Caches successful resolutions
+-- so subsequent uses are O(1). Returns the service Instance + the resolved
+-- name (for diagnostics).
+local resolvedCache = {}
+local function resolveServiceFor(moveName)
+    if resolvedCache[moveName] ~= nil then
+        local cached = resolvedCache[moveName]
+        return cached.svc, cached.name
+    end
+    local svcs = knitServices()
+    if not svcs then return nil, nil end
+
+    local stem = moveName:gsub("%s+", "")    -- "Projection Breaker" -> "ProjectionBreaker"
+    local pinned = MOVE_SERVICE[moveName]
+    local guesses = {
+        pinned,
+        stem .. "Service",
+        stem,
+    }
+    for _, g in ipairs(guesses) do
+        if g then
+            local s = svcs:FindFirstChild(g)
+            if s then resolvedCache[moveName] = { svc = s, name = g }; return s, g end
+        end
+    end
+    -- substring fallback (case-insensitive). e.g. move "Tap" might match a
+    -- service named "QuickTapService" -- only useful if there's a unique hit.
+    local stemLow = stem:lower()
+    local match, matchCount = nil, 0
+    for _, s in ipairs(svcs:GetChildren()) do
+        if s.Name:lower():find(stemLow, 1, true) then
+            match = s; matchCount = matchCount + 1
+        end
+    end
+    if matchCount == 1 then
+        resolvedCache[moveName] = { svc = match, name = match.Name }
+        return match, match.Name
+    end
+    resolvedCache[moveName] = { svc = false, name = nil }    -- negative cache
+    return nil, nil
 end
 
 -- Per-game useMove hook called by engine.ACTIONS.usebtn BEFORE the generic VIM
--- key path. Return true if we handled the move (engine stops); false/nil to
--- let the engine fall through to the VIM/click path.
+-- key path. Returns true if we handled the move (engine stops); false/nil
+-- lets the engine fall through to VIM/click. Notifies in-game so we can see
+-- live what was actually fired (the only way to debug a remote that "looks
+-- right" but the game's handler rejects).
 function JJS.useMove(name)
-    local svcName = MOVE_SERVICE[name]
-    if not svcName then return false end
-    local svc = findKnitService(svcName)
-    local re  = svc and svc:FindFirstChild("RE")
+    local svc, svcName = resolveServiceFor(name)
+    if not svc then
+        pcall(function() notify.warn("[jjs] no Knit service for '" .. tostring(name) .. "'", 4) end)
+        log.warn("[jjs] useMove: no Knit service for '" .. tostring(name) .. "', falling through to VIM")
+        return false
+    end
+    local re = svc:FindFirstChild("RE")
     local act = re and re:FindFirstChild("Activated")
     if not act then
+        pcall(function() notify.warn("[jjs] " .. svcName .. " has no RE.Activated", 4) end)
         log.warn("[jjs] useMove: " .. svcName .. ".RE.Activated not found, falling through to VIM")
         return false
     end
     local ok, err = pcall(function() act:FireServer() end)
     if not ok then
+        pcall(function() notify.warn("[jjs] FireServer " .. svcName .. " errored: " .. tostring(err), 4) end)
         log.warn("[jjs] useMove fire " .. svcName .. ": " .. tostring(err))
         return false
     end
+    pcall(function() notify.info("[jjs] fired " .. svcName .. ".RE.Activated", 2) end)
     return true
 end
 

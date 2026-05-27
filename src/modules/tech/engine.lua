@@ -485,10 +485,17 @@ local function runTech(tech, hold)
             end
         end
         -- one-shot techs auto-clean at the end -- features toggled go back, held
-        -- keys release. Rotation does NOT snap back (snap = false): if the tech
-        -- ends without an explicit Return, the last Rotate persists until the
-        -- next move/input naturally turns you. Hold techs keep facing until key release.
-        if not hold then restoreAll(false) else
+        -- keys release. If a Rotate ran, hold the rotation briefly past tech
+        -- end so it is VISIBLE under shiftlock (the game's shiftlock script
+        -- snaps body back to face cam the instant we release techBodyOverride,
+        -- which was making rotate look like it did nothing) AND so any move
+        -- fired server-side at the rotated facing has time to land before we
+        -- release. ~0.6s = long enough to see + long enough for a typical
+        -- JJS cast handshake to commit; short enough not to feel stuck.
+        if not hold then
+            if bodyARDisabled then task.wait(0.6) end
+            restoreAll(false)
+        else
             for kc in pairs(heldKeys) do pcall(function() VIM:SendKeyEvent(false, kc, false, game) end) end
         end
         -- one-shot: release the weld-ignore now; hold techs keep it until key release
