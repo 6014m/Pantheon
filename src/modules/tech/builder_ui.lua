@@ -189,10 +189,45 @@ local function copyAction(a)
     return out
 end
 
+-- Map an engine trigger.event string -> the matching canvas hat block type.
+local function hatTypeForEvent(ev)
+    if ev == "key" or ev == "keyhold" then return "event_key"
+    elseif ev == "anim" then return "event_anim"
+    elseif ev == "target_anim" then return "event_target_anim"
+    elseif ev == "move" then return "event_move"
+    end
+    return nil
+end
+-- Inverse: hat type -> engine trigger.event. event_key carries the
+-- key/keyhold distinction in its own .event param (set by the hat modal's
+-- "Hold the key" toggle).
+local function eventForHat(hat)
+    if hat.type == "event_key" then return hat.event == "keyhold" and "keyhold" or "key"
+    elseif hat.type == "event_anim" then return "anim"
+    elseif hat.type == "event_target_anim" then return "target_anim"
+    elseif hat.type == "event_move" then return "move"
+    end
+    return "key"
+end
+
 local function draftFromTech(t)
     local conds = {}
     for _, c in ipairs(t.trigger.conditions or {}) do conds[c] = true end
     local actions = {}
+    -- Prepend a hat block carrying the existing trigger params so the user
+    -- sees the trigger as a real block on the canvas (and can drag/configure
+    -- /delete it like any other step). Legacy techs that load this way
+    -- round-trip back to the same trigger fields on Save via the inverse
+    -- transform in buildTechFromDraft.
+    local hatType = hatTypeForEvent(t.trigger and t.trigger.event)
+    if hatType then
+        local hat = { type = hatType }
+        for k, v in pairs(t.trigger or {}) do
+            if k ~= "event" and k ~= "conditions" then hat[k] = v end
+        end
+        if hatType == "event_key" then hat.event = t.trigger.event end   -- "key" vs "keyhold"
+        actions[#actions + 1] = hat
+    end
     for _, a in ipairs(t.actions or {}) do
         actions[#actions + 1] = copyAction(a)
     end
@@ -232,10 +267,7 @@ local function draftActions()
     return actions
 end
 local function buildTechFromDraft(id)
-    -- Resolve scope to its persisted form. char-scope pins the character name
-    -- captured at save time (pinChar if set, else the live detected name); we
-    -- fall back to game scope when neither is available so a char-locked save
-    -- with no detection can't accidentally become a universal/no-op tech.
+    -- Resolve scope (game / char / universal).
     local scope
     if draft.scope == "universal" then
         scope = "universal"
@@ -245,16 +277,37 @@ local function buildTechFromDraft(id)
     else
         scope = game.GameId
     end
+
+    -- Base trigger from the legacy form fields. The hat-block-on-canvas
+    -- path BELOW will overwrite event + relevant params if a hat is
+    -- present, taking precedence over the form. Form fields are kept as
+    -- a fallback for techs the user hasn't migrated to a hat yet.
+    local trigger = {
+        event = draft.event, key = draft.key, move = draft.move, movekey = draft.movekey,
+        modkey = draft.modkey, maxRange = draft.maxRange,
+        animId = draft.animId, animEnd = draft.animEnd,
+        targetAnimId = draft.targetAnimId,
+        suppress = draft.suppress, ignoreWelds = draft.ignoreWelds,
+        conditions = draftConditions(),
+    }
+
+    local actions = draftActions()
+    -- Hat-block extraction: if the canvas chain starts with a hat block,
+    -- its params ARE the trigger. We strip the hat off the action list so
+    -- the engine sees a clean actions[] (engine still expects trigger and
+    -- actions as separate fields).
+    if actions[1] and CanvasUI.isHat(actions[1].type) then
+        local hat = table.remove(actions, 1)
+        trigger.event = eventForHat(hat)
+        for k, v in pairs(hat) do
+            if k ~= "type" and k ~= "event" then trigger[k] = v end
+        end
+    end
+
     return {
         id = id, name = (draft.name and #draft.name > 0) and draft.name or "Tech", custom = true,
         scope = scope, enabled = true,
-        trigger = { event = draft.event, key = draft.key, move = draft.move, movekey = draft.movekey,
-                    modkey = draft.modkey, maxRange = draft.maxRange,
-                    animId = draft.animId, animEnd = draft.animEnd,
-                    targetAnimId = draft.targetAnimId,
-                    suppress = draft.suppress, ignoreWelds = draft.ignoreWelds,
-                    conditions = draftConditions() },
-        actions = draftActions(),
+        trigger = trigger, actions = actions,
     }
 end
 local function onSave()
@@ -556,6 +609,141 @@ local function buildHatHeader(parent, label)
     lbl.Text = label; lbl.TextColor3 = Color3.fromRGB(40, 30, 0); lbl.Font = theme.fontBold; lbl.TextSize = 13
     lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Parent = f
     return f
+end
+
+-- ---------- Hat-block trigger editor (sub-modal) ----------
+-- Click on a hat block's summary button -> open this modal. Per-type rows
+-- (key picker / anim picker / move picker / etc.) write into the hat's
+-- params; on Save the hat refreshes its inline summary and the draft is
+-- re-synced from canvas. Each hat type renders only the params relevant
+-- to that trigger event (no global show-all-fields like the legacy form).
+local function openHatEditor(hatBlock)
+    local t, p = hatBlock.type, hatBlock.params
+
+    local modal = Instance.new("Frame")
+    modal.Size = UDim2.new(0, 360, 0, 280)
+    modal.Position = UDim2.new(0.5, -180, 0.5, -140)
+    modal.BackgroundColor3 = theme.bg; modal.BorderSizePixel = 0
+    modal.ZIndex = 200; modal.Parent = rootFrame
+    corner(modal, 8); stroke(modal, theme.accent, 2)
+
+    local TITLE = ({
+        event_key = "When key pressed", event_anim = "When my anim plays",
+        event_target_anim = "When target's anim plays", event_move = "When move pressed",
+    })[t] or "Configure trigger"
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -20, 0, 24); title.Position = UDim2.fromOffset(10, 8)
+    title.BackgroundTransparency = 1; title.Text = TITLE
+    title.TextColor3 = theme.fg; title.Font = theme.fontBold; title.TextSize = 14
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.ZIndex = 201; title.Parent = modal
+
+    local body = Instance.new("ScrollingFrame")
+    body.Size = UDim2.new(1, -20, 1, -76); body.Position = UDim2.fromOffset(10, 36)
+    body.BackgroundTransparency = 1; body.BorderSizePixel = 0
+    body.ScrollBarThickness = 4; body.CanvasSize = UDim2.new(0, 0, 0, 0)
+    body.AutomaticCanvasSize = Enum.AutomaticSize.Y; body.ZIndex = 201; body.Parent = modal
+    local bl = Instance.new("UIListLayout", body); bl.Padding = UDim.new(0, 6); bl.SortOrder = Enum.SortOrder.LayoutOrder
+
+    local ord = 0
+    local function place(inst) ord = ord + 1; inst.LayoutOrder = ord; inst.Parent = body; return inst end
+
+    -- per-type rows. KeybindSetter / textRow / Toggle are the same components
+    -- the legacy form section used -- DRY without refactoring.
+    if t == "event_key" then
+        place(wrap(28, function(host)
+            local def = toKeyCode(p.key) or (typeof(p.key) == "EnumItem" and p.key) or Enum.KeyCode.Unknown
+            components.KeybindSetter(host, { label = "Key", default = def,
+                onChange = function(k) p.key = k end })
+        end))
+        place(wrap(28, function(host) components.Toggle(host, { text = "Hold (release = return)",
+            default = p.event == "keyhold",
+            onChange = function(v) p.event = v and "keyhold" or "key" end }) end))
+        place(wrap(28, function(host) components.Toggle(host, { text = "Block this key's normal action",
+            default = p.suppress == true,
+            onChange = function(v) p.suppress = v or nil end }) end))
+        place(wrap(28, function(host)
+            local def = toKeyCode(p.modkey) or Enum.KeyCode.Unknown
+            components.KeybindSetter(host, { label = "Hold-key (optional)", default = def,
+                onChange = function(k) p.modkey = (k and k ~= Enum.KeyCode.Unknown) and (tostring(k):gsub("Enum.KeyCode.", "")) or nil end })
+        end))
+    elseif t == "event_anim" or t == "event_target_anim" then
+        local isTarget = (t == "event_target_anim")
+        place(textRow(body, "Anim ID", p.animId, function(s)
+            local id = s and s:match("%d+"); p.animId = id or (s ~= "" and s) or nil
+        end))
+        place(wrap(28, function(host)
+            local b = Instance.new("TextButton")
+            b.Size = UDim2.new(1, 0, 0, 24); b.BackgroundColor3 = theme.bgDark
+            b.AutoButtonColor = true; b.TextColor3 = theme.accent
+            b.Font = theme.fontBold; b.TextSize = 12
+            b.Text = isTarget and "Capture (target plays the move)" or "Capture (play the move now)"
+            b.Parent = host; corner(b, 4)
+            b.MouseButton1Click:Connect(function()
+                b.Text = "Capturing..."
+                local cap = isTarget and engine.captureTargetAnim or engine.captureAnim
+                if cap then
+                    cap(function(raw)
+                        p.animId = tostring(raw):match("%d+") or tostring(raw)
+                        b.Text = isTarget and "Capture (target plays the move)" or "Capture (play the move now)"
+                    end)
+                end
+            end)
+        end))
+        place(wrap(28, function(host) components.Toggle(host, { text = "Fire on animation END (not start)",
+            default = p.animEnd == true,
+            onChange = function(v) p.animEnd = v or nil end }) end))
+    elseif t == "event_move" then
+        local res = scanner.cached() or scanner.scan()
+        local moveset = res.buttons or {}
+        if #moveset == 0 then
+            place(components.Label(body, "No moves detected yet (run Dump GUI to map the hotbar)"))
+        else
+            if not p.move then
+                p.move = moveset[1].name
+                if moveset[1].key and not p.movekey then p.movekey = keyNameNorm(moveset[1].key) end
+            end
+            local labels = {}
+            for _, b in ipairs(moveset) do
+                local lbl = (b.text ~= "" and b.text) or b.name
+                if b.key then lbl = lbl .. " [" .. b.key .. "]" end
+                labels[#labels + 1] = lbl
+            end
+            local idx = 1
+            for i, b in ipairs(moveset) do if b.name == p.move then idx = i end end
+            place(cycleRow(body, "Move", labels, idx, function(i)
+                p.move = moveset[i].name
+                if moveset[i].key then p.movekey = keyNameNorm(moveset[i].key) end
+            end))
+            place(wrap(28, function(host)
+                local def = toKeyCode(p.movekey) or Enum.KeyCode.Unknown
+                components.KeybindSetter(host, { label = "Move key", default = def,
+                    onChange = function(k) p.movekey = (k and k ~= Enum.KeyCode.Unknown) and (tostring(k):gsub("Enum.KeyCode.", "")) or nil end })
+            end))
+        end
+        place(wrap(28, function(host) components.Toggle(host, { text = "Block move's normal fire",
+            default = p.suppress == true,
+            onChange = function(v) p.suppress = v or nil end }) end))
+    end
+
+    -- Save / Cancel
+    local btnRow = Instance.new("Frame")
+    btnRow.Size = UDim2.new(1, -20, 0, 28); btnRow.Position = UDim2.new(0, 10, 1, -34)
+    btnRow.BackgroundTransparency = 1; btnRow.ZIndex = 201; btnRow.Parent = modal
+    local rowL = Instance.new("UIListLayout", btnRow); rowL.FillDirection = Enum.FillDirection.Horizontal
+    rowL.HorizontalAlignment = Enum.HorizontalAlignment.Right; rowL.Padding = UDim.new(0, 8)
+
+    local close = Instance.new("TextButton")
+    close.Size = UDim2.fromOffset(80, 26); close.BackgroundColor3 = theme.accent
+    close.AutoButtonColor = false; close.TextColor3 = theme.fg
+    close.Font = theme.fontBold; close.TextSize = 12; close.Text = "Done"
+    close.ZIndex = 202; close.Parent = btnRow
+    corner(close, 4)
+    close.MouseButton1Click:Connect(function()
+        if hatBlock._refreshHatLabel then hatBlock._refreshHatLabel() end
+        if draft and canvas then draft.actions = canvas:toActions() end
+        modal:Destroy()
+    end)
 end
 
 -- ---------- AND branch editor (sub-modal) ----------
@@ -1048,6 +1236,12 @@ rebuild = function()
         -- mini canvas per branch so each branch can be authored visually.
         canvas.editBranchesRequested:Connect(function(andBlock) openBranchEditor(andBlock) end)
 
+        -- Hat-block trigger editor: clicking a hat block's inline summary
+        -- button fires editHatRequested with that block. Opens a per-type
+        -- modal that edits the hat's trigger params in place; the hat's
+        -- summary text refreshes on close and the draft re-syncs.
+        canvas.editHatRequested:Connect(function(hatBlock) openHatEditor(hatBlock) end)
+
         -- Drag a palette button -> spawn a ghost that follows the mouse,
         -- and on release inside the canvas bounds, addBlock at the
         -- canvas-local coords so the block lands where the cursor was.
@@ -1113,6 +1307,10 @@ rebuild = function()
             end)
         end
 
+        -- Hat blocks first (yellow, the trigger). One per tech (V3.1); the
+        -- canvas doesn't enforce uniqueness yet -- builder_ui's Save just
+        -- takes the FIRST hat in toActions() as the trigger.
+        for _, t in ipairs(CanvasUI.HAT_TYPES) do spawnDraggable(t) end
         for _, t in ipairs(ACTION_TYPES) do spawnDraggable(t) end
         -- AND palette entry too -- engine accepts type="and" but V1 doesn't
         -- yet support branch editing inside the block (placeholder text on

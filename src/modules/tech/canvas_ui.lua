@@ -34,6 +34,13 @@ local scanner = require("modules.tech.scanner")
 local Canvas = {}
 Canvas.__index = Canvas
 
+-- Module-level exports (the builder_ui needs these to iterate hat-block
+-- types for its palette + detect hats in the saved action stream).
+Canvas.HAT_TYPES = nil      -- assigned below once HAT_TYPES exists
+Canvas.isHat = nil
+Canvas.colorOf = nil
+Canvas.STEP_LABEL = nil
+
 -- ---- visual constants ----
 local BLOCK_W       = 200
 local BLOCK_H       = 36
@@ -46,9 +53,16 @@ local HAT_LABEL_COL = Color3.fromRGB(40, 30, 0)
 local CATEGORY = {
     look = "motion", rotate = "motion",
     wait = "control", during = "control", ["return"] = "control",
-    hold = "control", release = "control", ["and"] = "control",
+    hold = "control", release = "control", ["and"] = "control", ["or"] = "control",
     within = "sense",
     feature = "action", key = "action", usebtn = "action",
+    -- Hat blocks (event triggers). Each carries the trigger params on its
+    -- own .params table; builder_ui detects a hat at the top of a chain at
+    -- Save and extracts it into tech.trigger.
+    event_key       = "event",
+    event_anim      = "event",
+    event_target_anim = "event",
+    event_move      = "event",
 }
 local CAT_COLOR = {
     motion  = Color3.fromRGB(76, 151, 255),
@@ -60,8 +74,14 @@ local CAT_COLOR = {
 local STEP_LABEL = {
     look = "Look", rotate = "Rotate", wait = "Wait", during = "During",
     within = "Within", ["return"] = "Return", feature = "Use", key = "Press",
-    hold = "Hold", release = "Release", usebtn = "Use Move", ["and"] = "AND",
+    hold = "Hold", release = "Release", usebtn = "Use Move", ["and"] = "AND", ["or"] = "OR",
+    event_key         = "When key",
+    event_anim        = "When my anim",
+    event_target_anim = "When target anim",
+    event_move        = "When move",
 }
+local HAT_TYPES = { "event_key", "event_anim", "event_target_anim", "event_move" }
+local function isHat(t) return t == "event_key" or t == "event_anim" or t == "event_target_anim" or t == "event_move" end
 local YAW_PRESETS = { 180, 135, 90, 45, 0, -45, -90, -135, -180 }
 local function nextYaw(cur)
     for i, v in ipairs(YAW_PRESETS) do if v == cur then return YAW_PRESETS[(i % #YAW_PRESETS) + 1] end end
@@ -69,6 +89,11 @@ local function nextYaw(cur)
 end
 local function catOf(t) return CATEGORY[t] or "action" end
 local function colorOf(t) return CAT_COLOR[catOf(t)] end
+
+Canvas.HAT_TYPES = HAT_TYPES
+Canvas.isHat = isHat
+Canvas.colorOf = colorOf
+Canvas.STEP_LABEL = STEP_LABEL
 
 -- ---- small helpers ----
 local function corner(o, r) local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 6); c.Parent = o; return c end
@@ -216,6 +241,34 @@ do
                 end
             end)
             blk._refreshAndLabel = function() b.Text = label() end
+        elseif isHat(t) then
+            -- Hat blocks (yellow, top of every chain) carry the trigger
+            -- params (key / animId / move / etc.). The inline button is a
+            -- one-liner summary that opens a modal for full editing -- the
+            -- modal lives in builder_ui (renderHatConfig signal) so it has
+            -- access to the scanner + Engine anim history without having
+            -- to plumb them into the canvas module.
+            local function summarize()
+                if t == "event_key" then
+                    return (p.key and ("key: " .. p.key) or "(no key set)") ..
+                           (p.suppress and " [block]" or "") ..
+                           ((p.event or "key") == "keyhold" and " [hold]" or "")
+                elseif t == "event_anim" then
+                    return p.animId and ("anim " .. tostring(p.animId)) or "(no anim set)"
+                elseif t == "event_target_anim" then
+                    return p.animId and ("target anim " .. tostring(p.animId)) or "(no anim set)"
+                elseif t == "event_move" then
+                    return p.move and ("move: " .. tostring(p.move)) or "(no move set)"
+                end
+                return "configure"
+            end
+            local b = valBtn(blk, summarize())
+            guardedClick(b, function()
+                if blk.canvas and blk.canvas.editHatRequested then
+                    blk.canvas.editHatRequested:Fire(blk)
+                end
+            end)
+            blk._refreshHatLabel = function() b.Text = summarize() end
         end
     end
 end
@@ -239,6 +292,7 @@ function Canvas.new(parent, opts)
     self.changed = Signal.new()
     self.blockClicked = Signal.new()       -- (block) on click without drag
     self.editBranchesRequested = Signal.new() -- (andBlock) when AND's branch-edit button is clicked
+    self.editHatRequested      = Signal.new() -- (hatBlock) when a hat's summary button is clicked
     self._uid = 0
     -- (Global trash zone removed -- per-block trash icons are the delete UX
     -- now; see _renderBlock. Drag-onto-trash was unreliable because the
