@@ -146,17 +146,15 @@ function module.register()
             { type = "toggle", name = "Battlegrounds-safe", default = true,
               onChange = function(v) state.bgSafeEnabled = v end },
 
-            -- Lead time on the target's position. lockon's camera and
-            -- rotation_lock's body both shift their aim by
-            -- (target.AssemblyLinearVelocity * predictionTime), which
-            -- compensates for the network-update gap. 0 = no prediction
-            -- (aim at last replicated position, what you'd get on a
-            -- stationary target); 0.1 leads a 50-stud/s sprinter by ~5
-            -- studs. Crank up to 0.2 for laggy servers / very fast games.
-            -- Ping-adaptive lead: ON by default, self-tunes from live ping so
-            -- you face where a dashing target actually is. The slider below is
-            -- the manual fallback, used only when this is off.
-            { type = "toggle", name = "Auto prediction (ping-based)", default = true,
+            -- Aim lead: lockon's camera + rotation_lock's body both shift
+            -- their aim by (target.AssemblyLinearVelocity * lead). With
+            -- Auto on, the lead self-tunes from the TARGET'S TANGENTIAL
+            -- VELOCITY RELATIVE TO YOU (the orbit/strafe part the camera
+            -- must rotate to chase) -- pumps up for fast players + skilled
+            -- close orbits (high angular rate), drops to zero for stationary
+            -- or charging-at-you targets. The slider below is the manual
+            -- fallback used only when Auto is off.
+            { type = "toggle", name = "Auto prediction (velocity-based)", default = true,
               onChange = function(v) state.predictionAuto = v end },
             { type = "slider", name = "Aim prediction (s, manual)",
               key = "prediction", min = 0, max = 0.3, step = 0.01, default = 0.1,

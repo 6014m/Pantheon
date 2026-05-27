@@ -85,11 +85,15 @@ local state = {
     -- compensation a battlegrounds-style game needs.
     predictionTime = 0.1,
 
-    -- Ping-adaptive prediction. When predictionAuto is on, getLeadTime() derives
-    -- the lead from live ping (ping * factor, capped) so it self-tunes per
-    -- server; predictionTime above becomes the manual value used when auto off.
+    -- Velocity-adaptive prediction. When predictionAuto is on, getLeadTime()
+    -- derives the lead from the TARGET'S TANGENTIAL VELOCITY RELATIVE TO YOU
+    -- (the orbit/strafe component the camera must rotate through). Static
+    -- targets get 0 lead; a player side-dashing close around you pumps the
+    -- lead via the angular-velocity term (close + fast = high angular
+    -- rate, the regime where lock-on+ alone falls behind). predictionTime
+    -- (slider) is the manual fallback when auto is off.
     predictionAuto   = true,
-    predictionFactor = 1.0,   -- multiplier on the ping-derived lead
+    predictionFactor = 0.003, -- seconds of lead per stud/sec of tangential speed
     predictionCap    = 0.3,   -- hard cap (seconds) on the lead
 
     -- Signals
@@ -123,29 +127,62 @@ local PlayersService = game:GetService("Players")
 local StatsService   = game:GetService("Stats")
 
 -- Effective aim lead (seconds), shared by lockon (camera) and rotation_lock
--- (body). Ping-adaptive when predictionAuto: a target's replicated position is
--- ~ping behind, so leading by velocity * ping faces where they actually are
--- now -- this self-tunes per server instead of a fixed guess. Falls back to the
--- manual predictionTime slider when auto is off.
--- Cache the live ping read. GetValue() through StatsService.Network is a pcall +
--- property traversal, and getLeadTime() is called several times per frame (lockon
--- camera + rotation_lock's render+stepped double-bind). Ping barely moves frame to
--- frame, so refreshing it 4x/s instead of ~240x/s is free perf. The cheap lead
--- math (ping * factor, capped) still runs per call so factor/cap stay live.
-local pingCacheT, pingCacheV = 0, 0.1
+-- (body). Velocity-adaptive when predictionAuto: takes the TARGET'S TANGENTIAL
+-- velocity relative to YOU (perpendicular to the line from your root to
+-- theirs -- the "side-dash / orbit" component the camera must chase) and
+-- the corresponding ANGULAR velocity from your POV (= tangential / distance),
+-- and uses the larger of the two leads.
+--
+-- Why both:
+--  * Linear (tangential) lead handles a fast target at any range -- 60 stud/s
+--    strafe at 25 studs needs the same lead as 60 stud/s at 5 studs at the
+--    LINEAR scale, but in practice the close one is harder to track.
+--  * Angular lead handles "stick close to me" -- a skilled player orbiting at
+--    moderate linear speed but tiny radius (1-3 studs) has very high angular
+--    rate, the regime where lock-on+ rotation alone visibly falls behind.
+-- Taking max() lets each formula dominate where it should.
+--
+-- A stationary target -- or one moving radially toward/away from you -- gets
+-- zero lead by construction (no orbit/strafe to chase). Ping-based lead was
+-- the V0 formula but user wanted velocity-driven; the math here doesn't need
+-- ping (replicated position lag on a stationary target is uninteresting).
+local lastReadT, lastReadV = 0, 0
 function state.getLeadTime()
-    if state.predictionAuto then
-        local now = os.clock()
-        if now - pingCacheT > 0.25 then
-            pingCacheT = now
-            local ok, ms = pcall(function()
-                return StatsService.Network.ServerStatsItem["Data Ping"]:GetValue()
-            end)
-            pingCacheV = (ok and ms or 100) / 1000
-        end
-        return math.min(pingCacheV * (state.predictionFactor or 1), state.predictionCap or 0.3)
-    end
-    return state.predictionTime or 0
+    if not state.predictionAuto then return state.predictionTime or 0 end
+    -- Cache the heavy property reads -- getLeadTime is called several times
+    -- per frame and the same target position rarely changes between calls.
+    local now = os.clock()
+    if now - lastReadT < 0.03 then return lastReadV end
+    lastReadT = now
+
+    local LP = PlayersService.LocalPlayer
+    local myChar = LP.Character
+    local me = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    local t = state.target
+    if not (me and t) then lastReadV = 0; return 0 end
+    local targetChar = (state.target_type == "npc") and t or t.Character
+    local targetRoot = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
+    if not targetRoot then lastReadV = 0; return 0 end
+
+    local relVel = targetRoot.AssemblyLinearVelocity - me.AssemblyLinearVelocity
+    local toTarget = targetRoot.Position - me.Position
+    local distance = toTarget.Magnitude
+    if distance < 0.5 then lastReadV = 0; return 0 end
+
+    -- Strip the radial component (motion straight at/away from you), leaving
+    -- only the tangential (orbit/strafe) part.
+    local radialDir = toTarget.Unit
+    local radialSpeed = relVel:Dot(radialDir)
+    local tangentialSpeed = (relVel - radialDir * radialSpeed).Magnitude
+
+    local factor      = state.predictionFactor or 0.003
+    local linearLead  = tangentialSpeed * factor
+    local angularLead = (tangentialSpeed / math.max(distance, 1)) * 0.05
+    local lead = math.max(linearLead, angularLead)
+
+    lead = math.clamp(lead, 0, state.predictionCap or 0.3)
+    lastReadV = lead
+    return lead
 end
 
 function state.isWeldedToOther(character)
