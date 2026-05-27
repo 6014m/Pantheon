@@ -38,6 +38,31 @@ local STEP_LABEL   = { look = "Look", rotate = "Rotate", wait = "Wait", during =
                        hold = "Hold", release = "Release", usebtn = "Use Move" }
 local YAW_PRESETS  = { 180, 135, 90, 45, 0, -45, -90, -135, -180 }
 
+-- Scratch-style category coloring. Block fill = category color; the action's
+-- specific look is the category palette + its label. Sticking to Scratch's
+-- conventional groupings so the visual maps to player expectation: motion blue,
+-- control orange, sensing cyan, events yellow, custom/actions purple.
+local CATEGORY = {
+    -- motion / facing
+    look = "motion", rotate = "motion",
+    -- control flow / timing
+    wait = "control", during = "control", ["return"] = "control",
+    hold = "control", release = "control",
+    -- sensing / gating
+    within = "sense",
+    -- actions / "operators"
+    feature = "action", key = "action", usebtn = "action",
+}
+local CAT_COLOR = {
+    motion  = Color3.fromRGB(76, 151, 255),    -- blue
+    control = Color3.fromRGB(255, 171, 25),    -- orange
+    sense   = Color3.fromRGB(92, 177, 214),    -- cyan
+    action  = Color3.fromRGB(159, 110, 220),   -- purple
+    event   = Color3.fromRGB(255, 191, 0),     -- yellow (hat blocks)
+}
+local function catOf(t) return CATEGORY[t] or "action" end
+local function colorOf(t) return CAT_COLOR[catOf(t)] end
+
 -- ---------- small helpers ----------
 local function corner(o, r) local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 6); c.Parent = o; return c end
 local function stroke(o, col) local s = Instance.new("UIStroke"); s.Color = col or theme.border; s.Thickness = 1; s.Parent = o; return s end
@@ -335,15 +360,48 @@ local function previewDraft()
     end)
 end
 
--- ---------- step chip ----------
+-- ---------- step chip (Scratch-style block) ----------
+-- V0 of the Scratch rewrite: visual restyle of the existing chip rows. Colored
+-- by category, rounded with category-tinted background, decorative top-notch
+-- and bottom-tab so blocks visually "join" in the column. Drag-and-drop +
+-- snap-to-connect + nested slots arrive in V1; this layer keeps the proven
+-- click-to-add palette + ^/v reorder so we ship working blocks today.
 local rebuild
 local function buildChip(parent, i, act)
+    local cat = catOf(act.type)
+    local fill = colorOf(act.type)
+
+    -- decorative "notch" above (in the gap of the UIListLayout) so the column
+    -- reads as one chain. The UIListLayout padding is set to 0 on the form so
+    -- consecutive blocks visually butt up against each other.
     local f = Instance.new("Frame")
-    f.Size = UDim2.new(1, 0, 0, 30); f.BackgroundColor3 = theme.bgAlt; f.BorderSizePixel = 0; f.Parent = parent
+    f.Size = UDim2.new(1, 0, 0, 38); f.BackgroundColor3 = fill; f.BorderSizePixel = 0
+    f.Parent = parent
+    corner(f, 10)
+    local s = stroke(f, theme.bgDark); s.Thickness = 2; s.Transparency = 0.4
+
+    -- bottom "tab" -- a tiny rectangle protruding from the block's bottom edge.
+    -- Visual only; on snap-connect (V1) this is the actual connector.
+    local tab = Instance.new("Frame")
+    tab.Size = UDim2.fromOffset(20, 3); tab.Position = UDim2.new(0, 22, 1, 0)
+    tab.BackgroundColor3 = fill; tab.BorderSizePixel = 0; tab.ZIndex = (f.ZIndex or 1) + 1
+    tab.Parent = f
+    local tabC = Instance.new("UICorner"); tabC.CornerRadius = UDim.new(0, 2); tabC.Parent = tab
+
+    -- left grip column = drag handle (visual only in V0; V1 wires it to a
+    -- real reorder drag). Currently the ^/v buttons handle reordering.
+    local grip = Instance.new("TextLabel")
+    grip.Size = UDim2.fromOffset(10, 24); grip.Position = UDim2.new(0, 4, 0.5, -12)
+    grip.BackgroundTransparency = 1
+    grip.Text = "::"; grip.TextColor3 = theme.fg
+    grip.Font = theme.fontBold; grip.TextSize = 14
+    grip.TextTransparency = 0.5
+    grip.Parent = f
+
     local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(0, 70, 1, 0); lbl.Position = UDim2.fromOffset(8, 0); lbl.BackgroundTransparency = 1
+    lbl.Size = UDim2.new(0, 78, 1, 0); lbl.Position = UDim2.fromOffset(18, 0); lbl.BackgroundTransparency = 1
     lbl.Text = i .. ".  " .. (STEP_LABEL[act.type] or act.type)
-    lbl.TextColor3 = theme.fg; lbl.Font = theme.fontBold; lbl.TextSize = 12
+    lbl.TextColor3 = theme.fg; lbl.Font = theme.fontBold; lbl.TextSize = 13
     lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Parent = f
 
     local val
@@ -432,12 +490,13 @@ local function buildChip(parent, i, act)
             end)
         end
     end
-    val.Size = UDim2.new(1, -154, 1, -8); val.Position = UDim2.new(0, 84, 0, 4)
+    val.Size = UDim2.new(1, -174, 1, -10); val.Position = UDim2.new(0, 100, 0, 5)
     val.BackgroundColor3 = theme.bgDark
     val.TextColor3 = (act.type == "return" or act.type == "during") and theme.fgDim or theme.fg
     val.Font = theme.font; val.TextSize = 12; val.Parent = f
+    pcall(function() local vc = Instance.new("UICorner"); vc.CornerRadius = UDim.new(0, 6); vc.Parent = val end)
 
-    local up = smallBtn(f, "^", -70)
+    local up = smallBtn(f, "^", -68)
     up.MouseButton1Click:Connect(function()
         if i > 1 then draft.actions[i], draft.actions[i-1] = draft.actions[i-1], draft.actions[i]; rebuild() end
     end)
@@ -447,6 +506,30 @@ local function buildChip(parent, i, act)
     end)
     local rem = smallBtn(f, "X", -22, theme.danger)
     rem.MouseButton1Click:Connect(function() table.remove(draft.actions, i); rebuild() end)
+    return f
+end
+
+-- "Hat block" wrapper for the trigger section header. Yellow band with a flat
+-- bottom that visually connects into the first action block underneath. This
+-- is decoration-only in V0 -- the trigger form fields render normally below.
+local function buildHatHeader(parent, label)
+    local f = Instance.new("Frame")
+    f.Size = UDim2.new(1, 0, 0, 28); f.BackgroundColor3 = CAT_COLOR.event; f.BorderSizePixel = 0
+    f.Parent = parent
+    corner(f, 10)
+    -- pin the bottom flat so it lies flush against the first action block
+    local flat = Instance.new("Frame")
+    flat.Size = UDim2.new(1, 0, 0, 10); flat.Position = UDim2.new(0, 0, 1, -10)
+    flat.BackgroundColor3 = CAT_COLOR.event; flat.BorderSizePixel = 0; flat.Parent = f
+    -- tab on the bottom matching action-block notch position
+    local tab = Instance.new("Frame")
+    tab.Size = UDim2.fromOffset(20, 3); tab.Position = UDim2.new(0, 22, 1, 0)
+    tab.BackgroundColor3 = CAT_COLOR.event; tab.BorderSizePixel = 0; tab.Parent = f
+    local tc = Instance.new("UICorner"); tc.CornerRadius = UDim.new(0, 2); tc.Parent = tab
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -16, 1, 0); lbl.Position = UDim2.fromOffset(12, 0); lbl.BackgroundTransparency = 1
+    lbl.Text = label; lbl.TextColor3 = Color3.fromRGB(40, 30, 0); lbl.Font = theme.fontBold; lbl.TextSize = 13
+    lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Parent = f
     return f
 end
 
@@ -489,7 +572,18 @@ rebuild = function()
         end))
     end
 
-    place(components.Section(formScroll, "Trigger"))
+    -- Hat block: events are Scratch's yellow "when X" blocks at the top of a
+    -- stack. The label updates to match the current event so the chain reads
+    -- as one piece ("When key pressed -> Rotate -> Use Move ...").
+    do
+        local label
+        if draft.event == "keyhold" then label = "When key held"
+        elseif draft.event == "move" then label = "When move pressed"
+        elseif draft.event == "anim" then label = "When my anim plays"
+        elseif draft.event == "target_anim" then label = "When target's anim plays"
+        else label = "When key pressed" end
+        place(buildHatHeader(formScroll, label))
+    end
     if draft.event == "anim" then
         -- bind to a played animation via a collapsible dropdown, Capture, or paste.
         local hist = engine.animHistory()
@@ -738,16 +832,24 @@ rebuild = function()
         default = draft.ignoreWelds == true,
         onChange = function(v) draft.ignoreWelds = v or nil end }) end))
 
-    place(components.Section(formScroll, "Steps - tap to add"))
+    place(components.Section(formScroll, "Steps - tap to add (drag in V1)"))
     do
         local palette = Instance.new("Frame")
         palette.Size = UDim2.new(1, 0, 0, 0); palette.AutomaticSize = Enum.AutomaticSize.Y; palette.BackgroundTransparency = 1
         local pl = Instance.new("UIGridLayout", palette)
-        pl.CellSize = UDim2.new(0, 80, 0, 26); pl.CellPadding = UDim2.new(0, 4, 0, 4); pl.SortOrder = Enum.SortOrder.LayoutOrder
+        pl.CellSize = UDim2.new(0, 84, 0, 32); pl.CellPadding = UDim2.new(0, 4, 0, 4); pl.SortOrder = Enum.SortOrder.LayoutOrder
         for i, t in ipairs(ACTION_TYPES) do
             local b = Instance.new("TextButton")
-            b.BackgroundColor3 = theme.bgDark; b.AutoButtonColor = true; b.TextColor3 = theme.accent
+            -- Palette buttons get the same category color as the block they
+            -- spawn -- visually obvious which group a step belongs to before
+            -- you add it. Slightly darker than the placed-block fill to read
+            -- as "available" vs "in-chain".
+            local c = colorOf(t)
+            b.BackgroundColor3 = Color3.fromRGB(
+                math.floor(c.R * 255 * 0.78), math.floor(c.G * 255 * 0.78), math.floor(c.B * 255 * 0.78))
+            b.AutoButtonColor = true; b.TextColor3 = theme.fg
             b.Font = theme.fontBold; b.TextSize = 12; b.Text = "+ " .. (STEP_LABEL[t] or t); b.LayoutOrder = i; b.Parent = palette
+            corner(b, 8)
             b.MouseButton1Click:Connect(function()
                 if t == "hold" then
                     -- add a Hold + Release pair (shared key); put steps between them
