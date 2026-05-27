@@ -341,20 +341,35 @@ local bypassKeys = Engine.bypassKeys
 
 local function fireKeyBypass(kc)
     if not kc or kc == Enum.KeyCode.Unknown then return end
-    -- Restore AutoRotate during the VIM send -- some games' move handlers won't
-    -- start their move animation/cast while AutoRotate is false (Rotate sets it
-    -- false to hold the facing). We re-disable after so a tech can keep its
-    -- rotation past the move.
+    -- Fully release the body-pin for the VIM key window. A previous AR-only
+    -- restore wasn't enough: renderHold's applyBodyHold ran on every frame
+    -- during the 60ms wait and (a) re-set AutoRotate=false, (b) re-enabled the
+    -- rigid AlignOrientation with infinite torque, (c) re-wrote root.CFrame --
+    -- which kept JJS's Projection Breaker (and similar gated casts) from
+    -- starting even though we'd briefly set AR=true. Clearing held.body makes
+    -- applyBodyHold early-exit, we also explicitly drop the AlignOrientation
+    -- and lift AR, fire the key, then restore so the rotation snaps back via
+    -- the next applyBodyHold tick (the held.body value is preserved).
     local ch = myChar()
     local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-    local wasAR = hum and (not hum.AutoRotate) and bodyARDisabled
-    if wasAR then hum.AutoRotate = true end
+    local wasARDisabled = bodyARDisabled
+    local savedBody = held.body
+    held.body = nil
+    if techAlign then techAlign.Enabled = false end
+    if hum and (not hum.AutoRotate) then hum.AutoRotate = true end
     bypassKeys[kc] = true
     pcall(function() VIM:SendKeyEvent(true, kc, false, game) end)
     task.wait(0.06)
     pcall(function() VIM:SendKeyEvent(false, kc, false, game) end)
     bypassKeys[kc] = nil
-    if wasAR and hum and hum.Parent then hum.AutoRotate = false end
+    held.body = savedBody
+    if not savedBody then
+        -- nothing left holding; if AR had been disabled, leave it for the
+        -- runner's restoreAll/releaseHold to clean up (bodyARDisabled flag).
+        if wasARDisabled and hum and hum.Parent then hum.AutoRotate = false end
+    end
+    -- if savedBody was set, next renderHold tick's applyBodyHold re-disables
+    -- AR + re-enables techAlign + re-pins root.CFrame to the held facing.
 end
 
 -- ACTION: fire a move via its scanned entry. Default = click the GUI button
