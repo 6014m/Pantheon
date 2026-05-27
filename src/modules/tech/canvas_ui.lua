@@ -75,6 +75,20 @@ local function corner(o, r) local c = Instance.new("UICorner"); c.CornerRadius =
 local function stroke(o, col, t) local s = Instance.new("UIStroke"); s.Color = col or theme.border; s.Thickness = t or 1; s.Parent = o; return s end
 local function lerpCol(c, k) return Color3.fromRGB(math.floor(c.R * 255 * k), math.floor(c.G * 255 * k), math.floor(c.B * 255 * k)) end
 
+-- Drag-window flag set briefly after a drag ends so the inner param buttons
+-- can swallow the accidental MouseButton1Click that would otherwise fire
+-- when MB1Up lands on the (now-moved) value button. Without this, a drag
+-- that ends with the cursor still over the value button triggers its
+-- onClick -- which for `key`/`hold` blocks blanked the inline label to
+-- "press a key...", and for `look`/`rotate`/`feature` cycled the value.
+local dragJustEnded = false
+local function guardedClick(btn, fn)
+    btn.MouseButton1Click:Connect(function(...)
+        if dragJustEnded then return end
+        fn(...)
+    end)
+end
+
 -- mouse position in CANVAS-LOCAL coordinates (subtract canvas absolute origin)
 local function canvasLocal(canvas, gx, gy)
     local origin = canvas.frame.AbsolutePosition
@@ -104,7 +118,7 @@ do
         local b = Instance.new("TextButton")
         b.Size = UDim2.new(1, 0, 1, 0); b.BackgroundTransparency = 1; b.AutoButtonColor = false
         b.Text = text; b.TextColor3 = theme.fg; b.Font = theme.font; b.TextSize = 12; b.Parent = v
-        if onClick then b.MouseButton1Click:Connect(onClick) end
+        if onClick then guardedClick(b, onClick) end
         return b
     end
     local function valTextbox(blk, text, onCommit)
@@ -140,7 +154,7 @@ do
             valBtn(blk, t == "during" and "holds prev step for next wait" or "re-face target")
         elseif t == "key" or t == "hold" or t == "release" then
             local b = valBtn(blk, p.key and ("key: " .. p.key) or "(click, press a key)")
-            b.MouseButton1Click:Connect(function()
+            guardedClick(b, function()
                 b.Text = "press a key..."
                 local conn
                 conn = UIS.InputBegan:Connect(function(input)
@@ -159,7 +173,7 @@ do
                 return id or "(none)"
             end
             local b = valBtn(blk, featName(p.feature))
-            b.MouseButton1Click:Connect(function()
+            guardedClick(b, function()
                 local feats = feature.all()
                 table.sort(feats, function(a, b) return (a.name or a.id) < (b.name or b.id) end)
                 if #feats > 0 then
@@ -179,7 +193,7 @@ do
                 return "(pick)"
             end
             local b = valBtn(blk, label())
-            b.MouseButton1Click:Connect(function()
+            guardedClick(b, function()
                 if #moveset == 0 then return end
                 local idx = 0
                 for k, bb in ipairs(moveset) do if bb.name == p.move then idx = k end end
@@ -196,7 +210,7 @@ do
                 return string.format("[%d branches] - click to edit", n)
             end
             local b = valBtn(blk, label())
-            b.MouseButton1Click:Connect(function()
+            guardedClick(b, function()
                 if blk.canvas and blk.canvas.editBranchesRequested then
                     blk.canvas.editBranchesRequested:Fire(blk)
                 end
@@ -379,7 +393,13 @@ function Canvas:_wireDrag(blk)
             self.blockClicked:Fire(blk)
             return
         end
-        -- drag finish: trash zone deletes; otherwise try-snap then settle
+        -- drag finish: trash zone deletes; otherwise try-snap then settle.
+        -- Brief click-guard window prevents the MB1Up over a value button
+        -- (now sitting under the cursor after the drag) from firing its
+        -- onClick handler -- that was blanking the label on key blocks and
+        -- cycling values on look/rotate/feature blocks.
+        dragJustEnded = true
+        task.delay(0.12, function() dragJustEnded = false end)
         local mp = UIS:GetMouseLocation()
         if self:_isOverTrash(mp.X, mp.Y) then
             self:_destroyBlock(blk)
@@ -432,7 +452,7 @@ function Canvas:_renderBlock(blk)
     del.BackgroundColor3 = theme.danger; del.AutoButtonColor = false
     del.TextColor3 = theme.fg; del.Font = theme.fontBold; del.TextSize = 11; del.Text = "X"
     del.Parent = f; corner(del, 4)
-    del.MouseButton1Click:Connect(function() self:_destroyBlock(blk) end)
+    guardedClick(del, function() self:_destroyBlock(blk) end)
 
     renderParams(blk)
 end

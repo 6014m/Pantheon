@@ -161,13 +161,40 @@ local function newDraft()
     return { name = "New Tech", scope = "game", event = "key",
              key = Enum.KeyCode.Unknown, move = nil, conditions = {}, actions = {} }
 end
+-- Deep-copy an action table so the in-flight draft can't accidentally mutate
+-- the saved tech. AND blocks carry a `branches = {[steps],[steps]}` nested
+-- structure and any new step type may add fields we haven't enumerated; the
+-- generic copy keeps everything in sync without per-type maintenance.
+local function copyAction(a)
+    local out = {}
+    for k, v in pairs(a) do
+        if type(v) == "table" then
+            -- shallow into branches[]: each branch is a list of actions;
+            -- recurse one more level so per-step params survive.
+            if k == "branches" then
+                local bs = {}
+                for i, branch in ipairs(v) do
+                    local cb = {}
+                    for j, step in ipairs(branch) do cb[j] = copyAction(step) end
+                    bs[i] = cb
+                end
+                out[k] = bs
+            else
+                out[k] = v   -- non-branches tables: reference-share (rare; defensive)
+            end
+        else
+            out[k] = v
+        end
+    end
+    return out
+end
+
 local function draftFromTech(t)
     local conds = {}
     for _, c in ipairs(t.trigger.conditions or {}) do conds[c] = true end
     local actions = {}
     for _, a in ipairs(t.actions or {}) do
-        actions[#actions + 1] = { type = a.type, x = a.x, y = a.y, seconds = a.seconds,
-            studs = a.studs, feature = a.feature, key = a.key, holdId = a.holdId, move = a.move }
+        actions[#actions + 1] = copyAction(a)
     end
     -- Decode scope. Numeric or unspecified -> "game" (saved as PlaceId/GameId on
     -- save). "universal" stays as-is. "char:<name>" maps to "char" and the
@@ -196,21 +223,12 @@ local function draftConditions()
     return conds
 end
 local function draftActions()
+    -- Generic deep copy: previously a hard-coded per-type whitelist that
+    -- silently DROPPED any field not in the list (which is how AND's
+    -- branches were getting lost on Save). copyAction handles branches[]
+    -- recursively + future-proofs against new step fields.
     local actions = {}
-    for _, a in ipairs(draft.actions) do
-        if a.type == "look" then actions[#actions + 1] = { type = "look", x = a.x or 0, y = a.y or 0 }
-        elseif a.type == "rotate" then actions[#actions + 1] = { type = "rotate", x = a.x or 0, y = a.y or 0 }
-        elseif a.type == "wait" then actions[#actions + 1] = { type = "wait", seconds = a.seconds or 0.5 }
-        elseif a.type == "within" then actions[#actions + 1] = { type = "within", studs = a.studs or 5 }
-        elseif a.type == "during" then actions[#actions + 1] = { type = "during" }
-        elseif a.type == "return" then actions[#actions + 1] = { type = "return" }
-        elseif a.type == "feature" then actions[#actions + 1] = { type = "feature", feature = a.feature }
-        elseif a.type == "key" then actions[#actions + 1] = { type = "key", key = a.key }
-        elseif a.type == "hold" then actions[#actions + 1] = { type = "hold", key = a.key, holdId = a.holdId }
-        elseif a.type == "release" then actions[#actions + 1] = { type = "release", key = a.key, holdId = a.holdId }
-        elseif a.type == "usebtn" then actions[#actions + 1] = { type = "usebtn", move = a.move }
-        end
-    end
+    for _, a in ipairs(draft.actions) do actions[#actions + 1] = copyAction(a) end
     return actions
 end
 local function buildTechFromDraft(id)
@@ -247,6 +265,11 @@ local function onSave()
         local n = 2
         while engine.get(id) do id = base .. "_" .. n; n = n + 1 end
     end
+    -- Sync from canvas before save: param edits (Wait seconds, Within studs,
+    -- key bindings, etc.) update block.params in place but DON'T fire the
+    -- canvas's onChange -- only chain ops do. Without this resync, edits made
+    -- after the last drag/snap were dropped on Save.
+    if canvas then draft.actions = canvas:toActions() end
     local tech = buildTechFromDraft(id)
     engine.saveCustom(tech)
     notify.success("Tech saved: " .. tech.name)
