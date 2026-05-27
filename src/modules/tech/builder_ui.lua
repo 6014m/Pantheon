@@ -15,6 +15,7 @@ local scanner    = require("modules.tech.scanner")
 local feature    = require("ui.feature")
 local persist    = require("core.persist")
 local notify     = require("ui.notify")
+local CanvasUI   = require("modules.tech.canvas_ui")
 
 local UIS        = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
@@ -23,6 +24,7 @@ local Players    = game:GetService("Players")
 local Builder = {}
 
 local gui, rootFrame, formScroll
+local canvas, canvasContainer   -- Scratch canvas + its wrapper Frame; persist across rebuilds so blocks don't get destroyed when the form re-renders
 local draft
 local animDropOpen = false   -- is the played-anim dropdown expanded right now
 
@@ -536,7 +538,11 @@ end
 -- ---------- form (left pane) ----------
 rebuild = function()
     for _, c in ipairs(formScroll:GetChildren()) do
-        if not c:IsA("UIListLayout") then c:Destroy() end
+        -- Preserve the Scratch canvas container so the user's placed blocks
+        -- survive a form re-render (toggling event type / scope must not
+        -- wipe in-progress tech building). LayoutOrder is reset below when
+        -- place() reaches the canvas section.
+        if not c:IsA("UIListLayout") and c ~= canvasContainer then c:Destroy() end
     end
     local ord = 0
     local function place(inst) ord = ord + 1; inst.LayoutOrder = ord; inst.Parent = formScroll; return inst end
@@ -832,49 +838,128 @@ rebuild = function()
         default = draft.ignoreWelds == true,
         onChange = function(v) draft.ignoreWelds = v or nil end }) end))
 
-    place(components.Section(formScroll, "Steps - tap to add (drag in V1)"))
-    do
+    place(components.Section(formScroll, "Steps - drag from palette into canvas"))
+    -- Scratch canvas section. The container Frame holds:
+    --   * a horizontal palette of draggable block sources (top)
+    --   * the CanvasUI itself (below) -- absolute-positioned blocks, drag +
+    --     snap-to-connect, save back to draft.actions on change.
+    -- The container is created ONCE per Builder.open lifecycle and
+    -- preserved across rebuild() calls so user-placed blocks survive form
+    -- re-renders (toggling event type re-runs rebuild but must not wipe
+    -- the user's tech progress). LayoutOrder is reset each rebuild.
+    if not canvasContainer then
+        canvasContainer = Instance.new("Frame")
+        canvasContainer.Size = UDim2.new(1, 0, 0, 0)
+        canvasContainer.AutomaticSize = Enum.AutomaticSize.Y
+        canvasContainer.BackgroundTransparency = 1
+        canvasContainer.Parent = formScroll
+
+        local stack = Instance.new("UIListLayout", canvasContainer)
+        stack.SortOrder = Enum.SortOrder.LayoutOrder
+        stack.Padding = UDim.new(0, 6)
+
+        -- Palette row: tap to spawn at top of canvas, OR drag to drop at a
+        -- specific canvas-local position. Drag is the primary "scratch
+        -- feel"; tap remains as a one-click shortcut.
         local palette = Instance.new("Frame")
-        palette.Size = UDim2.new(1, 0, 0, 0); palette.AutomaticSize = Enum.AutomaticSize.Y; palette.BackgroundTransparency = 1
+        palette.Size = UDim2.new(1, 0, 0, 0); palette.AutomaticSize = Enum.AutomaticSize.Y
+        palette.BackgroundTransparency = 1; palette.LayoutOrder = 1; palette.Parent = canvasContainer
         local pl = Instance.new("UIGridLayout", palette)
-        pl.CellSize = UDim2.new(0, 84, 0, 32); pl.CellPadding = UDim2.new(0, 4, 0, 4); pl.SortOrder = Enum.SortOrder.LayoutOrder
-        for i, t in ipairs(ACTION_TYPES) do
-            local b = Instance.new("TextButton")
-            -- Palette buttons get the same category color as the block they
-            -- spawn -- visually obvious which group a step belongs to before
-            -- you add it. Slightly darker than the placed-block fill to read
-            -- as "available" vs "in-chain".
+        pl.CellSize = UDim2.new(0, 84, 0, 32); pl.CellPadding = UDim2.new(0, 4, 0, 4)
+        pl.SortOrder = Enum.SortOrder.LayoutOrder
+
+        local function defaultParamsFor(t)
+            if t == "look" then return { x = 180, y = 0 }
+            elseif t == "rotate" then return { x = 180 }
+            elseif t == "wait" then return { seconds = 0.5 }
+            elseif t == "within" then return { studs = 5 }
+            elseif t == "feature" then local fa = feature.all(); return { feature = fa[1] and fa[1].id or nil }
+            elseif t == "usebtn" then local res = scanner.cached() or scanner.scan(); local m = (res.buttons or {})[1]; return { move = m and m.name or nil }
+            end
+            return {}
+        end
+
+        -- Canvas itself (sits below palette in the container).
+        canvas = CanvasUI.new(canvasContainer, {
+            onChange = function() if draft then draft.actions = canvas:toActions() end end,
+        })
+        canvas.frame.LayoutOrder = 2
+
+        -- Drag a palette button -> spawn a ghost that follows the mouse,
+        -- and on release inside the canvas bounds, addBlock at the
+        -- canvas-local coords so the block lands where the cursor was.
+        -- (Drop outside canvas = no-op; ghost just disappears.) Click WITH
+        -- no drag still works -- addBlock at canvas top so the existing
+        -- click-to-add muscle memory keeps functioning.
+        local function spawnDraggable(t)
             local c = colorOf(t)
-            b.BackgroundColor3 = Color3.fromRGB(
-                math.floor(c.R * 255 * 0.78), math.floor(c.G * 255 * 0.78), math.floor(c.B * 255 * 0.78))
+            local b = Instance.new("TextButton")
+            b.BackgroundColor3 = Color3.fromRGB(math.floor(c.R*255*0.78), math.floor(c.G*255*0.78), math.floor(c.B*255*0.78))
             b.AutoButtonColor = true; b.TextColor3 = theme.fg
-            b.Font = theme.fontBold; b.TextSize = 12; b.Text = "+ " .. (STEP_LABEL[t] or t); b.LayoutOrder = i; b.Parent = palette
+            b.Font = theme.fontBold; b.TextSize = 12
+            b.Text = "+ " .. (STEP_LABEL[t] or t); b.Parent = palette
             corner(b, 8)
-            b.MouseButton1Click:Connect(function()
-                if t == "hold" then
-                    -- add a Hold + Release pair (shared key); put steps between them
-                    local hid = "h" .. tostring(math.floor(os.clock() * 1000))
-                    draft.actions[#draft.actions + 1] = { type = "hold", key = nil, holdId = hid }
-                    draft.actions[#draft.actions + 1] = { type = "release", key = nil, holdId = hid }
-                    rebuild(); return
-                end
-                local a = { type = t }
-                if t == "look" then a.x = 180; a.y = 0
-                elseif t == "rotate" then a.x = 180
-                elseif t == "wait" then a.seconds = 0.5
-                elseif t == "within" then a.studs = 5
-                elseif t == "feature" then local fa = feature.all(); a.feature = fa[1] and fa[1].id or nil
-                elseif t == "usebtn" then local res = scanner.cached() or scanner.scan(); local m = (res.buttons or {})[1]; a.move = m and m.name or nil end
-                draft.actions[#draft.actions + 1] = a; rebuild()
+
+            local clickStart, dragged, ghost, moveConn, endConn
+            local function cleanup()
+                if moveConn then moveConn:Disconnect(); moveConn = nil end
+                if endConn  then endConn:Disconnect();  endConn  = nil end
+                if ghost    then ghost:Destroy();       ghost    = nil end
+            end
+            b.InputBegan:Connect(function(input)
+                if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+                clickStart = UIS:GetMouseLocation(); dragged = false
+
+                moveConn = UIS.InputChanged:Connect(function(i)
+                    if i.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+                    local m = UIS:GetMouseLocation()
+                    if not dragged and (m - clickStart).Magnitude > 6 then
+                        dragged = true
+                        ghost = Instance.new("Frame")
+                        ghost.Size = UDim2.fromOffset(180, 36)
+                        ghost.BackgroundColor3 = colorOf(t)
+                        ghost.BackgroundTransparency = 0.15
+                        ghost.BorderSizePixel = 0; ghost.ZIndex = 5000
+                        ghost.Parent = gui
+                        corner(ghost, 10)
+                        local gl = Instance.new("TextLabel")
+                        gl.Size = UDim2.new(1, -16, 1, 0); gl.Position = UDim2.fromOffset(8, 0)
+                        gl.BackgroundTransparency = 1; gl.Text = STEP_LABEL[t] or t
+                        gl.TextColor3 = theme.fg; gl.Font = theme.fontBold; gl.TextSize = 13
+                        gl.TextXAlignment = Enum.TextXAlignment.Left
+                        gl.ZIndex = 5001; gl.Parent = ghost
+                    end
+                    if ghost then ghost.Position = UDim2.fromOffset(m.X - 90, m.Y - 18 - 36) end
+                end)
+
+                endConn = UIS.InputEnded:Connect(function(i)
+                    if i.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+                    if dragged and canvas then
+                        local m = UIS:GetMouseLocation()
+                        local tl = canvas.frame.AbsolutePosition
+                        local br = tl + canvas.frame.AbsoluteSize
+                        if m.X >= tl.X and m.X <= br.X and m.Y >= tl.Y and m.Y <= br.Y then
+                            local lx, ly = m.X - tl.X - 90, m.Y - tl.Y - 18
+                            canvas:addBlock(t, defaultParamsFor(t), math.max(4, lx), math.max(4, ly))
+                        end
+                    elseif not dragged and canvas then
+                        canvas:addBlock(t, defaultParamsFor(t))
+                    end
+                    cleanup()
+                end)
             end)
         end
-        place(palette)
+
+        for _, t in ipairs(ACTION_TYPES) do spawnDraggable(t) end
+        -- AND palette entry too -- engine accepts type="and" but V1 doesn't
+        -- yet support branch editing inside the block (placeholder text on
+        -- the block; configure via nested editor in V2).
+        spawnDraggable("and")
+
+        -- initial load: hydrate from draft.actions
+        canvas:loadActions(draft.actions)
     end
-    if #draft.actions == 0 then
-        place(components.Label(formScroll, "(no steps yet - tap a button above)"))
-    else
-        for i, act in ipairs(draft.actions) do place(buildChip(formScroll, i, act)) end
-    end
+    place(canvasContainer)
 
     do
         local bf = Instance.new("Frame")
@@ -987,6 +1072,10 @@ function Builder.open(existingTech)
         ensureGui()
         draft = existingTech and draftFromTech(existingTech) or newDraft()
         animDropOpen = not (draft.animId)   -- expanded when nothing's picked yet
+        -- Discard the canvas from a prior session if it exists, so the new
+        -- tech starts with a clean canvas. Each Open creates a fresh canvas
+        -- inside the rebuild() palette-section.
+        if canvasContainer then pcall(function() canvasContainer:Destroy() end); canvasContainer = nil; canvas = nil end
         rebuild()
         captureRig()
         buildRigPreview()
@@ -1001,6 +1090,8 @@ end
 function Builder.close()
     if rootFrame then rootFrame.Visible = false end
     if curRig then pcall(function() curRig:Destroy() end); curRig = nil end
+    -- Drop the canvas on close too -- next Open rebuilds fresh.
+    if canvasContainer then pcall(function() canvasContainer:Destroy() end); canvasContainer = nil; canvas = nil end
 end
 
 function Builder.destroy()

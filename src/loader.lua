@@ -58,6 +58,7 @@ local files = {
     { "modules.tech.engine",       "modules/tech/engine.lua" },
     { "modules.tech.scanner",      "modules/tech/scanner.lua" },
     { "modules.tech.dumper",       "modules/tech/dumper.lua" },
+    { "modules.tech.canvas_ui",    "modules/tech/canvas_ui.lua" },
     { "modules.tech.builder_ui",   "modules/tech/builder_ui.lua" },
     { "modules.tech.init",         "modules/tech/init.lua" },
     { "modules.system",            "modules/system.lua" },
