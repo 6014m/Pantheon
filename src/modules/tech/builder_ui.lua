@@ -923,18 +923,13 @@ rebuild = function()
         end))
     end
 
-    -- Hat block: events are Scratch's yellow "when X" blocks at the top of a
-    -- stack. The label updates to match the current event so the chain reads
-    -- as one piece ("When key pressed -> Rotate -> Use Move ...").
-    do
-        local label
-        if draft.event == "keyhold" then label = "When key held"
-        elseif draft.event == "move" then label = "When move pressed"
-        elseif draft.event == "anim" then label = "When my anim plays"
-        elseif draft.event == "target_anim" then label = "When target's anim plays"
-        else label = "When key pressed" end
-        place(buildHatHeader(formScroll, label))
-    end
+    -- Trigger lives on the canvas as a hat block now (V3.1). The legacy
+    -- in-form trigger UI is gone -- drag a "When ..." block from the
+    -- palette and click its inline summary to configure. The block below
+    -- (suppress/modkey/hold/anim-picker/move-picker etc.) used to live
+    -- here and is preserved only behind `false` so a future merge can
+    -- compare; the hat-block modal in openHatEditor covers all of it.
+    if false then  -- legacy form trigger UI (disabled; hat block replaces it)
     if draft.event == "anim" then
         -- bind to a played animation via a collapsible dropdown, Capture, or paste.
         local hist = engine.animHistory()
@@ -1142,6 +1137,7 @@ rebuild = function()
     place(wrap(30, function(p) components.Toggle(p, { text = "Trigger on TARGET's animation instead",
         default = draft.event == "target_anim",
         onChange = function(v) draft.event = v and "target_anim" or "key"; rebuild() end }) end))
+    end   -- end of `if false then` legacy trigger UI block
     place(wrap(30, function(p) components.Toggle(p, { text = "Only while locked on",
         default = draft.conditions.locked_on == true,
         onChange = function(v) draft.conditions.locked_on = v or nil end }) end))
