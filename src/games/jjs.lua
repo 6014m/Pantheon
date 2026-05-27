@@ -101,7 +101,19 @@ function JJS.scanMoves(pg)
     for _, child in ipairs(moveset:GetChildren()) do
         local btn = child:FindFirstChild("ItemName")
         if btn and (btn:IsA("TextButton") or btn:IsA("ImageButton")) then
-            slots[#slots + 1] = { name = child.Name, button = btn, x = btn.AbsolutePosition.X }
+            -- Read the slot's actual keybind from the Key.Key TextLabel (per
+            -- reference_jjs_autoblock: JJS stores "1".."4" there). Position-
+            -- index fallback if the label is missing; the previous assume-
+            -- positional-order code would send the wrong slot key whenever
+            -- slots weren't packed left-to-right starting at "1".
+            local keyFrame = child:FindFirstChild("Key")
+            local keyTxt = keyFrame and keyFrame:FindFirstChild("Key")
+            local label = keyTxt and keyTxt:IsA("TextLabel") and keyTxt.Text
+            slots[#slots + 1] = {
+                name = child.Name, button = btn,
+                x = btn.AbsolutePosition.X,
+                key = (label and label ~= "" and label) or nil,
+            }
         end
     end
     if #slots == 0 then scanReport("Moveset empty", 0); return nil end
@@ -109,14 +121,58 @@ function JJS.scanMoves(pg)
 
     -- useKey=true tells the engine's Use Move action to VIM-send the slot key
     -- instead of clicking the button. JJS's ItemName button MB1Down handler is
-    -- visual-only; the actual move fires from the keypress.
+    -- visual-only; the actual move fires from the keypress (or, even better,
+    -- from JJS.useMove firing the move's RE directly -- see below).
     local out, names = {}, {}
     for i, s in ipairs(slots) do
-        out[#out + 1] = { button = s.button, name = s.name, text = s.name, key = tostring(i), useKey = true }
+        out[#out + 1] = {
+            button = s.button, name = s.name, text = s.name,
+            key = s.key or tostring(i),
+            useKey = true,
+        }
         names[#names + 1] = s.name
     end
     scanReport("ok", #out, table.concat(names, ", "))
     return out
+end
+
+-- Map JJS hotbar move name -> Knit Service name. Per reference_jjs_autoblock
+-- the Knit pattern is `ReplicatedStorage.Knit.Knit.Services.<Service>.RE.
+-- Activated:FireServer()` and "most services are named after the move"; the
+-- BlockService remote is verified by the public autoblock. Add entries as we
+-- confirm them. JJS.useMove looks them up and fires the RE directly, which is
+-- more reliable than VIM-sending the slot key (PB wasn't firing on VIM).
+local MOVE_SERVICE = {
+    ["Projection Breaker"] = "ProjectionBreakerService",
+}
+
+local function findKnitService(svcName)
+    local knit = ReplicatedStorage:FindFirstChild("Knit")
+    if not knit then return nil end
+    local inner = knit:FindFirstChild("Knit") or knit
+    local svcs = inner:FindFirstChild("Services")
+    return svcs and svcs:FindFirstChild(svcName) or nil
+end
+
+-- Per-game useMove hook called by engine.ACTIONS.usebtn BEFORE the generic VIM
+-- key path. Return true if we handled the move (engine stops); false/nil to
+-- let the engine fall through to the VIM/click path.
+function JJS.useMove(name)
+    local svcName = MOVE_SERVICE[name]
+    if not svcName then return false end
+    local svc = findKnitService(svcName)
+    local re  = svc and svc:FindFirstChild("RE")
+    local act = re and re:FindFirstChild("Activated")
+    if not act then
+        log.warn("[jjs] useMove: " .. svcName .. ".RE.Activated not found, falling through to VIM")
+        return false
+    end
+    local ok, err = pcall(function() act:FireServer() end)
+    if not ok then
+        log.warn("[jjs] useMove fire " .. svcName .. ": " .. tostring(err))
+        return false
+    end
+    return true
 end
 
 function JJS.register()

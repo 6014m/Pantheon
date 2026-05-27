@@ -140,20 +140,14 @@ local function renderHold() applyCamHold(); applyBodyHold() end
 -- never adds a Return -- otherwise a 180 instantly snaps back at one-shot end.
 local function releaseHold(snap)
     local didRotate = bodyARDisabled   -- a Rotate step actually turned the body
-    -- Persist mode (snap=false) under shiftlock: the body is currently held at the
-    -- rotated yaw via the override, but the camera is wherever the user's mouse
-    -- left it. The moment we clear the override, shiftlock's per-frame pin will
-    -- re-align body to camera (snapping the body back). To make the rotation
-    -- actually persist, snap the CAMERA to match the body's final yaw FIRST --
-    -- then when shiftlock takes over they're already aligned, no fight.
-    if not snap and didRotate and state.shiftlock_active then
-        local root = myRoot()
-        local cam = Workspace.CurrentCamera
-        if root and cam then
-            local _, ya = root.CFrame:ToEulerAnglesYXZ()
-            cam.CFrame = CFrame.new(cam.CFrame.Position) * CFrame.Angles(0, ya, 0)
-        end
-    end
+    -- The old "snap camera to body yaw under shiftlock so rotation persists"
+    -- path is removed -- the camera flip at one-shot end was disorienting.
+    -- Trade-off: without the snap, the rotation does NOT persist under
+    -- shiftlock past tech end (the game's shiftlock snaps body back to face
+    -- camera on its next pass). For techs that rotate just to align a quick
+    -- cast (e.g. Rotate 180 + Use PB) this is exactly right -- rotation
+    -- holds DURING the actions and naturally releases at the end. For
+    -- "rotate-and-stay-rotated" use a keyhold-event tech instead.
     held.cam, held.body = nil, nil
     state.techCamOverride = false
     state.techBodyOverride = false
@@ -372,10 +366,15 @@ local function fireKeyBypass(kc)
     -- AR + re-enables techAlign + re-pins root.CFrame to the held facing.
 end
 
--- ACTION: fire a move via its scanned entry. Default = click the GUI button
--- (TSB-style: button click fires the move). If the per-game scan tagged the
--- entry with useKey=true (JJS-style: keypress fires the move, button is
--- visual-only), VIM-send the key with CAS bypass instead.
+-- ACTION: fire a move via its scanned entry. Order of attempts:
+-- 1. Per-game `useMove(name, entry)` hook on the current game module (if it
+--    exists and returns truthy) -- this is the DIRECT path that fires the
+--    move's Knit RE itself (e.g. ProjectionBreakerService.RE.Activated:
+--    FireServer()) -- the most reliable, since it bypasses VIM/CAS/animation
+--    state gating entirely.
+-- 2. useKey=true (JJS-style hotbar where keypress fires the move and the
+--    button is visual-only): VIM-send the slot key with CAS bypass.
+-- 3. Default: click the GUI button (TSB-style: button click fires the move).
 ACTIONS.usebtn = function(a)
     local res = scanner.cached() or scanner.scan()
     local entry
@@ -383,6 +382,14 @@ ACTIONS.usebtn = function(a)
         if b.name == a.move then entry = b; break end
     end
     if not entry then return end
+    local ok_reg, registry = pcall(require, "games.registry")
+    if ok_reg and registry then
+        local mod = registry.current()
+        if mod and type(mod.useMove) == "function" then
+            local ok_um, handled = pcall(mod.useMove, a.move, entry)
+            if ok_um and handled then return end
+        end
+    end
     if entry.useKey and entry.key then
         local kc = safeKeyCode(entry.key)
         if kc then fireKeyBypass(kc); return end
