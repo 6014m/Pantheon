@@ -180,16 +180,18 @@ do
         elseif t == "key" or t == "hold" or t == "release" then
             local b = valBtn(blk, p.key and ("key: " .. p.key) or "(click, press a key)")
             guardedClick(b, function()
+                -- Disconnect a capture already armed on this block (double-click)
+                -- so the previous global UIS connection doesn't leak.
+                if blk._keyCaptureConn then blk._keyCaptureConn:Disconnect(); blk._keyCaptureConn = nil end
                 b.Text = "press a key..."
-                local conn
-                conn = UIS.InputBegan:Connect(function(input)
+                blk._keyCaptureConn = UIS.InputBegan:Connect(function(input)
                     if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
                     if input.KeyCode == Enum.KeyCode.Unknown then return end
                     if input.KeyCode ~= Enum.KeyCode.Escape then
                         p.key = (tostring(input.KeyCode):gsub("Enum.KeyCode.", ""))
                     end
                     b.Text = p.key and ("key: " .. p.key) or "(click, press a key)"
-                    conn:Disconnect()
+                    if blk._keyCaptureConn then blk._keyCaptureConn:Disconnect(); blk._keyCaptureConn = nil end
                 end)
             end)
         elseif t == "feature" then
@@ -471,6 +473,7 @@ function Canvas:_destroyBlock(blk)
     if blk._dragConns then
         for _, c in ipairs(blk._dragConns) do pcall(function() c:Disconnect() end) end
     end
+    if blk._keyCaptureConn then pcall(function() blk._keyCaptureConn:Disconnect() end); blk._keyCaptureConn = nil end
     blk.frame:Destroy()
     for i, b in ipairs(self.blocks) do if b == blk then table.remove(self.blocks, i); break end end
     -- Tighten layout: chain prev belonged to gets re-laid so the tail
@@ -559,6 +562,7 @@ end
 function Canvas:clear()
     for _, b in ipairs(self.blocks) do
         if b._dragConns then for _, c in ipairs(b._dragConns) do pcall(function() c:Disconnect() end) end end
+        if b._keyCaptureConn then pcall(function() b._keyCaptureConn:Disconnect() end); b._keyCaptureConn = nil end
         b.frame:Destroy()
     end
     self.blocks = {}

@@ -366,15 +366,17 @@ local function scanShiftlockIcons()
             end
         end
     end
-    -- report (toast + log) whenever the hidden-count changes, so we can SEE on
-    -- screen whether it's actually finding the game's icon.
+    -- Log whenever the hidden-count changes. Only surface a user-facing toast
+    -- when we actually hid something (count > 0): in pair-mode games with no PC
+    -- shiftlock icon (e.g. JJS) the count stays 0, and the old unconditional
+    -- toast popped a spurious "Shiftlock hide: 0 []" every time you loaded in.
     if #hiddenStore ~= lastReportedN then
         lastReportedN = #hiddenStore
         local names = {}
         for _, e in ipairs(hiddenStore) do names[#names + 1] = e[1].Name end
         local msg = "Shiftlock hide: " .. #hiddenStore .. " [" .. table.concat(names, ", ") .. "]"
         log.info(msg)
-        pcall(function() notify.info(msg, 8) end)
+        if #hiddenStore > 0 then pcall(function() notify.info(msg, 8) end) end
     end
 end
 

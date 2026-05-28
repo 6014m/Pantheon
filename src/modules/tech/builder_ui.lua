@@ -25,6 +25,7 @@ local Builder = {}
 
 local gui, rootFrame, formScroll
 local canvas, canvasContainer   -- Scratch canvas + its wrapper Frame; persist across rebuilds so blocks don't get destroyed when the form re-renders
+local winDragConns = {}         -- global UIS connections for the window-drag handle; disconnected in Builder.destroy()
 local draft
 local animDropOpen = false   -- is the played-anim dropdown expanded right now
 
@@ -437,6 +438,10 @@ end
 -- play the tech's look/rotate/wait/return as a body-turn reenactment on the clone
 local function previewDraft()
     if previewing then return end
+    -- Pull the latest blocks off the canvas: canvas.onChange only refreshes
+    -- draft.actions on chain ops, not inline param edits, so without this a
+    -- Play right after editing a Wait/Look value would replay the old values.
+    if canvas then draft.actions = canvas:toActions() end
     buildRigPreview()
     if not curRig then notify.warn("Preview: couldn't clone your avatar"); return end
     -- if this tech is animation-triggered, play that anim on the clone too
@@ -1579,13 +1584,13 @@ local function ensureGui()
                 dragging, dStart, sPos = true, i.Position, rootFrame.Position
             end
         end)
-        UIS.InputChanged:Connect(function(i)
+        winDragConns[#winDragConns + 1] = UIS.InputChanged:Connect(function(i)
             if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
                 local d = i.Position - dStart
                 rootFrame.Position = UDim2.new(sPos.X.Scale, sPos.X.Offset + d.X, sPos.Y.Scale, sPos.Y.Offset + d.Y)
             end
         end)
-        UIS.InputEnded:Connect(function(i)
+        winDragConns[#winDragConns + 1] = UIS.InputEnded:Connect(function(i)
             if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then dragging = false end
         end)
     end
@@ -1652,6 +1657,7 @@ end
 
 function Builder.close()
     if rootFrame then rootFrame.Visible = false end
+    if curTrack then pcall(function() curTrack:Stop(0) end); curTrack = nil end
     if curRig then pcall(function() curRig:Destroy() end); curRig = nil end
     -- Drop the canvas on close too -- next Open rebuilds fresh. Canvas:
     -- destroy() before the container Destroy() to disconnect drag conns.
@@ -1660,6 +1666,9 @@ function Builder.close()
 end
 
 function Builder.destroy()
+    for _, c in ipairs(winDragConns) do pcall(function() c:Disconnect() end) end
+    winDragConns = {}
+    if curTrack then pcall(function() curTrack:Stop(0) end); curTrack = nil end
     if curRig then pcall(function() curRig:Destroy() end); curRig = nil end
     if rigTemplate then pcall(function() rigTemplate:Destroy() end); rigTemplate = nil end
     if gui then pcall(function() gui:Destroy() end); gui = nil end
