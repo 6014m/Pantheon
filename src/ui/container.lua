@@ -17,6 +17,13 @@ Container.__index = Container
 
 local nextIndex = 0
 
+-- Drag handlers are connected to the GLOBAL UserInputService (mouse moves
+-- happen outside the small drag handle), so destroying the container's GUI
+-- does NOT sever them. We track them here and disconnect on teardown --
+-- otherwise every Auto Re-Execute (teleport) leaks one pair per container
+-- that keeps firing on every mouse move forever.
+local dragConns = {}
+
 local IMAGE_ID     = "rbxassetid://77797049442743"
 local CHAMFER      = 24
 local SLICE_CENTER = Rect.new(CHAMFER, CHAMFER, 64 - CHAMFER, 64 - CHAMFER)
@@ -130,7 +137,7 @@ function Container.new(parent, name)
                 startPos  = container.Position
             end
         end)
-        UIS.InputChanged:Connect(function(input)
+        dragConns[#dragConns + 1] = UIS.InputChanged:Connect(function(input)
             if not dragging then return end
             if input.UserInputType == Enum.UserInputType.MouseMovement
                or input.UserInputType == Enum.UserInputType.Touch then
@@ -141,7 +148,7 @@ function Container.new(parent, name)
                 )
             end
         end)
-        UIS.InputEnded:Connect(function(input)
+        dragConns[#dragConns + 1] = UIS.InputEnded:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1
                or input.UserInputType == Enum.UserInputType.Touch then
                 dragging = false
@@ -162,6 +169,15 @@ function Container:add(featureRoot)
     featureRoot.LayoutOrder = self._count
     featureRoot.Parent = self.features
     return self
+end
+
+-- Disconnect every container's global drag handlers. Called from Window.destroy()
+-- (the UI teardown entry point) so re-execute doesn't stack listeners. Also reset
+-- nextIndex so a fresh boot lays containers out from the left again.
+function Container.cleanup()
+    for _, c in ipairs(dragConns) do pcall(function() c:Disconnect() end) end
+    dragConns = {}
+    nextIndex = 0
 end
 
 return Container

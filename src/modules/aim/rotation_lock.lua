@@ -65,7 +65,12 @@ local function shouldRotate()
     return true
 end
 
-local function bgSuppressed()
+local function myHumanoid()
+    local myChar = Players.LocalPlayer.Character
+    return myChar and myChar:FindFirstChildOfClass("Humanoid")
+end
+
+local function bgSuppressed(myHum)
     -- A grab (welded to a player, or held by a foreign BodyGyro/BodyPosition)
     -- can keep the humanoid in the RUNNING state -- the SwingForce throw does
     -- exactly that (grab inspector: their HRP welded to ours, state=Running). A
@@ -77,7 +82,7 @@ local function bgSuppressed()
     -- grab and hands AutoRotate back.
     if state.isGrabbing() then return true end
     if not state.bgSafeEnabled then return false end
-    local myHum = getHumanoids()
+    myHum = myHum or myHumanoid()
     if myHum then
         local st = myHum:GetState()
         -- Hard locks (bleedout / downed / seated) and knockback/ragdoll physics:
@@ -155,7 +160,7 @@ local function step()
     local tRoot = rootOf(targetCharacter())
     if not tRoot then return end
 
-    if bgSuppressed() then
+    if bgSuppressed(myHum) then
         deactivate()
         return
     end

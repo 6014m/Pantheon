@@ -9,10 +9,11 @@
 --     position with a STAGGER_DELAY between consecutive containers, so they
 --     appear one after another, not all at once. Hide reverses the motion.
 
-local env      = require("core.env")
-local theme    = require("ui.theme")
-local hex      = require("ui.hex")
-local keybinds = require("core.keybinds")
+local env       = require("core.env")
+local theme     = require("ui.theme")
+local hex       = require("ui.hex")
+local keybinds  = require("core.keybinds")
+local container = require("ui.container")
 
 local UIS          = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
@@ -30,6 +31,7 @@ local s = {
     openBtn   = nil,
     visible   = true,
     masterKey = Enum.KeyCode.RightControl,
+    dragConns = {},   -- global UIS connections for the "P" button drag; cleared on destroy
 }
 
 -- [container Frame] = { x = origX, y = origY } captured the first time we see
@@ -133,7 +135,7 @@ local function buildHexButton(sg)
             moved     = false
         end
     end)
-    UIS.InputChanged:Connect(function(input)
+    s.dragConns[#s.dragConns + 1] = UIS.InputChanged:Connect(function(input)
         if not dragging then return end
         if input.UserInputType == Enum.UserInputType.MouseMovement
            or input.UserInputType == Enum.UserInputType.Touch then
@@ -145,7 +147,7 @@ local function buildHexButton(sg)
             )
         end
     end)
-    UIS.InputEnded:Connect(function(input)
+    s.dragConns[#s.dragConns + 1] = UIS.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
            or input.UserInputType == Enum.UserInputType.Touch then
             if dragging and not moved then Window.toggle() end
@@ -209,6 +211,12 @@ function Window.setMasterKey(key)
 end
 
 function Window.destroy()
+    -- Disconnect the "P" button's global UIS drag handlers and every container's
+    -- (both live on the global service, so destroying the GUI doesn't sever them).
+    for _, c in ipairs(s.dragConns) do pcall(function() c:Disconnect() end) end
+    s.dragConns = {}
+    pcall(function() container.cleanup() end)
+
     if s.screenGui then
         pcall(function() s.screenGui:Destroy() end)
     end

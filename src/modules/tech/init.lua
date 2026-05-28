@@ -22,6 +22,8 @@ local log        = require("core.log")
 
 local module = {}
 
+local changedConn   -- engine.changed subscription; disconnected on destroy
+
 -- Bucketize a scope for the list. Returns "here" (this game / this character),
 -- "uni" (universal), or "other" (different game / different char -> hidden).
 -- char-scoped techs go into "here" while you're playing as that character so
@@ -195,7 +197,7 @@ function module.register()
 
     -- Rebuild the list whenever the tech set changes (toggles, or per-game
     -- modules adding their techs after this point).
-    engine.changed:Connect(function() refreshList(listFrame) end)
+    changedConn = engine.changed:Connect(function() refreshList(listFrame) end)
 
     engine.loadCustom()   -- rehydrate persisted user-built techs
     refreshList(listFrame)
@@ -204,6 +206,7 @@ function module.register()
 end
 
 function module.destroy()
+    if changedConn then pcall(function() changedConn:Disconnect() end); changedConn = nil end
     pcall(function() builder.destroy() end)
     pcall(function() engine.destroy() end)
 end

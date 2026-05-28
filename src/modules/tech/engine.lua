@@ -266,14 +266,19 @@ local function techTriggers(tech)
     return {}
 end
 
-local function conditionsMet(tech)
-    for _, c in ipairs(tech.trigger.conditions or {}) do
+-- Takes the FIRING trigger so an "or" tech's per-subtrigger conditions/maxRange
+-- are honored (they live on each subtrigger, not the top-level "or" wrapper).
+-- Legacy single-trigger techs pass trig == tech.trigger, so the fallback keeps
+-- their behavior identical.
+local function conditionsMet(tech, trig)
+    trig = trig or tech.trigger
+    for _, c in ipairs(trig.conditions or {}) do
         local fn = CONDITIONS[c]
         if fn and not fn(tech) then return false end
     end
     -- distance gate: only fire within maxRange studs of the target (0/nil = any).
     -- Needs a target (lock-on / target select); fails closed if there's none.
-    local maxR = tonumber(tech.trigger.maxRange)
+    local maxR = tonumber(trig.maxRange)
     if maxR and maxR > 0 then
         local mr, tr = myRoot(), targetRoot()
         if not (mr and tr) then return false end
@@ -308,10 +313,15 @@ Engine.scopeMatches = scopeMatches
 -- ===== move buttons: fire + suppress =====
 -- Resolve a hotbar move button by the name the scanner recorded for it (e.g. TSB
 -- slot "1"). Re-scans so it tracks the live GUI.
-local function findMoveButton(name)
+-- Pass a pre-scanned `res` to reuse one scan across many lookups (applySuppression
+-- does this so it doesn't walk the whole PlayerGui once per suppressed tech).
+local function findMoveButton(name, res)
     if not name then return nil end
-    local ok, res = pcall(function() return scanner.scan() end)
-    if not ok or not res then return nil end
+    if not res then
+        local ok, r = pcall(function() return scanner.scan() end)
+        if not ok or not r then return nil end
+        res = r
+    end
     for _, b in ipairs(res.buttons or {}) do
         if b.name == name and b.button and b.button.Parent then return b.button end
     end
@@ -470,10 +480,13 @@ end
 -- to exist; called from rewire and re-tried when techs change.
 function Engine.applySuppression()
     local want = {}
+    -- One hotbar scan for the whole pass; findMoveButton reuses it per tech.
+    local ok, res = pcall(function() return scanner.scan() end)
+    res = ok and res or nil
     for _, tech in pairs(techs) do
         local tr = tech.trigger
         if tech.enabled and tr and tr.event == "move" and tr.suppress then
-            local b = findMoveButton(tr.move); if b then want[b] = true end
+            local b = findMoveButton(tr.move, res); if b then want[b] = true end
         end
     end
     for b in pairs(want) do suppressButton(b) end
@@ -642,9 +655,18 @@ local function animIdNum(s)    -- "rbxassetid://123" / "http://...id=123" / "123
 end
 -- the character's default locomotion anim ids (walk/run/idle/jump/fall/climb/sit),
 -- so history/Capture skip them -- otherwise they'd grab "walk" the instant you move.
+-- Cached per character: locomotion ids are static once the Animate folder
+-- populates, but this is queried on EVERY AnimationPlayed (frequent during
+-- movement). The old per-call Animate:GetDescendants() walk + table alloc was
+-- steady churn. Rebuild only when the character changes (or the cache hasn't
+-- captured anything yet, e.g. Animate not populated on the first call).
+local locomotionCache, locomotionCacheChar = nil, nil
 local function locomotionIds()
-    local set = {}
     local ch = LP.Character
+    if locomotionCache and locomotionCacheChar == ch and next(locomotionCache) ~= nil then
+        return locomotionCache
+    end
+    local set = {}
     local animate = ch and ch:FindFirstChild("Animate")
     if animate then
         for _, d in ipairs(animate:GetDescendants()) do
@@ -652,6 +674,7 @@ local function locomotionIds()
             local n = v and animIdNum(v); if n then set[n] = true end
         end
     end
+    locomotionCache, locomotionCacheChar = set, ch
     return set
 end
 
@@ -713,13 +736,13 @@ local function onAnimPlayed(track)
             for tidx, trig in ipairs(techTriggers(tech)) do
                 if trig.event == "anim" then
                     watching = true
-                    if animIdNum(trig.animId) == id and modifierHeld(trig) and conditionsMet(tech) and scopeMatches(tech) then
+                    if animIdNum(trig.animId) == id and modifierHeld(trig) and conditionsMet(tech, trig) and scopeMatches(tech) then
                         if trig.animEnd then
                             log.info("[tech] anim trigger armed on-end: " .. tostring(tech.name))
                             local conn
                             conn = track.Stopped:Connect(function()
                                 if conn then conn:Disconnect(); conn = nil end
-                                if tech.enabled and modifierHeld(trig) and conditionsMet(tech) and scopeMatches(tech) then
+                                if tech.enabled and modifierHeld(trig) and conditionsMet(tech, trig) and scopeMatches(tech) then
                                     log.info("[tech] anim trigger fired (end): " .. tostring(tech.name))
                                     queueRun(tech, false, tidx)
                                 end
@@ -735,7 +758,7 @@ local function onAnimPlayed(track)
     end
     -- diagnostic: with an anim tech ON, log every id that plays so you can see
     -- whether the hook catches your move and what id to bind it to.
-    if watching then log.info("[tech] anim played: " .. id .. (animIdNum(raw) ~= id and "" or "")) end
+    if watching then log.info("[tech] anim played: " .. id) end
     -- below: moves only -- skip locomotion AND emotes so the dropdown/Capture
     -- stay clean. Emote anims live under paths containing "Emote" (e.g.
     -- ReplicatedStorage.Emotes.* in JJS); a played emote was flooding the picker
@@ -817,12 +840,12 @@ local function onTargetAnimPlayed(track)
         if tech.enabled then
             for tidx, trig in ipairs(techTriggers(tech)) do
                 if trig.event == "target_anim" then
-                    if animIdNum(trig.animId) == id and modifierHeld(trig) and conditionsMet(tech) and scopeMatches(tech) then
+                    if animIdNum(trig.animId) == id and modifierHeld(trig) and conditionsMet(tech, trig) and scopeMatches(tech) then
                         if trig.animEnd then
                             local conn
                             conn = track.Stopped:Connect(function()
                                 if conn then conn:Disconnect(); conn = nil end
-                                if tech.enabled and modifierHeld(trig) and conditionsMet(tech) and scopeMatches(tech) then
+                                if tech.enabled and modifierHeld(trig) and conditionsMet(tech, trig) and scopeMatches(tech) then
                                     log.info("[tech] target_anim trigger fired (end): " .. tostring(tech.name))
                                     queueRun(tech, false, tidx)
                                 end
@@ -894,7 +917,7 @@ local function wireKey(tech, trig, tidx)
         CAS:BindActionAtPriority(action, function(_, inputState)
             if bypassKeys[key] then return Enum.ContextActionResult.Pass end
             if inputState == Enum.UserInputState.Begin then
-                if tech.enabled and modifierHeld(trig) and conditionsMet(tech) and scopeMatches(tech) then queueRun(tech, isHold, tidx) end
+                if tech.enabled and modifierHeld(trig) and conditionsMet(tech, trig) and scopeMatches(tech) then queueRun(tech, isHold, tidx) end
             elseif inputState == Enum.UserInputState.End and isHold then
                 releaseHold(true)
                 if trig.ignoreWelds then state.techIgnoreWelds = false end
@@ -905,7 +928,7 @@ local function wireKey(tech, trig, tidx)
         return
     end
     keybinds.set(bindId, key,
-        function() if tech.enabled and modifierHeld(trig) and conditionsMet(tech) and scopeMatches(tech) then queueRun(tech, isHold, tidx) end end,
+        function() if tech.enabled and modifierHeld(trig) and conditionsMet(tech, trig) and scopeMatches(tech) then queueRun(tech, isHold, tidx) end end,
         function() if isHold then releaseHold(true); if trig.ignoreWelds then state.techIgnoreWelds = false end end end)
 end
 
@@ -923,7 +946,7 @@ local function wireMove(tech, trig, tidx)
         CAS:BindActionAtPriority(action, function(_, inputState)
             if bypassKeys[kc] then return Enum.ContextActionResult.Pass end
             if inputState == Enum.UserInputState.Begin
-               and tech.enabled and modifierHeld(trig) and conditionsMet(tech) and scopeMatches(tech) then
+               and tech.enabled and modifierHeld(trig) and conditionsMet(tech, trig) and scopeMatches(tech) then
                 queueRun(tech, false, tidx)
             end
             return Enum.ContextActionResult.Sink
@@ -932,7 +955,7 @@ local function wireMove(tech, trig, tidx)
         return
     end
     keybinds.set(bindId, kc,
-        function() if tech.enabled and modifierHeld(trig) and conditionsMet(tech) and scopeMatches(tech) then queueRun(tech, false, tidx) end end,
+        function() if tech.enabled and modifierHeld(trig) and conditionsMet(tech, trig) and scopeMatches(tech) then queueRun(tech, false, tidx) end end,
         nil)
 end
 

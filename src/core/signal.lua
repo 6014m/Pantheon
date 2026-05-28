@@ -8,13 +8,16 @@ function Signal.new()
 end
 
 function Signal:Connect(fn)
-    table.insert(self._listeners, fn)
-    local idx = #self._listeners
-    return {
-        Disconnect = function()
-            self._listeners[idx] = nil
-        end,
-    }
+    -- Key listeners by a unique connection token, NOT by array index. An
+    -- index-based scheme breaks after the first Disconnect: it leaves a nil
+    -- hole, and a subsequent table.insert over a holed array has an undefined
+    -- position (# can return any border), so listeners can collide or vanish.
+    local conn = {}
+    self._listeners[conn] = fn
+    conn.Disconnect = function()
+        self._listeners[conn] = nil
+    end
+    return conn
 end
 
 function Signal:Fire(...)

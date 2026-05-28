@@ -82,11 +82,20 @@ function Targeting.getBestTarget(exclude)
         if plr ~= localPlayer and plr ~= exclude and not state.isFriendly(plr) then
             local char = plr.Character
             local root = rootOf(char)
-            if root and isInFront(root) and isAlive(char) and (not visCheck or isVisible(plr)) then
+            if root then
+                -- Cheap distance gate FIRST: skip anyone out of range or farther
+                -- than the best candidate so far. Only then run the expensive
+                -- front/alive/visibility checks (visibility raycasts per player
+                -- were the crowded-server hitch). A player farther than the
+                -- current closest can't win regardless of those checks, and if
+                -- the closest-by-distance fails visibility we still fall through
+                -- to the next, so "closest visible" semantics are preserved.
                 local dist = (root.Position - myRoot.Position).Magnitude
                 if (state.rangeLimit <= 0 or dist <= state.rangeLimit) and dist < closestDist then
-                    closestDist = dist
-                    closestPlr  = plr
+                    if isInFront(root) and isAlive(char) and (not visCheck or isVisible(plr)) then
+                        closestDist = dist
+                        closestPlr  = plr
+                    end
                 end
             end
         end
