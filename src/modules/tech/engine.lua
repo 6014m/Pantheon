@@ -41,6 +41,7 @@ local RENDER_BIND = "PantheonTechHold"
 local bound = false
 local drainConn          -- Heartbeat that runs queued techs off the trigger signal thread
 local targetChangedConn  -- state.onTargetChanged subscription (re-hooks target_anim)
+local charAddedConn      -- LP.CharacterAdded subscription (re-hooks the Animator on respawn)
 
 -- held camera/body facings; the render loop enforces these each frame while set.
 local held = { cam = nil, body = nil }   -- each = { yaw, pitch } degrees, target-relative
@@ -1166,7 +1167,7 @@ function Engine.init()
             hookAnimator()
         end
     end)
-    LP.CharacterAdded:Connect(function(ch)
+    charAddedConn = LP.CharacterAdded:Connect(function(ch)
         task.spawn(function()
             local hum = ch:WaitForChild("Humanoid", 10)
             if hum then hum:WaitForChild("Animator", 5) end
@@ -1188,6 +1189,12 @@ function Engine.destroy()
     if bound then pcall(function() RunService:UnbindFromRenderStep(RENDER_BIND) end); bound = false end
     if drainConn then pcall(function() drainConn:Disconnect() end); drainConn = nil end
     if targetChangedConn then pcall(function() targetChangedConn:Disconnect() end); targetChangedConn = nil end
+    if charAddedConn then pcall(function() charAddedConn:Disconnect() end); charAddedConn = nil end
+    -- the persistent Animator.AnimationPlayed hook survives a script reload (the
+    -- Animator isn't destroyed), so disconnect it or the old instance keeps
+    -- firing onAnimPlayed alongside the new one after a re-execute.
+    for _, c in ipairs(animHookConns) do pcall(function() c:Disconnect() end) end
+    animHookConns = {}
     clearTargetAnimHook()
     for _, list in pairs(conns) do for _, c in ipairs(list) do pcall(function() c:Disconnect() end) end end
     conns = {}
