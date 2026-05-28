@@ -80,19 +80,6 @@ local function cameraStep(dt)
         local alpha = 1 - math.exp(-smoothness * (dt or 1/60))
         local blended = currentLook:Lerp(dir, alpha)
         if blended.Magnitude > 0.001 then dir = blended.Unit end
-    else
-        -- Default direction smoothing (Resistance off). AssemblyLinearVelocity
-        -- has frame-to-frame physics noise; velocity-based prediction multiplies
-        -- that noise into the lead position, which made the raw snap-per-frame
-        -- look rocky in JJS. A subtle exponential approach (~35 ms half-life)
-        -- absorbs the jitter without lagging tracking. Skipped when Resistance
-        -- is on -- its own lerp path takes over (and the user is intentionally
-        -- asking for slower follow-through).
-        if s.lastDir then
-            local alpha = 1 - math.exp(-20 * (dt or 1/60))
-            local blended = s.lastDir:Lerp(dir, alpha)
-            if blended.Magnitude > 0.001 then dir = blended.Unit end
-        end
     end
 
     s.lastDir = dir
