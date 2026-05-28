@@ -12,9 +12,12 @@ local components = {}
 -- GUI does NOT sever those, so we track them here and disconnect on teardown.
 -- Without this, every Auto Re-Execute (teleport) stacked ~2 dead InputChanged
 -- handlers per slider on UIS, firing on every mouse move forever.
+-- NB: named trackConn (not `track`) on purpose -- Slider has a local `track`
+-- Frame, and a bare `track` here would be shadowed by it, turning track(...)
+-- into "call a Frame value" at runtime.
 local conns = {}   -- [conn] = true
-local function track(c) conns[c] = true; return c end
-local function untrack(c) conns[c] = nil end
+local function trackConn(c) conns[c] = true; return c end
+local function untrackConn(c) conns[c] = nil end
 
 local function baseRow(parent, height)
     local f = Instance.new("Frame")
@@ -178,14 +181,14 @@ function components.Slider(parent, opts)
             setFromX(input.Position.X)
         end
     end)
-    track(UIS.InputChanged:Connect(function(input)
+    trackConn(UIS.InputChanged:Connect(function(input)
         if not dragging then return end
         if input.UserInputType == Enum.UserInputType.MouseMovement
            or input.UserInputType == Enum.UserInputType.Touch then
             setFromX(input.Position.X)
         end
     end))
-    track(UIS.InputEnded:Connect(function(input)
+    trackConn(UIS.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
            or input.UserInputType == Enum.UserInputType.Touch then
             dragging = false
@@ -258,7 +261,7 @@ function components.KeybindSetter(parent, opts)
         btn.BackgroundColor3 = theme.accent
 
         local conn
-        conn = track(UIS.InputBegan:Connect(function(input)
+        conn = trackConn(UIS.InputBegan:Connect(function(input)
             if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
             if input.KeyCode == Enum.KeyCode.Unknown then return end
             local k = input.KeyCode
@@ -266,7 +269,7 @@ function components.KeybindSetter(parent, opts)
                 listening = false
                 btn.Text = keyDisplayName(current)
                 btn.BackgroundColor3 = theme.bgDark
-                conn:Disconnect(); untrack(conn)
+                conn:Disconnect(); untrackConn(conn)
                 return
             end
             if k == Enum.KeyCode.Backspace then
@@ -275,7 +278,7 @@ function components.KeybindSetter(parent, opts)
                 btn.Text = keyDisplayName(current)
                 btn.BackgroundColor3 = theme.bgDark
                 if opts.onChange then opts.onChange(current) end
-                conn:Disconnect(); untrack(conn)
+                conn:Disconnect(); untrackConn(conn)
                 return
             end
             current = k
@@ -283,7 +286,7 @@ function components.KeybindSetter(parent, opts)
             btn.Text = keyDisplayName(current)
             btn.BackgroundColor3 = theme.bgDark
             if opts.onChange then opts.onChange(current) end
-            conn:Disconnect(); untrack(conn)
+            conn:Disconnect(); untrackConn(conn)
         end))
     end)
 
