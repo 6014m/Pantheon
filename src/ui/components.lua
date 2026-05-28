@@ -7,6 +7,15 @@ local UIS = game:GetService("UserInputService")
 
 local components = {}
 
+-- Slider drag + KeybindSetter listen-mode need GLOBAL UserInputService
+-- connections (a drag/keypress lands outside the row). Destroying the row's
+-- GUI does NOT sever those, so we track them here and disconnect on teardown.
+-- Without this, every Auto Re-Execute (teleport) stacked ~2 dead InputChanged
+-- handlers per slider on UIS, firing on every mouse move forever.
+local conns = {}   -- [conn] = true
+local function track(c) conns[c] = true; return c end
+local function untrack(c) conns[c] = nil end
+
 local function baseRow(parent, height)
     local f = Instance.new("Frame")
     f.Size = UDim2.new(1, 0, 0, height or theme.rowHeight)
@@ -169,19 +178,19 @@ function components.Slider(parent, opts)
             setFromX(input.Position.X)
         end
     end)
-    UIS.InputChanged:Connect(function(input)
+    track(UIS.InputChanged:Connect(function(input)
         if not dragging then return end
         if input.UserInputType == Enum.UserInputType.MouseMovement
            or input.UserInputType == Enum.UserInputType.Touch then
             setFromX(input.Position.X)
         end
-    end)
-    UIS.InputEnded:Connect(function(input)
+    end))
+    track(UIS.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
            or input.UserInputType == Enum.UserInputType.Touch then
             dragging = false
         end
-    end)
+    end))
 
     local api = {}
     function api:Get() return value end
@@ -249,7 +258,7 @@ function components.KeybindSetter(parent, opts)
         btn.BackgroundColor3 = theme.accent
 
         local conn
-        conn = UIS.InputBegan:Connect(function(input)
+        conn = track(UIS.InputBegan:Connect(function(input)
             if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
             if input.KeyCode == Enum.KeyCode.Unknown then return end
             local k = input.KeyCode
@@ -257,7 +266,7 @@ function components.KeybindSetter(parent, opts)
                 listening = false
                 btn.Text = keyDisplayName(current)
                 btn.BackgroundColor3 = theme.bgDark
-                conn:Disconnect()
+                conn:Disconnect(); untrack(conn)
                 return
             end
             if k == Enum.KeyCode.Backspace then
@@ -266,7 +275,7 @@ function components.KeybindSetter(parent, opts)
                 btn.Text = keyDisplayName(current)
                 btn.BackgroundColor3 = theme.bgDark
                 if opts.onChange then opts.onChange(current) end
-                conn:Disconnect()
+                conn:Disconnect(); untrack(conn)
                 return
             end
             current = k
@@ -274,8 +283,8 @@ function components.KeybindSetter(parent, opts)
             btn.Text = keyDisplayName(current)
             btn.BackgroundColor3 = theme.bgDark
             if opts.onChange then opts.onChange(current) end
-            conn:Disconnect()
-        end)
+            conn:Disconnect(); untrack(conn)
+        end))
     end)
 
     unbind.MouseButton1Click:Connect(function()
@@ -292,6 +301,14 @@ function components.KeybindSetter(parent, opts)
             if opts.onChange then opts.onChange(current) end
         end,
     }
+end
+
+-- Disconnect every tracked global-UIS connection (slider drag handlers + any
+-- live keybind listen). Called from init.lua's shutdown so a re-execute doesn't
+-- stack listeners across teleports.
+function components.destroy()
+    for c in pairs(conns) do pcall(function() c:Disconnect() end) end
+    conns = {}
 end
 
 return components

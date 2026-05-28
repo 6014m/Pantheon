@@ -6,10 +6,11 @@
 local log      = require("core.log")
 local env      = require("core.env")
 local persist  = require("core.persist")
-local keybinds = require("core.keybinds")
-local window   = require("ui.window")
-local notify   = require("ui.notify")
-local registry = require("games.registry")
+local keybinds   = require("core.keybinds")
+local window     = require("ui.window")
+local notify     = require("ui.notify")
+local components = require("ui.components")
+local registry   = require("games.registry")
 
 local genv = (env.getgenv and env.getgenv()) or _G
 
@@ -62,8 +63,9 @@ genv.Pantheon.shutdown = function()
     pcall(function() if aim.destroy      then aim.destroy()      end end)
     pcall(function() if tech.destroy     then tech.destroy()     end end)
     pcall(function() if system.destroy   then system.destroy()   end end)
-    pcall(function() if window.destroy   then window.destroy()   end end)
-    pcall(function() if notify.destroy   then notify.destroy()   end end)
+    pcall(function() if window.destroy     then window.destroy()     end end)
+    pcall(function() if components.destroy then components.destroy() end end)
+    pcall(function() if notify.destroy     then notify.destroy()     end end)
     pcall(function() if keybinds.destroy then keybinds.destroy() end end)
     pcall(function() if persist.flush    then persist.flush()    end end)
 end

@@ -528,10 +528,10 @@ local function runStep(a, ctx)
     elseif a.type == "hold" then
         -- press the key DOWN and keep it held until the matching Release
         -- (or the safety release at the end), so steps in between run while held.
-        local kc = a.key and Enum.KeyCode[a.key]
+        local kc = a.key and safeKeyCode(a.key)
         if kc then pcall(function() VIM:SendKeyEvent(true, kc, false, game) end); ctx.heldKeys[kc] = true end
     elseif a.type == "release" then
-        local kc = a.key and Enum.KeyCode[a.key]
+        local kc = a.key and safeKeyCode(a.key)
         if kc then pcall(function() VIM:SendKeyEvent(false, kc, false, game) end); ctx.heldKeys[kc] = nil end
     elseif a.type == "feature" then
         if a.feature then
@@ -602,21 +602,30 @@ local function runTech(tech, hold, triggerIndex)
             for id, prev in pairs(featRestore) do pcall(function() feature.setEnabled(id, prev) end); featRestore[id] = nil end
             for kc in pairs(heldKeys) do pcall(function() VIM:SendKeyEvent(false, kc, false, game) end); heldKeys[kc] = nil end
         end
-        for _, a in ipairs(tech.actions or {}) do runStep(a, ctx) end
-        local restoreAll = ctx.restoreAll
-        -- one-shot techs auto-clean at the end -- features toggled go back, held
-        -- keys release. If a Rotate ran, hold the rotation briefly past tech
-        -- end so it is VISIBLE under shiftlock (the game's shiftlock script
-        -- snaps body back to face cam the instant we release techBodyOverride,
-        -- which was making rotate look like it did nothing) AND so any move
-        -- fired server-side at the rotated facing has time to land before we
-        -- release. ~0.6s = long enough to see + long enough for a typical
-        -- JJS cast handshake to commit; short enough not to feel stuck.
-        if not hold then
-            if bodyARDisabled then task.wait(0.6) end
-            restoreAll(false)
-        else
-            for kc in pairs(heldKeys) do pcall(function() VIM:SendKeyEvent(false, kc, false, game) end) end
+        -- Wrap the whole run so a throw in any step can't leave `running` stuck
+        -- true -- that would silently brick EVERY tech (the guard at the top of
+        -- runTech bails while running) until a re-execute. The most likely
+        -- culprit is an invalid Enum.KeyCode[a.key] on a Hold/Release step with a
+        -- bad/hand-edited key name (digit names throw). Cleanup runs either way.
+        local ok, err = pcall(function()
+            for _, a in ipairs(tech.actions or {}) do runStep(a, ctx) end
+            -- one-shot techs auto-clean at the end -- features toggled go back,
+            -- held keys release. If a Rotate ran, hold the rotation briefly past
+            -- tech end so it is VISIBLE under shiftlock (the game's shiftlock
+            -- snaps body back to face cam the instant we release techBodyOverride)
+            -- AND so a move fired server-side at the rotated facing has time to
+            -- land. ~0.6s = long enough to see + for a JJS cast handshake to
+            -- commit; short enough not to feel stuck.
+            if not hold then
+                if bodyARDisabled then task.wait(0.6) end
+                ctx.restoreAll(false)
+            else
+                for kc in pairs(heldKeys) do pcall(function() VIM:SendKeyEvent(false, kc, false, game) end) end
+            end
+        end)
+        if not ok then
+            log.warn("[tech] run error: " .. tostring(err))
+            pcall(function() ctx.restoreAll(false) end)   -- release holds/keys/features even on error
         end
         -- one-shot: release the weld-ignore now; hold techs keep it until key release
         if ignoreWelds and not hold then state.techIgnoreWelds = false end
