@@ -453,26 +453,44 @@ end
 -- 2. useKey=true (JJS-style hotbar where keypress fires the move and the
 --    button is visual-only): VIM-send the slot key with CAS bypass.
 -- 3. Default: click the GUI button (TSB-style: button click fires the move).
+-- a.move = scanned button name OR a hand-typed move name; a.key = key to press
+-- (string name, e.g. "Q"/"One"); a.fire = "auto"|"button"|"key" (default auto).
 ACTIONS.usebtn = function(a)
+    local fire = a.fire or "auto"
     local res = scanner.cached() or scanner.scan()
     local entry
     for _, b in ipairs(res.buttons or {}) do
         if b.name == a.move then entry = b; break end
     end
-    if not entry then return end
-    local ok_reg, registry = pcall(require, "games.registry")
-    if ok_reg and registry then
-        local mod = registry.current()
-        if mod and type(mod.useMove) == "function" then
-            local ok_um, handled = pcall(mod.useMove, a.move, entry)
-            if ok_um and handled then return end
+    -- Explicit "press key": VIM the key. Works for MANUAL moves the scanner
+    -- can't see (no live button to click) -- only needs a key.
+    if fire == "key" then
+        local kc = safeKeyCode(a.key or (entry and entry.key))
+        if kc then fireKeyBypass(kc) end
+        return
+    end
+    -- Auto: per-game direct hook first (fires the move's RE itself), then the
+    -- JJS-style useKey hotbar (keypress fires, button is visual-only).
+    if fire == "auto" then
+        local ok_reg, registry = pcall(require, "games.registry")
+        if ok_reg and registry then
+            local mod = registry.current()
+            if mod and type(mod.useMove) == "function" then
+                local ok_um, handled = pcall(mod.useMove, a.move, entry)
+                if ok_um and handled then return end
+            end
+        end
+        if entry and entry.useKey and entry.key then
+            local kc = safeKeyCode(entry.key)
+            if kc then fireKeyBypass(kc); return end
         end
     end
-    if entry.useKey and entry.key then
-        local kc = safeKeyCode(entry.key)
-        if kc then fireKeyBypass(kc); return end
-    end
-    fireButton(entry.button)
+    -- Click the GUI button ("button", or "auto" with a real button).
+    if entry and entry.button then fireButton(entry.button); return end
+    -- No live button (manual move / scan miss): fall back to a key press if one
+    -- is set, so a typed move with a key still fires.
+    local kc = safeKeyCode(a.key or (entry and entry.key))
+    if kc then fireKeyBypass(kc) end
 end
 
 -- Reconcile which move buttons should be "cancelled" right now: every ENABLED

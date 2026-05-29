@@ -211,22 +211,25 @@ do
                 end
             end)
         elseif t == "usebtn" then
+            -- Click opens the Use Move editor modal (in builder_ui) via the
+            -- editUseMoveRequested signal: move dropdown + manual name + key +
+            -- fire method. (Was a cycle-only picker -- no manual entry / key.)
             local res = scanner.cached() or scanner.scan()
             local moveset = res.buttons or {}
             if not p.move and #moveset > 0 then p.move = moveset[1].name end
             local function label()
-                if #moveset == 0 then return "(no moves - Dump GUI)" end
-                for _, b in ipairs(moveset) do if b.name == p.move then return (b.text ~= "" and b.text) or b.name end end
-                return "(pick)"
+                local base = "(configure move)"
+                if p.move and p.move ~= "" then
+                    base = p.move
+                    for _, b in ipairs(moveset) do if b.name == p.move then base = (b.text ~= "" and b.text) or b.name; break end end
+                end
+                if p.key and p.key ~= "" then base = base .. " [" .. tostring(p.key) .. "]" end
+                return base
             end
-            local b = valBtn(blk, label())
-            guardedClick(b, function()
-                if #moveset == 0 then return end
-                local idx = 0
-                for k, bb in ipairs(moveset) do if bb.name == p.move then idx = k end end
-                p.move = moveset[(idx % #moveset) + 1].name
-                b.Text = label()
+            local b = valBtn(blk, label(), function()
+                if blk.canvas and blk.canvas.editUseMoveRequested then blk.canvas.editUseMoveRequested:Fire(blk) end
             end)
+            blk._refreshUseMoveLabel = function() b.Text = label() end
         elseif t == "and" then
             -- V2: clicking the param button opens a sub-editor modal where
             -- each branch is its own mini canvas. The block itself stays a
@@ -269,7 +272,11 @@ do
             -- to plumb them into the canvas module.
             local function summarize()
                 if t == "event_key" then
-                    return (p.key and ("key: " .. p.key) or "(no key set)") ..
+                    -- p.key is a KeyCode EnumItem (from the hat modal's KeybindSetter);
+                    -- "str " .. EnumItem THROWS in Luau, so normalize to a name string.
+                    local kn = p.key and (typeof(p.key) == "EnumItem"
+                        and (tostring(p.key):gsub("Enum.KeyCode.", "")) or tostring(p.key))
+                    return ((kn and kn ~= "") and ("key: " .. kn) or "(no key set)") ..
                            (p.suppress and " [block]" or "") ..
                            ((p.event or "key") == "keyhold" and " [hold]" or "")
                 elseif t == "event_anim" then
@@ -312,6 +319,7 @@ function Canvas.new(parent, opts)
     self.blockClicked = Signal.new()       -- (block) on click without drag
     self.editBranchesRequested = Signal.new() -- (andBlock) when AND's branch-edit button is clicked
     self.editHatRequested      = Signal.new() -- (hatBlock) when a hat's summary button is clicked
+    self.editUseMoveRequested  = Signal.new() -- (useBlock) when a Use Move block's button is clicked
     self._uid = 0
     -- (Global trash zone removed -- per-block trash icons are the delete UX
     -- now; see _renderBlock. Drag-onto-trash was unreliable because the

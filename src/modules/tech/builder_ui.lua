@@ -778,6 +778,102 @@ local function openHatEditor(hatBlock)
     end)
 end
 
+-- ---------- Use Move editor (sub-modal) ----------
+-- Click a "Use Move" (usebtn) block -> configure which move it fires and how.
+-- Rows: a dropdown of detected hotbar moves, a manual move-name box (for moves
+-- the scanner can't see), a key to press (key-fire / manual moves), and the
+-- fire method. The engine's ACTIONS.usebtn reads block.params.move/key/fire.
+-- Stored on the block's params so it round-trips through toActions() like any
+-- other step. NOTE: key is stored as a STRING name (not an EnumItem) so the
+-- block label can show it and safeKeyCode() can resolve it.
+local function openUseMoveEditor(block)
+    local p = block.params
+
+    local modal = Instance.new("Frame")
+    modal.Size = UDim2.new(0, 360, 0, 300)
+    modal.Position = UDim2.new(0.5, -180, 0.5, -150)
+    modal.BackgroundColor3 = theme.bg; modal.BorderSizePixel = 0
+    modal.ZIndex = 200; modal.Parent = rootFrame
+    corner(modal, 8); stroke(modal, theme.accent, 2)
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -20, 0, 24); title.Position = UDim2.fromOffset(10, 8)
+    title.BackgroundTransparency = 1; title.Text = "Use Move"
+    title.TextColor3 = theme.fg; title.Font = theme.fontBold; title.TextSize = 14
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.ZIndex = 201; title.Parent = modal
+
+    local body = Instance.new("ScrollingFrame")
+    body.Size = UDim2.new(1, -20, 1, -76); body.Position = UDim2.fromOffset(10, 36)
+    body.BackgroundTransparency = 1; body.BorderSizePixel = 0
+    body.ScrollBarThickness = 4; body.CanvasSize = UDim2.new(0, 0, 0, 0)
+    body.AutomaticCanvasSize = Enum.AutomaticSize.Y; body.ZIndex = 201; body.Parent = modal
+    local bl = Instance.new("UIListLayout", body); bl.Padding = UDim.new(0, 6); bl.SortOrder = Enum.SortOrder.LayoutOrder
+
+    local ord = 0
+    local function place(inst) ord = ord + 1; inst.LayoutOrder = ord; inst.Parent = body; return inst end
+
+    -- 1. detected-move dropdown (auto-fills the key from the scan if unset)
+    local res = scanner.cached() or scanner.scan()
+    local moveset = res.buttons or {}
+    if #moveset > 0 then
+        local labels = {}
+        for _, b in ipairs(moveset) do
+            local lbl = (b.text ~= "" and b.text) or b.name
+            if b.key then lbl = lbl .. " [" .. b.key .. "]" end
+            labels[#labels + 1] = lbl
+        end
+        local idx = 1
+        for i, b in ipairs(moveset) do if b.name == p.move then idx = i end end
+        place(cycleRow(body, "Detected move", labels, idx, function(i)
+            p.move = moveset[i].name
+            if moveset[i].key and (not p.key or p.key == "") then p.key = keyNameNorm(moveset[i].key) end
+        end))
+    else
+        place(components.Label(body, "No moves detected (run Dump GUI, or type the name below)"))
+    end
+
+    -- 2. manual move name -- works when the scanner can't see the move
+    place(textRow(body, "Or move name", p.move, function(t)
+        p.move = (t and t ~= "") and t or nil
+    end))
+
+    -- 3. key to press (used by key-fire + manual moves with no live button)
+    place(wrap(28, function(host)
+        local def = toKeyCode(p.key) or Enum.KeyCode.Unknown
+        components.KeybindSetter(host, { label = "Key (key-fire)", default = def,
+            onChange = function(k) p.key = (k and k ~= Enum.KeyCode.Unknown) and (tostring(k):gsub("Enum.KeyCode.", "")) or nil end })
+    end))
+
+    -- 4. fire method
+    local FIRE_LABELS = { "Auto (smart)", "Click button", "Press key" }
+    local FIRE_KEYS   = { "auto", "button", "key" }
+    local fidx = 1
+    for i, k in ipairs(FIRE_KEYS) do if p.fire == k then fidx = i end end
+    place(cycleRow(body, "Fire method", FIRE_LABELS, fidx, function(i) p.fire = FIRE_KEYS[i] end))
+
+    place(components.Label(body, "Auto = hook, else button, else key. Press key = VIM the key (use for typed/manual moves)."))
+
+    -- Done
+    local btnRow = Instance.new("Frame")
+    btnRow.Size = UDim2.new(1, -20, 0, 28); btnRow.Position = UDim2.new(0, 10, 1, -34)
+    btnRow.BackgroundTransparency = 1; btnRow.ZIndex = 201; btnRow.Parent = modal
+    local rowL = Instance.new("UIListLayout", btnRow); rowL.FillDirection = Enum.FillDirection.Horizontal
+    rowL.HorizontalAlignment = Enum.HorizontalAlignment.Right; rowL.Padding = UDim.new(0, 8)
+
+    local close = Instance.new("TextButton")
+    close.Size = UDim2.fromOffset(80, 26); close.BackgroundColor3 = theme.accent
+    close.AutoButtonColor = false; close.TextColor3 = theme.fg
+    close.Font = theme.fontBold; close.TextSize = 12; close.Text = "Done"
+    close.ZIndex = 202; close.Parent = btnRow
+    corner(close, 4)
+    close.MouseButton1Click:Connect(function()
+        if block._refreshUseMoveLabel then block._refreshUseMoveLabel() end
+        if draft and canvas then draft.actions = canvas:toActions() end
+        modal:Destroy()
+    end)
+end
+
 -- ---------- OR fork editor (sub-modal) ----------
 -- Each branch = a SUBTRIGGER (hat block at the top) + an action chain. Two
 -- branches by default; engine wires each subtrigger independently and the
@@ -839,6 +935,7 @@ local function openOrEditor(orBlock)
         mc.frame.LayoutOrder = 3
         -- Mini canvas's editHatRequested -> reuse the main openHatEditor.
         mc.editHatRequested:Connect(function(h) openHatEditor(h) end)
+        mc.editUseMoveRequested:Connect(function(b) openUseMoveEditor(b) end)
 
         -- Pre-populate from orBlock.params: triggers[idx] -> hat block,
         -- branches[idx] -> action chain after the hat.
@@ -1002,6 +1099,7 @@ local function openBranchEditor(andBlock)
 
         local mc = CanvasUI.new(sec, {})
         mc.frame.LayoutOrder = 3
+        mc.editUseMoveRequested:Connect(function(b) openUseMoveEditor(b) end)
         if andBlock.params.branches and andBlock.params.branches[idx] then
             mc:loadActions(andBlock.params.branches[idx])
         end
@@ -1435,6 +1533,9 @@ rebuild = function()
         -- modal that edits the hat's trigger params in place; the hat's
         -- summary text refreshes on close and the draft re-syncs.
         canvas.editHatRequested:Connect(function(hatBlock) openHatEditor(hatBlock) end)
+
+        -- Use Move block -> per-step config modal (move/key/fire method).
+        canvas.editUseMoveRequested:Connect(function(block) openUseMoveEditor(block) end)
 
         -- Drag a palette button -> spawn a ghost that follows the mouse,
         -- and on release inside the canvas bounds, addBlock at the
