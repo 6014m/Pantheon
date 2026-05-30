@@ -284,7 +284,12 @@ do
                 elseif t == "event_target_anim" then
                     return p.animId and ("target anim " .. tostring(p.animId)) or "(no anim set)"
                 elseif t == "event_move" then
-                    return p.move and ("move: " .. tostring(p.move)) or "(no move set)"
+                    -- A move trigger fires off its KEY; the name is optional. Show
+                    -- whichever is set so a key-only (scanner-less) config reads as
+                    -- configured, not "(no move set)".
+                    if p.move and p.move ~= "" then return "move: " .. tostring(p.move) end
+                    if p.movekey and p.movekey ~= "" then return "key: " .. tostring(p.movekey) end
+                    return "(set move/key)"
                 end
                 return "configure"
             end

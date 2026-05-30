@@ -726,11 +726,16 @@ local function openHatEditor(hatBlock)
             default = p.animEnd == true,
             onChange = function(v) p.animEnd = v or nil end }) end))
     elseif t == "event_move" then
+        -- The engine fires a move trigger off the move's KEY (wireMove uses
+        -- trig.movekey); the move NAME is optional (label + "block normal fire"
+        -- button lookup). So the Move-key setter and a manual name box must
+        -- ALWAYS show -- even when the scanner sees no hotbar -- or a game whose
+        -- moves we can't auto-detect has NO way to build a move trigger (this was
+        -- the dead-end: empty scan -> only a "No moves" label). Mirrors the
+        -- Use Move action editor, which already does manual name + key.
         local res = scanner.cached() or scanner.scan()
         local moveset = res.buttons or {}
-        if #moveset == 0 then
-            place(components.Label(body, "No moves detected yet (run Dump GUI to map the hotbar)"))
-        else
+        if #moveset > 0 then
             if not p.move then
                 p.move = moveset[1].name
                 if moveset[1].key and not p.movekey then p.movekey = keyNameNorm(moveset[1].key) end
@@ -743,16 +748,24 @@ local function openHatEditor(hatBlock)
             end
             local idx = 1
             for i, b in ipairs(moveset) do if b.name == p.move then idx = i end end
-            place(cycleRow(body, "Move", labels, idx, function(i)
+            place(cycleRow(body, "Detected move", labels, idx, function(i)
                 p.move = moveset[i].name
                 if moveset[i].key then p.movekey = keyNameNorm(moveset[i].key) end
             end))
-            place(wrap(28, function(host)
-                local def = toKeyCode(p.movekey) or Enum.KeyCode.Unknown
-                components.KeybindSetter(host, { label = "Move key", default = def,
-                    onChange = function(k) p.movekey = (k and k ~= Enum.KeyCode.Unknown) and (tostring(k):gsub("Enum.KeyCode.", "")) or nil end })
-            end))
+        else
+            place(components.Label(body, "No moves auto-detected -- set the move's key below (name optional)."))
         end
+        -- Manual move name (optional): only needed so "Block move's normal fire"
+        -- can find the button, and as a readable label.
+        place(textRow(body, "Move name (optional)", p.move, function(s)
+            p.move = (s and s ~= "") and s or nil
+        end))
+        -- Move key -- the ACTUAL trigger. Required; the tech fires on this press.
+        place(wrap(28, function(host)
+            local def = toKeyCode(p.movekey) or Enum.KeyCode.Unknown
+            components.KeybindSetter(host, { label = "Move key (required)", default = def,
+                onChange = function(k) p.movekey = (k and k ~= Enum.KeyCode.Unknown) and (tostring(k):gsub("Enum.KeyCode.", "")) or nil end })
+        end))
         place(wrap(28, function(host) components.Toggle(host, { text = "Block move's normal fire",
             default = p.suppress == true,
             onChange = function(v) p.suppress = v or nil end }) end))
@@ -1120,7 +1133,7 @@ local function openBranchEditor(andBlock)
             b.BackgroundColor3 = Color3.fromRGB(math.floor(c.R*255*0.78), math.floor(c.G*255*0.78), math.floor(c.B*255*0.78))
             b.AutoButtonColor = true; b.TextColor3 = theme.fg
             b.Font = theme.fontBold; b.TextSize = 12
-            b.Text = "+ " .. (STEP_LABEL[t] or t); b.Parent = pal
+            b.Text = "+ " .. (CanvasUI.STEP_LABEL[t] or STEP_LABEL[t] or t); b.Parent = pal
             corner(b, 8)
             b.MouseButton1Click:Connect(function()
                 mc:addBlock(t, defaultParamsFor(t))
@@ -1549,7 +1562,7 @@ rebuild = function()
             b.BackgroundColor3 = Color3.fromRGB(math.floor(c.R*255*0.78), math.floor(c.G*255*0.78), math.floor(c.B*255*0.78))
             b.AutoButtonColor = true; b.TextColor3 = theme.fg
             b.Font = theme.fontBold; b.TextSize = 12
-            b.Text = "+ " .. (STEP_LABEL[t] or t); b.Parent = palette
+            b.Text = "+ " .. (CanvasUI.STEP_LABEL[t] or STEP_LABEL[t] or t); b.Parent = palette
             corner(b, 8)
 
             local clickStart, dragged, ghost, moveConn, endConn
@@ -1576,7 +1589,7 @@ rebuild = function()
                         corner(ghost, 10)
                         local gl = Instance.new("TextLabel")
                         gl.Size = UDim2.new(1, -16, 1, 0); gl.Position = UDim2.fromOffset(8, 0)
-                        gl.BackgroundTransparency = 1; gl.Text = STEP_LABEL[t] or t
+                        gl.BackgroundTransparency = 1; gl.Text = CanvasUI.STEP_LABEL[t] or STEP_LABEL[t] or t
                         gl.TextColor3 = theme.fg; gl.Font = theme.fontBold; gl.TextSize = 13
                         gl.TextXAlignment = Enum.TextXAlignment.Left
                         gl.ZIndex = 5001; gl.Parent = ghost
@@ -1647,6 +1660,12 @@ local function ensureGui()
     gui = Instance.new("ScreenGui")
     gui.Name = "_" .. math.random(100000, 999999)
     gui.ResetOnSpawn = false
+    -- Sibling so children always render above their parents (modal config
+    -- panels sit at ZIndex 200 over default-ZIndex(1) controls; under the
+    -- legacy Global default those controls would hide BEHIND the modal bg).
+    -- window.lua / shiftlock.lua set this too; the builder had been relying
+    -- on the runtime default.
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     gui.Parent = env.guiParent()
     if env.protectGui then env.protectGui(gui) end
 
