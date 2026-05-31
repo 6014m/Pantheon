@@ -15,6 +15,7 @@ local container  = require("ui.container")
 local components = require("ui.components")
 local theme      = require("ui.theme")
 local state      = require("modules.aim.state")
+local feature    = require("ui.feature")
 local log        = require("core.log")
 
 local Players = game:GetService("Players")
@@ -69,17 +70,34 @@ local function buildRow(plr)
     avatar.Parent = row
 
     local name = Instance.new("TextLabel")
-    name.Position = UDim2.fromOffset(36, 0)
-    name.Size = UDim2.new(1, -98, 1, 0)
+    name.Position = UDim2.fromOffset(34, 0)
+    name.Size = UDim2.new(1, -148, 1, 0)
     name.BackgroundTransparency = 1
-    name.Text = (plr.DisplayName and plr.DisplayName ~= plr.Name)
-        and (plr.DisplayName .. "  @" .. plr.Name) or plr.Name
+    name.Text = (plr.DisplayName and plr.DisplayName ~= "" and plr.DisplayName) or plr.Name
     name.TextColor3 = theme.fg
     name.Font = theme.font
     name.TextSize = 12
     name.TextXAlignment = Enum.TextXAlignment.Left
     name.TextTruncate = Enum.TextTruncate.AtEnd
     name.Parent = row
+
+    -- Target: make this player the current target (and turn Target Select on so
+    -- the pick actually takes effect; Lock-On / Highlight act on it if they're on).
+    local tgt = Instance.new("TextButton")
+    tgt.Size = UDim2.fromOffset(48, 20)
+    tgt.Position = UDim2.new(1, -110, 0.5, -10)
+    tgt.AutoButtonColor = true
+    tgt.BackgroundColor3 = theme.accent
+    tgt.TextColor3 = theme.fg
+    tgt.Font = theme.fontBold
+    tgt.TextSize = 10
+    tgt.BorderSizePixel = 0
+    tgt.Text = "Target"
+    tgt.Parent = row
+    tgt.MouseButton1Click:Connect(function()
+        feature.setEnabled("aim.target_select", true)
+        state.setTarget(plr, "player")
+    end)
 
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.fromOffset(54, 20)

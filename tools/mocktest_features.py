@@ -149,10 +149,15 @@ local REAL={ ["core.signal"]=true, ["ui.theme"]=true, ["ui.components"]=true, ["
   ["modules.friendlies"]=true }
 local cache={}
 local ENV
+local FEATURE_CALLS={}
 local function stub(name)
   if name=="ui.window" then return { parent=function() return newInstance("Folder") end } end
   if name=="core.log" then return { info=function() end, warn=function() end, error=function() end, debug=function() end } end
   if name=="core.env" then return { guiParent=function() return newInstance("Folder") end, protectGui=function() end } end
+  if name=="ui.feature" then return {
+    setEnabled=function(id,v) FEATURE_CALLS[#FEATURE_CALLS+1]=real.tostring(id).."="..real.tostring(v) end,
+    getEnabled=function() return false end, declare=function() return {root=newInstance("Frame")} end,
+    addInvokable=function() end, all=function() return {} end, fire=function() end } end
   return real.setmetatable({}, {__index=function() return function() end end})
 end
 local function myrequire(name)
@@ -240,6 +245,22 @@ else
   if allBtn then
     real.pcall(function() allBtn._events.MouseButton1Click:Fire() end)
     out.friendlies_after_all=countFriendlies()
+  end
+
+  -- Target button: clicking it sets state.target to that player + enables Target Select
+  state.setTarget(nil,nil)
+  local tgtBtn
+  for _,o in real.ipairs(ALL_INSTANCES) do
+    if not o._destroyed and o.ClassName=="TextButton" and o._props.Text=="Target" then tgtBtn=o; break end
+  end
+  out.target_button_present=(tgtBtn~=nil)
+  if tgtBtn then
+    real.pcall(function() tgtBtn._events.MouseButton1Click:Fire() end)
+    out.after_target_click = state.target and (state.target.Name or "set") or "nil"
+    out.after_target_type  = state.target_type or "nil"
+    local sawEnable=false
+    for _,c in real.ipairs(FEATURE_CALLS) do if c=="aim.target_select=true" then sawEnable=true end end
+    out.target_enabled_select = sawEnable
   end
 end
 
