@@ -34,6 +34,9 @@ window.init()
 local aim = require("modules.aim.init")
 aim.register()
 
+local friendlies = require("modules.friendlies")
+friendlies.register()
+
 local tech = require("modules.tech.init")
 tech.register()
 
@@ -66,6 +69,7 @@ genv.Pantheon.shutdown = function()
     -- Re-Execute) with no matching teardown.
     pcall(function() if gameMod and gameMod.destroy then gameMod.destroy() end end)
     pcall(function() if aim.destroy      then aim.destroy()      end end)
+    pcall(function() if friendlies.destroy then friendlies.destroy() end end)
     pcall(function() if tech.destroy     then tech.destroy()     end end)
     pcall(function() if system.destroy   then system.destroy()   end end)
     pcall(function() if window.destroy     then window.destroy()     end end)
