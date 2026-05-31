@@ -49,8 +49,12 @@ local function targetChar()
     if t then
         return (state.target_type == "npc") and t or t.Character
     end
-    local best = targeting.getBestTarget()
-    return best and best.Character or nil
+    -- Fallback: nearest valid target when Target Select hasn't engaged. Mirror the
+    -- (target, type) handling above -- with Bot Mode on, best may be an NPC Model,
+    -- and reading `.Character` off a Model throws ("not a valid member").
+    local best, ty = targeting.getBestTarget()
+    if not best then return nil end
+    return (ty == "npc") and best or best.Character
 end
 
 local function ratioPointPerfect()
