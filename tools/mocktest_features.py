@@ -41,7 +41,17 @@ local UDim2 = { new=function(a,b,c,d) return UDim2new(a,b,c,d) end,
 local UDim = { new=function(s,o) return {Scale=s or 0,Offset=o or 0} end }
 local Color3 = { new=function(r,g,b) return {_color3=true,R=r or 0,G=g or 0,B=b or 0} end,
   fromRGB=function(r,g,b) return {_color3=true,R=(r or 0)/255,G=(g or 0)/255,B=(b or 0)/255} end }
-local function V(x,y,z) return {_vector=true,X=x or 0,Y=y or 0,Z=z or 0,Magnitude=0} end
+
+-- Vectors WITH arithmetic (targeting does distance math: (a-b).Magnitude).
+local VMT={}
+local function V(x,y,z) return real.setmetatable({_vector=true,X=x or 0,Y=y or 0,Z=z or 0}, VMT) end
+VMT.__sub=function(a,b) return V(a.X-b.X,a.Y-b.Y,a.Z-b.Z) end
+VMT.__add=function(a,b) return V(a.X+b.X,a.Y+b.Y,a.Z+b.Z) end
+VMT.__index=function(t,k)
+  if k=="Magnitude" then return real.math.sqrt(t.X*t.X+t.Y*t.Y+t.Z*t.Z) end
+  if k=="Unit" then local m=real.math.sqrt(t.X*t.X+t.Y*t.Y+t.Z*t.Z); if m<=0 then return V(0,0,0) end return V(t.X/m,t.Y/m,t.Z/m) end
+  return nil
+end
 local Vector2 = { new=function(x,y) return V(x,y,0) end }
 local Vector3 = { new=function(x,y,z) return V(x,y,z) end }
 local Rect = { new=function(a,b,c,d) return {_rect=true,a,b,c,d} end }
@@ -57,7 +67,8 @@ local function newEvent(name)
 end
 
 local EVENT_NAMES={MouseButton1Click=true,InputBegan=true,InputChanged=true,InputEnded=true,
-  FocusLost=true,Changed=true,ChildAdded=true,ChildRemoved=true,Heartbeat=true,RenderStepped=true,Stepped=true}
+  FocusLost=true,Changed=true,ChildAdded=true,ChildRemoved=true,Heartbeat=true,RenderStepped=true,
+  Stepped=true,CharacterAdded=true}
 local VEC_PROPS={AbsoluteSize=true,AbsolutePosition=true,AbsoluteContentSize=true}
 
 local InstanceMT
@@ -70,14 +81,13 @@ local function setParent(self,parent)
   self._props.Parent=parent
   if parent then parent._children[#parent._children+1]=self end
 end
--- Method table in proper `self` style: colon calls (inst:Method(args)) pass the
--- instance as self, so params line up correctly (the earlier captured-self,
--- shifted-params version made inst:GetPropertyChangedSignal("X") see X as self).
 local METHODS={}
 function METHODS:GetChildren() local t={} for i,c in real.ipairs(self._children) do t[i]=c end return t end
+function METHODS:GetDescendants() local o={}; local function rec(n) for _,c in real.ipairs(n._children) do o[#o+1]=c; rec(c) end end; rec(self); return o end
 function METHODS:FindFirstChild(n) for _,c in real.ipairs(self._children) do if c.Name==n then return c end end return nil end
 function METHODS:FindFirstChildOfClass(cl) for _,c in real.ipairs(self._children) do if c.ClassName==cl then return c end end return nil end
 function METHODS:IsA(cl) return self.ClassName==cl or cl=="GuiObject" or cl=="Instance" end
+function METHODS:IsDescendantOf(anc) local p=self._props.Parent; while p do if p==anc then return true end p=p._props.Parent end return false end
 function METHODS:Destroy() setParent(self,nil); self._destroyed=true end
 function METHODS:GetPropertyChangedSignal(p) self._changed[p]=self._changed[p] or newEvent("chg:"..real.tostring(p)); return self._changed[p] end
 InstanceMT={
@@ -94,21 +104,37 @@ InstanceMT={
 local ALL_INSTANCES={}
 local Instance={ new=function(cls,parent) local o=newInstance(cls); if parent then setParent(o,parent) end; ALL_INSTANCES[#ALL_INSTANCES+1]=o; return o end }
 
--- services
+-- world + services
+local Workspace=newInstance("Workspace"); Workspace.CurrentCamera=newInstance("Camera"); Workspace.CurrentCamera.ViewportSize=V(1280,720,0)
+Workspace.CurrentCamera.CFrame={Position=V(0,5,-15),LookVector=V(0,0,1)}
+local function mkChar(name,pos)
+  local m=newInstance("Model"); m.Name=name; setParent(m,Workspace)
+  local hrp=newInstance("Part"); hrp.Name="HumanoidRootPart"; hrp.Position=pos; setParent(hrp,m)
+  local hum=newInstance("Humanoid"); hum.Health=100; hum.MaxHealth=100; setParent(hum,m)
+  return m
+end
+
 local LocalPlayer=newInstance("Player"); LocalPlayer.Name="Tester"; LocalPlayer.UserId=1
-local function mkPlayer(name,disp,uid) local p=newInstance("Player"); p.Name=name; p.DisplayName=disp; p.UserId=uid; return p end
+LocalPlayer.Character=mkChar("TesterChar", V(0,0,0))
+local function mkPlayer(name,disp,uid,pos)
+  local p=newInstance("Player"); p.Name=name; p.DisplayName=disp; p.UserId=uid
+  if pos then p.Character=mkChar(name.."Char", pos) end
+  return p
+end
 local Players=newInstance("Players"); Players.LocalPlayer=LocalPlayer
-local roster={ LocalPlayer, mkPlayer("Alice","Alice",11), mkPlayer("Bob","Bobby",22), mkPlayer("Cara","Cara",33) }
+local pAlice=mkPlayer("Alice","Alice",11, V(10,0,0))
+local roster={ LocalPlayer, pAlice, mkPlayer("Bob","Bobby",22,nil), mkPlayer("Cara","Cara",33,nil) }
 function Players:GetPlayers() local t={} for i,p in real.ipairs(roster) do t[i]=p end return t end
+function Players:GetPlayerFromCharacter(ch) for _,p in real.ipairs(roster) do if p.Character==ch then return p end end return nil end
 Players.PlayerAdded=newEvent("PlayerAdded"); Players.PlayerRemoving=newEvent("PlayerRemoving")
 
-local Workspace=newInstance("Workspace"); Workspace.CurrentCamera=newInstance("Camera"); Workspace.CurrentCamera.ViewportSize=V(1280,720,0)
+-- NPCs in the workspace (Models with Humanoid + HRP, not owned by a player)
+local mob1=mkChar("Mob1", V(5,0,0))    -- closest overall
+local mob2=mkChar("Mob2", V(50,0,0))
+
 local SERVICES={ Players=Players, UserInputService=newInstance("UserInputService"),
   RunService=newInstance("RunService"), Workspace=Workspace, TweenService=newInstance("TweenService"),
   VirtualInputManager=newInstance("VirtualInputManager"), Stats=newInstance("Stats"), ReplicatedStorage=newInstance("ReplicatedStorage") }
-function SERVICES.RunService:BindToRenderStep() end
-function SERVICES.RunService:UnbindFromRenderStep() end
-function SERVICES.VirtualInputManager:SendMouseButtonEvent() end
 local game=newInstance("DataModel"); game.PlaceId=123; game.GameId=456; game.Workspace=Workspace
 function game:GetService(n) SERVICES[n]=SERVICES[n] or newInstance(n); return SERVICES[n] end
 local workspace=Workspace
@@ -118,15 +144,15 @@ function task.spawn(fn,...) local ok,e=real.pcall(fn,...); if not ok then ERRORS
 function task.delay(t,fn,...) return end
 function task.wait(t) return t or 0 end
 
--- require shim: load these for real, stub the rest
 local REAL={ ["core.signal"]=true, ["ui.theme"]=true, ["ui.components"]=true, ["ui.container"]=true,
-  ["modules.aim.state"]=true, ["modules.aim.targeting"]=true,
-  ["modules.friendlies"]=true, ["modules.aim.bot"]=true }
+  ["modules.aim.state"]=true, ["modules.aim.targeting"]=true, ["modules.aim.highlight"]=true,
+  ["modules.friendlies"]=true }
 local cache={}
 local ENV
 local function stub(name)
   if name=="ui.window" then return { parent=function() return newInstance("Folder") end } end
   if name=="core.log" then return { info=function() end, warn=function() end, error=function() end, debug=function() end } end
+  if name=="core.env" then return { guiParent=function() return newInstance("Folder") end, protectGui=function() end } end
   return real.setmetatable({}, {__index=function() return function() end end})
 end
 local function myrequire(name)
@@ -138,76 +164,83 @@ local function myrequire(name)
   local s=stub(name); cache[name]=s; return s
 end
 
+-- Roblox adds math.clamp (Lua 5.5 lacks it); shim it, fall through for the rest.
+local mathShim=real.setmetatable({ clamp=function(x,lo,hi) if x<lo then return lo elseif x>hi then return hi else return x end end }, { __index=real.math })
+
 ENV=real.setmetatable({ Instance=Instance, Enum=Enum, UDim2=UDim2, UDim=UDim, Color3=Color3,
   Vector2=Vector2, Vector3=Vector3, Rect=Rect, ColorSequence=ColorSequence,
-  ColorSequenceKeypoint=ColorSequenceKeypoint, game=game, workspace=workspace, typeof=typeof,
+  ColorSequenceKeypoint=ColorSequenceKeypoint, RaycastParams=real.setmetatable({new=function() return {} end},{}),
+  game=game, workspace=workspace, typeof=typeof, math=mathShim,
   task=task, require=myrequire, warn=function() end, print=real.print,
   tick=os.clock, time=os.time }, { __index=_G })
 
 local out={ steps={} }
 local function log(s) out.steps[#out.steps+1]=s end
-local function descendants(node) local o={}; local function rec(n) for _,c in real.ipairs(n._children) do o[#o+1]=c; rec(c) end end; rec(node); return o end
 
--- ============ FRIENDLIES ============
+-- ============ TARGETING: bot mode (npc) ============
 local state=myrequire("modules.aim.state")
-local function countFriendlies()
-  local n=0; for _,v in real.pairs(state.friendlies) do if v then n=n+1 end end; return n
+local targeting=myrequire("modules.aim.targeting")
+
+-- defaults: realistic/visibility off, so isInFront/isVisible short-circuit true
+local t1,ty1 = targeting.getBestTarget()
+out.botoff_target = t1 and t1.Name or "nil"
+out.botoff_type   = ty1 or "nil"          -- expect Alice / player (npcs ignored)
+
+state.botMode = true
+local t2,ty2 = targeting.getBestTarget()
+out.boton_target = t2 and t2.Name or "nil"
+out.boton_type   = ty2 or "nil"           -- expect Mob1 / npc (closest at 5)
+
+-- swap should exclude current + return the next-best (Alice, player)
+local t3,ty3 = targeting.getBestTarget(t2)
+out.swap_target = t3 and t3.Name or "nil"
+out.swap_type   = ty3 or "nil"
+
+-- isFriendly must NOT throw on an NPC model, and must be false
+local okf, fr = real.pcall(function() return state.isFriendly(t2) end)
+out.isfriendly_npc_ok = okf
+out.isfriendly_npc_val = okf and fr or real.tostring(fr)
+
+-- ============ HIGHLIGHT on an NPC target (the outline bug) ============
+local highlight=myrequire("modules.aim.highlight")
+state.target = t2; state.target_type = "npc"   -- mirror what setTarget would do
+local okh, errh = real.pcall(function()
+  highlight.update(t2, function(ex) return targeting.getBestTarget(ex) end)
+end)
+out.highlight_npc_ok = okh
+if not okh then out.highlight_npc_err = real.tostring(errh) end
+-- did the NPC actually get a Highlight adorned to its model?
+local adorned=false
+for _,o in real.ipairs(ALL_INSTANCES) do
+  if o.ClassName=="Highlight" and o._props.Adornee==t2 then adorned=true end
 end
-local function scan()
-  local avatars, allBtn, friendlyBtns = 0, nil, 0
+out.npc_outline_adorned = adorned
+for _,e in real.ipairs(ERRORS) do log("[swallowed] "..e) end
+
+-- ============ FRIENDLIES panel still builds + All button ============
+local function countFriendlies() local n=0 for _,v in real.pairs(state.friendlies) do if v then n=n+1 end end return n end
+local function scanAll()
+  local av, allBtn = 0, nil
   for _,o in real.ipairs(ALL_INSTANCES) do
     if not o._destroyed then
-      if o.ClassName=="ImageLabel" and real.type(o._props.Image)=="string"
-         and o._props.Image:find("rbxthumb",1,true) then avatars=avatars+1 end
-      if o.ClassName=="TextButton" and o._props.Text then
-        local t=real.tostring(o._props.Text)
-        if t=="All" or t:find("ALL",1,true) then allBtn=o end
-        if t=="FRIENDLY" or t=="neutral" then friendlyBtns=friendlyBtns+1 end
-      end
+      if o.ClassName=="ImageLabel" and real.type(o._props.Image)=="string" and o._props.Image:find("rbxthumb",1,true) then av=av+1 end
+      if o.ClassName=="TextButton" and o._props.Text then local t=real.tostring(o._props.Text)
+        if t=="All" or t:find("ALL",1,true) then allBtn=o end end
     end
   end
-  return avatars, allBtn, friendlyBtns
+  return av, allBtn
 end
-
 local okF, Friendlies = real.pcall(myrequire, "modules.friendlies")
 if not okF then out.friendlies_require="THREW: "..real.tostring(Friendlies)
 else
   local ok2,err2=real.pcall(function() Friendlies.register() end)
-  out.register_ok=ok2; if not ok2 then out.register_err=real.tostring(err2) end
-  for _,e in real.ipairs(ERRORS) do log("[swallowed] "..e) end
-
-  local av, allBtn, fb = scan()
-  out.avatars_shown=av                  -- expect 3 (Alice/Bob/Cara, not self)
-  out.friendly_buttons=fb               -- expect 3
-  out.all_button_present=(allBtn~=nil)
-  out.friendlies_before=countFriendlies()  -- expect 0
-
+  out.friendlies_register_ok=ok2; if not ok2 then out.friendlies_register_err=real.tostring(err2) end
+  local av, allBtn = scanAll()
+  out.avatars_shown=av; out.all_button=(allBtn~=nil)
   if allBtn then
-    local okc,errc=real.pcall(function() allBtn._events.MouseButton1Click:Fire() end)
-    out.all_click_ok=okc; if not okc then out.all_click_err=real.tostring(errc) end
-    out.friendlies_after_all_on=countFriendlies()    -- expect 3
-
-    local _,allBtn2=scan()  -- rebuild replaced the button; grab the fresh one
-    if allBtn2 then allBtn2._events.MouseButton1Click:Fire() end
-    out.friendlies_after_all_off=countFriendlies()   -- expect 0
+    real.pcall(function() allBtn._events.MouseButton1Click:Fire() end)
+    out.friendlies_after_all=countFriendlies()
   end
-end
-
--- ============ BOT ============
-local okB, Bot = real.pcall(myrequire, "modules.aim.bot")
-if not okB then out.bot_require="THREW: "..real.tostring(Bot)
-else
-  local ok3,e3=real.pcall(function()
-    Bot.init()
-    Bot.setAutoAttack(true); Bot.setAttackInterval(0.25); Bot.setReacquire(true)
-    Bot.setEnabled(true)
-    -- fire Heartbeat a few times (no character -> getBestTarget returns nil -> safe)
-    local hb=SERVICES.RunService.Heartbeat
-    for i=1,3 do hb:Fire(1/60) end
-    Bot.setEnabled(false)
-  end)
-  out.bot_ok=ok3; if not ok3 then out.bot_err=real.tostring(e3) end
-  for _,e in real.ipairs(ERRORS) do log("[bot swallowed] "..e) end
 end
 
 local function ser(v,ind) ind=ind or ""

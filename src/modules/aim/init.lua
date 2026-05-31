@@ -11,7 +11,6 @@ local shiftlock    = require("modules.aim.shiftlock")
 local rotationLock = require("modules.aim.rotation_lock")
 local lockon       = require("modules.aim.lockon")
 local targetSelect = require("modules.aim.target_select")
-local bot          = require("modules.aim.bot")
 local log          = require("core.log")
 
 local module = {}
@@ -23,7 +22,6 @@ function module.register()
     rotationLock.init()
     lockon.init()
     targetSelect.init()
-    bot.init()
     -- Shiftlock's rotation pin yields while Rotation Lock drives the body so
     -- the two don't fight over the character's facing.
     shiftlock.setExternalSkipRotation(function()
@@ -114,6 +112,11 @@ function module.register()
         settings = {
             { type = "toggle", name = "Hold mode (vs toggle)", default = false,
               onChange = function(v) targetSelect.setHoldMode(v) end },
+            -- Bot Mode: also consider NPCs / mobs (anything with a Humanoid that
+            -- isn't a player), not just other players. Lock-On / Rotation Lock /
+            -- Highlight all handle an NPC target the same as a player one.
+            { type = "toggle", name = "Bot Mode (lock onto NPCs)", key = "bot_mode", default = false,
+              onChange = function(v) state.botMode = v and true or false end },
             { type = "toggle", name = "Skip dead / shielded", default = true,
               onChange = function(v) state.checkHealthEnabled = v end },
             { type = "slider", name = "Range (0 = inf)",
@@ -181,29 +184,6 @@ function module.register()
         },
     }).root)
 
-    -- Bot Mode: hands-free auto-combat. Auto-acquires the nearest enemy and keeps
-    -- it locked so the aim stack (camera / rotation) tracks it without holding the
-    -- Target Select key. Depends on Lock-On (which depends on Target Select), so
-    -- one toggle turns the whole aim stack on. Friendlies are skipped automatically.
-    combat:add(feature.declare({
-        id           = "aim.bot",
-        name         = "Bot Mode",
-        description  = "Hands-free auto-combat. Continuously locks onto the nearest valid (non-friendly) enemy and keeps it engaged so Lock-On tracks it without holding the Target Select key. Turn on Rotation Lock (in Lock-On) too if you want your body to face them for melee. Optional Auto-attack fires left-clicks on an interval. Mark teammates in the Friendlies panel so the bot ignores them.",
-        default      = false,
-        defaultKey   = Enum.KeyCode.B,
-        dependencies = { "aim.lockon" },
-        onToggle     = function(v) bot.setEnabled(v) end,
-        settings = {
-            { type = "toggle", name = "Auto-attack (left click)", key = "auto_attack", default = false,
-              onChange = function(v) bot.setAutoAttack(v) end },
-            { type = "slider", name = "Attack interval (s)", key = "attack_interval",
-              min = 0.1, max = 1, step = 0.05, default = 0.4,
-              onChange = function(v) bot.setAttackInterval(v) end },
-            { type = "toggle", name = "Re-acquire on target death", key = "reacquire", default = true,
-              onChange = function(v) bot.setReacquire(v) end },
-        },
-    }).root)
-
     -- Swap Target: cycles to the next-best target while Target Select is engaged.
     -- Depends on Target Select (nothing to swap from without a current target).
     combat:add(feature.declare({
@@ -241,7 +221,6 @@ function module.register()
 end
 
 function module.destroy()
-    pcall(function() if bot.destroy          then bot.destroy()          end end)
     pcall(function() if targetSelect.destroy then targetSelect.destroy() end end)
     pcall(function() if rotationLock.destroy then rotationLock.destroy() end end)
     pcall(function() if lockon.destroy       then lockon.destroy()       end end)

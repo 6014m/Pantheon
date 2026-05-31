@@ -10,6 +10,9 @@ local state = {
 
     -- Target Select
     target_select_enabled = false,
+    -- Bot Mode: when true, Target Select also considers NPCs / mobs (any model
+    -- with a Humanoid that isn't a player), targeted as target_type == "npc".
+    botMode               = false,
 
     -- Targeting filters
     realisticEnabled       = false,
@@ -117,7 +120,10 @@ function state.setTarget(target, type_)
 end
 
 function state.isFriendly(plr)
-    if not plr or not plr.UserId then return false end
+    -- Guard with IsA: an NPC target (a Model) reaches here via Highlight's
+    -- friendly check, and reading `.UserId` off a Model throws ("not a valid
+    -- member of Model"). Only players can ever be friendlies anyway.
+    if not plr or not plr:IsA("Player") then return false end
     return state.friendlies[plr.UserId] == true
 end
 

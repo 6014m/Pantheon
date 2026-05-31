@@ -32,17 +32,17 @@ local function releaseTarget()
 end
 
 local function engageTarget()
-    local t = targeting.getBestTarget()
+    local t, ty = targeting.getBestTarget()
     if not t then return false end
-    state.setTarget(t, "player")
+    state.setTarget(t, ty)
     return true
 end
 
 function TargetSelect.swapTarget()
     if not state.swap_enabled then return end
     if not state.target_select_enabled or not state.target then return end
-    local next_ = targeting.getBestTarget(state.target)
-    if next_ then state.setTarget(next_, "player") end
+    local next_, ty = targeting.getBestTarget(state.target)
+    if next_ then state.setTarget(next_, ty) end
 end
 
 local function step()

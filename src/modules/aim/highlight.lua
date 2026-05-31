@@ -12,13 +12,22 @@ local Highlight = {}
 local RED    = Color3.fromRGB(255, 60, 60)
 local YELLOW = Color3.fromRGB(255, 215, 40)
 
-local highlights = {} -- [Player] = Highlight instance
+local highlights = {} -- [target] = Highlight instance  (target = Player OR NPC model)
+
+-- Resolve the character to outline: a Player target outlines its .Character; an
+-- NPC target IS its own character model. Works for both the primary (red) target
+-- and the next-best (yellow) one, whose type isn't tracked in state.
+local function charOf(target)
+    if not target then return nil end
+    if target:IsA("Player") then return target.Character end
+    return target
+end
 
 -- outline ---------------------------------------------------------------------
 local function setHighlight(plr, color, on)
     local h = highlights[plr]
     if on then
-        local char = plr.Character
+        local char = charOf(plr)
         if not char then
             if h then h:Destroy() end; highlights[plr] = nil; return
         end
@@ -101,8 +110,8 @@ end
 
 local function updateInfo(currentTarget)
     if not state.targetInfoEnabled or not currentTarget then hideInfo(); return end
-    local isNpc = state.target_type == "npc"
-    local char  = isNpc and currentTarget or currentTarget.Character
+    local isNpc = not currentTarget:IsA("Player")
+    local char  = charOf(currentTarget)
     local hum   = char and char:FindFirstChildOfClass("Humanoid")
     if not hum then hideInfo(); return end
 
