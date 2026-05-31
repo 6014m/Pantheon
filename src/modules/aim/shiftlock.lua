@@ -205,7 +205,11 @@ end
 --
 -- Persists `realOriginal` across re-installs so if a foreign script also hooks
 -- __newindex and we re-install on top of theirs, we still pass through to the
--- real engine setter at the end of the chain (not theirs).
+-- real engine setter at the end of the chain (not theirs). The TRUE engine
+-- setter is additionally cached in getgenv() (PANTHEON_UIS_NEWINDEX), which
+-- survives teleports + Auto Re-Execute -- see installMouseBehaviorHook for why
+-- that stops the hook chain (and its per-write cost) growing on every teleport.
+local genv = (env.getgenv and env.getgenv()) or _G
 local realOriginal = nil
 
 -- Forward declarations. These are referenced by closures defined ABOVE their
@@ -277,11 +281,21 @@ local function installMouseBehaviorHook()
         return false
     end
 
-    -- First successful install: returned IS the real engine setter. Save it.
-    -- Subsequent re-installs: returned is our PREVIOUS hook (or a foreign
-    -- script's hook that has chained on top of us). Discard it so the chain
-    -- stays at depth-1 and we always pass through to the real original.
-    if not realOriginal then realOriginal = returned end
+    -- First install in this executor session: `returned` IS the real engine
+    -- setter -- stash it in getgenv(), which survives teleports + re-executes.
+    -- Every later install (including a freshly re-executed instance after a
+    -- teleport) then chains to THAT real original instead of to the previous
+    -- wrapped hook, so the previous hook is left unreferenced (GC'd) rather than
+    -- chained-through. Before this, each Auto Re-Execute stacked another live
+    -- hook layer on the persistent UserInputService: the chain -- and the
+    -- pcall(shouldBlock) paid on EVERY Instance property write game-wide -- grew
+    -- unbounded across a teleport-heavy session (JJS lobby<->match), the slow
+    -- "Roblox closes itself after a while" leak. A re-install's `returned` (our
+    -- previous hook, or a foreign hook chained atop us) is deliberately discarded.
+    if not genv.PANTHEON_UIS_NEWINDEX then
+        genv.PANTHEON_UIS_NEWINDEX = returned
+    end
+    realOriginal = genv.PANTHEON_UIS_NEWINDEX
 
     if not self_state.hookInstalled then
         log.info("shiftlock: MouseBehavior hook installed (foreign writes will be blocked)")

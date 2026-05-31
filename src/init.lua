@@ -60,6 +60,11 @@ end
 -- __newindex, so leftover input events from the about-to-die UI don't reach
 -- already-torn-down state), then UI, then keybinds, then persist flush.
 genv.Pantheon.shutdown = function()
+    -- Per-game module FIRST, while aim/shiftlock are still alive, so it can undo
+    -- state it set on register (e.g. JJS force-enables shiftlock PAIR mode).
+    -- Without this the game module's register() re-ran on every teleport (Auto
+    -- Re-Execute) with no matching teardown.
+    pcall(function() if gameMod and gameMod.destroy then gameMod.destroy() end end)
     pcall(function() if aim.destroy      then aim.destroy()      end end)
     pcall(function() if tech.destroy     then tech.destroy()     end end)
     pcall(function() if system.destroy   then system.destroy()   end end)

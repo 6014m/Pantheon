@@ -230,6 +230,20 @@ function JJS.register()
     log.info("JJS module registered -- Nanami Perfect Special (Ratio Point, 70-stud range)")
 end
 
+-- Called by init.lua's shutdown (Auto Re-Execute / re-execute). register() runs
+-- again on every boot, so anything it changed on shared modules must be undone
+-- here or it compounds across teleports. The "Jujutsu Shenanigans" container,
+-- the Nanami feature row, and its keybind are torn down by window.destroy /
+-- keybinds.destroy; what's left is the module-level state below.
+function JJS.destroy()
+    enabled = false
+    lastScanReport = -1
+    -- register() force-enabled shiftlock PAIR (mirror) mode for JJS; undo it so a
+    -- re-execute or a hop to a non-JJS place doesn't leave Pantheon mirroring a
+    -- game shiftlock that isn't there.
+    pcall(function() shiftlock.setShiftlockMirror(false) end)
+end
+
 registry.register(JJS_IDS, JJS)
 
 return JJS
