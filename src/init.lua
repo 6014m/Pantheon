@@ -34,7 +34,7 @@ window.init()
 -- The single navigator menu: built first so it's the left-most panel and stays
 -- visible. Every container created after this starts hidden and is opened/closed
 -- from the navigator (Wurst-style) instead of all menus showing at once.
-local nav = container.buildNavigator(window.parent())
+local nav = container.buildNavigator(window.parent(), "Menu")
 container.startHidden = true
 
 -- Universal modules
@@ -49,6 +49,9 @@ tech.register()
 
 local system = require("modules.system")
 system.register()
+
+local aesthetic = require("modules.aesthetic")
+aesthetic.register()
 
 -- Per-game modules self-register on require; pull them in so registry.current()
 -- can find one for this PlaceId. (Requiring in a non-matching game just adds to
@@ -83,6 +86,7 @@ genv.Pantheon.shutdown = function()
     pcall(function() if friendlies.destroy then friendlies.destroy() end end)
     pcall(function() if tech.destroy     then tech.destroy()     end end)
     pcall(function() if system.destroy   then system.destroy()   end end)
+    pcall(function() if aesthetic.destroy then aesthetic.destroy() end end)
     pcall(function() if window.destroy     then window.destroy()     end end)
     pcall(function() if components.destroy then components.destroy() end end)
     pcall(function() if notify.destroy     then notify.destroy()     end end)

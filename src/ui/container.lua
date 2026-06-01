@@ -8,7 +8,8 @@
 -- features are added, we update the gradient stops to keep the seam at the
 -- same absolute pixel height.
 
-local theme = require("ui.theme")
+local theme   = require("ui.theme")
+local persist = require("core.persist")
 
 local UIS = game:GetService("UserInputService")
 
@@ -32,6 +33,16 @@ local instances = {}
 -- them on. The navigator itself is built with this still false so it stays
 -- visible. Reset on cleanup so a re-execute starts fresh.
 Container.startHidden = false
+
+-- Auto-placement: opened containers without a user-saved position pack into
+-- slots immediately to the right of the navigator (slot 0 = nearest). Closing
+-- one frees its slot. navRef points at the navigator so the slots follow it
+-- even if the user drags it.
+local slots  = {}
+local navRef = nil
+
+local function posKey(name)  return "ui.pos."  .. persist.slug(name) end
+local function openKey(name) return "ui.open." .. persist.slug(name) end
 
 local IMAGE_ID     = "rbxassetid://77797049442743"
 local CHAMFER      = 24
@@ -160,7 +171,18 @@ function Container.new(parent, name)
         dragConns[#dragConns + 1] = UIS.InputEnded:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1
                or input.UserInputType == Enum.UserInputType.Touch then
-                dragging = false
+                if dragging then
+                    dragging = false
+                    -- A real drag (not just a click) pins this container: save
+                    -- the spot so it reopens here, and free its auto-slot.
+                    local p = container.Position
+                    if startPos and (p.X.Offset ~= startPos.X.Offset
+                                     or p.Y.Offset ~= startPos.Y.Offset) then
+                        self.userMoved = true
+                        self:_freeSlot()
+                        persist.set(posKey(name), { x = p.X.Offset, y = p.Y.Offset })
+                    end
+                end
             end
         end)
     end
@@ -169,6 +191,14 @@ function Container.new(parent, name)
     self.features = features
     self.name     = name
     self._count   = 0
+
+    -- Restore a user-dragged position if we saved one before; otherwise the
+    -- navigator auto-places us next to it on open.
+    local sp = persist.get(posKey(name))
+    if type(sp) == "table" and tonumber(sp.x) and tonumber(sp.y) then
+        self.userMoved = true
+        container.Position = UDim2.fromOffset(tonumber(sp.x), tonumber(sp.y))
+    end
 
     -- Start hidden when the navigator is driving visibility; it flips us on.
     self.visible = not Container.startHidden
@@ -182,10 +212,34 @@ function Container:isVisible()
     return self.visible ~= false
 end
 
+-- Place an auto-positioned (not user-moved) container in the first free slot to
+-- the right of the navigator. No-op if the user dragged it (honor the saved
+-- spot) or it already holds a slot.
+function Container:_placeIfNeeded()
+    if self.userMoved or self.slot ~= nil then return end
+    local k = 0
+    while slots[k] ~= nil do k = k + 1 end
+    slots[k] = self
+    self.slot = k
+    local w, gap = theme.containerWidth, theme.containerGap
+    local baseX, baseY = 16 + w + gap, 16
+    if navRef and navRef.root then
+        baseX = navRef.root.Position.X.Offset + w + gap
+        baseY = navRef.root.Position.Y.Offset
+    end
+    self.root.Position = UDim2.fromOffset(baseX + k * (w + gap), baseY)
+end
+
+function Container:_freeSlot()
+    if self.slot ~= nil then slots[self.slot] = nil; self.slot = nil end
+end
+
 function Container:setVisible(v)
     v = v and true or false
     self.visible = v
     self.root.Visible = v
+    if v then self:_placeIfNeeded() else self:_freeSlot() end
+    persist.set(openKey(self.name), v)
     if self._onVis then self._onVis(v) end
 end
 
@@ -206,6 +260,7 @@ end
 function Container.buildNavigator(parent, title)
     local nav = Container.new(parent, title or "Pantheon")
     nav.isNav = true
+    navRef = nav
 
     function nav.populate()
         for _, c in ipairs(instances) do
@@ -242,6 +297,9 @@ function Container.buildNavigator(parent, title)
                 end)
                 refresh()
                 nav:add(row)
+                -- Restore the saved open/closed state (default closed) so the
+                -- user's layout comes back on reload.
+                c:setVisible(persist.get(openKey(c.name), false) == true)
             end
         end
     end
@@ -257,6 +315,8 @@ function Container.cleanup()
     dragConns = {}
     nextIndex = 0
     instances = {}
+    slots     = {}
+    navRef    = nil
     Container.startHidden = false
 end
 

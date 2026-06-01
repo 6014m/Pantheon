@@ -40,6 +40,7 @@ BUILD_ORDER = [
     "modules/tech/init",
     "modules/friendlies",
     "modules/system",
+    "modules/aesthetic",
     "games/jjs",
     "init",
 ]

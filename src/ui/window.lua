@@ -46,27 +46,39 @@ local function captureOrig(c)
 end
 
 local function animateContainers(showing)
-    -- Snapshot the children in left-to-right order so the slide stagger goes
-    -- in a predictable visual sequence.
+    -- Only the OPEN (visible) containers participate, so the stagger reflects
+    -- what's actually on screen instead of assuming every menu is open (which
+    -- made the slide crawl when most menus were closed).
     local list = {}
     for _, c in ipairs(s.container:GetChildren()) do
-        if c:IsA("GuiObject") then
-            captureOrig(c)
+        if c:IsA("GuiObject") and c.Visible then
             table.insert(list, c)
         end
     end
-    table.sort(list, function(a, b)
-        return origPositions[a].x < origPositions[b].x
-    end)
+
+    -- On hide, capture each container's CURRENT spot as its home so it slides
+    -- back exactly there on the next show (honoring user drags + auto-slots).
+    if not showing then
+        for _, c in ipairs(list) do
+            origPositions[c] = { x = c.Position.X.Offset, y = c.Position.Y.Offset }
+        end
+    end
+
+    local function homeX(c)
+        local h = origPositions[c]
+        return h and h.x or c.Position.X.Offset
+    end
+    table.sort(list, function(a, b) return homeX(a) < homeX(b) end)
 
     for i, c in ipairs(list) do
-        local orig = origPositions[c]
-        local targetX = showing and orig.x or OFF_SCREEN_X
+        local home = origPositions[c] or { x = c.Position.X.Offset, y = c.Position.Y.Offset }
+        origPositions[c] = home
+        local targetX = showing and home.x or OFF_SCREEN_X
 
         -- Pre-position off-screen before the show tween so the user doesn't
         -- see it teleport visually first.
         if showing then
-            c.Position = UDim2.fromOffset(OFF_SCREEN_X, orig.y)
+            c.Position = UDim2.fromOffset(OFF_SCREEN_X, home.y)
         end
 
         task.delay((i - 1) * STAGGER_DELAY, function()
@@ -76,7 +88,7 @@ local function animateContainers(showing)
                 showing and Enum.EasingDirection.Out or Enum.EasingDirection.In
             )
             TweenService:Create(c, info, {
-                Position = UDim2.fromOffset(targetX, orig.y),
+                Position = UDim2.fromOffset(targetX, home.y),
             }):Play()
         end)
     end

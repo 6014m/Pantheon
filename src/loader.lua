@@ -62,6 +62,7 @@ local files = {
     { "modules.tech.builder_ui",   "modules/tech/builder_ui.lua" },
     { "modules.tech.init",         "modules/tech/init.lua" },
     { "modules.system",            "modules/system.lua" },
+    { "modules.aesthetic",         "modules/aesthetic.lua" },
     { "games.jjs",                 "games/jjs.lua" },
     { "init",                      "init.lua" },
 }
