@@ -8,6 +8,7 @@ local env      = require("core.env")
 local persist  = require("core.persist")
 local keybinds   = require("core.keybinds")
 local window     = require("ui.window")
+local container  = require("ui.container")
 local notify     = require("ui.notify")
 local components = require("ui.components")
 local registry   = require("games.registry")
@@ -29,6 +30,12 @@ log.info("booting on executor: " .. tostring(env.executor))
 persist.init()
 keybinds.init()
 window.init()
+
+-- The single navigator menu: built first so it's the left-most panel and stays
+-- visible. Every container created after this starts hidden and is opened/closed
+-- from the navigator (Wurst-style) instead of all menus showing at once.
+local nav = container.buildNavigator(window.parent())
+container.startHidden = true
 
 -- Universal modules
 local aim = require("modules.aim.init")
@@ -57,6 +64,10 @@ if gameMod and gameMod.register then
 else
     log.info("no game module for PlaceId " .. tostring(game.PlaceId))
 end
+
+-- Every module (and any per-game one) has now created its containers; fill the
+-- navigator with a toggle row per menu. They start closed -- click a row to open.
+nav.populate()
 
 -- Expose the teardown so a future re-execute can call it.
 -- Order matters: aim first (it stops render binds and unhooks the UIS

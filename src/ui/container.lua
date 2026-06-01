@@ -24,6 +24,15 @@ local nextIndex = 0
 -- that keeps firing on every mouse move forever.
 local dragConns = {}
 
+-- Every live container, in creation order. The navigator lists these so the
+-- user can open/close each menu (Wurst-style) instead of all showing at once.
+local instances = {}
+
+-- When true, newly-created containers start hidden -- the navigator toggles
+-- them on. The navigator itself is built with this still false so it stays
+-- visible. Reset on cleanup so a re-execute starts fresh.
+Container.startHidden = false
+
 local IMAGE_ID     = "rbxassetid://77797049442743"
 local CHAMFER      = 24
 local SLICE_CENTER = Rect.new(CHAMFER, CHAMFER, 64 - CHAMFER, 64 - CHAMFER)
@@ -161,7 +170,27 @@ function Container.new(parent, name)
     self.name     = name
     self._count   = 0
 
+    -- Start hidden when the navigator is driving visibility; it flips us on.
+    self.visible = not Container.startHidden
+    container.Visible = self.visible
+    instances[#instances + 1] = self
+
     return self
+end
+
+function Container:isVisible()
+    return self.visible ~= false
+end
+
+function Container:setVisible(v)
+    v = v and true or false
+    self.visible = v
+    self.root.Visible = v
+    if self._onVis then self._onVis(v) end
+end
+
+function Container.list()
+    return instances
 end
 
 function Container:add(featureRoot)
@@ -171,6 +200,55 @@ function Container:add(featureRoot)
     return self
 end
 
+-- The single "menu" that opens/closes every other container (Wurst-style).
+-- Build it BEFORE the feature containers (so it's leftmost + stays visible),
+-- then call nav.populate() AFTER all modules register so it lists every menu.
+function Container.buildNavigator(parent, title)
+    local nav = Container.new(parent, title or "Pantheon")
+    nav.isNav = true
+
+    function nav.populate()
+        for _, c in ipairs(instances) do
+            if c ~= nav and not c.isNav then
+                local row = Instance.new("TextButton")
+                row.Name = "Nav_" .. tostring(c.name)
+                row.Size = UDim2.new(1, 0, 0, 26)
+                row.BackgroundColor3 = theme.bgAlt
+                row.AutoButtonColor = true
+                row.BorderSizePixel = 0
+                row.Font = theme.font
+                row.TextSize = 12
+                row.TextColor3 = theme.fg
+                row.TextXAlignment = Enum.TextXAlignment.Left
+                row.Text = "  " .. tostring(c.name)
+
+                local pill = Instance.new("TextLabel")
+                pill.Size = UDim2.fromOffset(42, 16)
+                pill.Position = UDim2.new(1, -46, 0.5, -8)
+                pill.BorderSizePixel = 0
+                pill.Font = theme.fontBold
+                pill.TextSize = 10
+                pill.TextColor3 = theme.fg
+                pill.Parent = row
+
+                local function refresh()
+                    local on = c:isVisible()
+                    pill.Text = on and "ON" or "OFF"
+                    pill.BackgroundColor3 = on and theme.on or theme.off
+                end
+                c._onVis = refresh
+                row.MouseButton1Click:Connect(function()
+                    c:setVisible(not c:isVisible())
+                end)
+                refresh()
+                nav:add(row)
+            end
+        end
+    end
+
+    return nav
+end
+
 -- Disconnect every container's global drag handlers. Called from Window.destroy()
 -- (the UI teardown entry point) so re-execute doesn't stack listeners. Also reset
 -- nextIndex so a fresh boot lays containers out from the left again.
@@ -178,6 +256,8 @@ function Container.cleanup()
     for _, c in ipairs(dragConns) do pcall(function() c:Disconnect() end) end
     dragConns = {}
     nextIndex = 0
+    instances = {}
+    Container.startHidden = false
 end
 
 return Container
