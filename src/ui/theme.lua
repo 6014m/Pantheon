@@ -45,7 +45,7 @@ local theme = {
     -- Sizes
     containerWidth = 220,
     containerGap   = 12,
-    gridSize       = 16,   -- drag-snap grid (px) for containers + the P button
+    gridSize       = 48,   -- drag-snap grid (px) for containers + the P button
     featureHeight  = 30,
     rowHeight      = 30,
     cornerRadius   = UDim.new(0, 0),
