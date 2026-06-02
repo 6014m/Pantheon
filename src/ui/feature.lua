@@ -331,6 +331,23 @@ function Feature.declare(def)
                     if not ok then warn("[Pantheon] setting init error:", err) end
                 end
 
+            elseif opt.type == "dropdown" then
+                local saved     = persist.get(saveKey)
+                local effective = resolveSaved(saved, opt.default)
+                components.Dropdown(panel, {
+                    label    = opt.name,
+                    options  = opt.options,
+                    default  = effective,
+                    onChange = function(v)
+                        persist.set(saveKey, v)
+                        if opt.onChange then opt.onChange(v) end
+                    end,
+                })
+                if opt.onChange then
+                    local ok, err = pcall(opt.onChange, effective)
+                    if not ok then warn("[Pantheon] setting init error:", err) end
+                end
+
             elseif opt.type == "button" then
                 components.Button(panel, {
                     text    = opt.name,

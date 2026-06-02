@@ -306,6 +306,70 @@ function components.KeybindSetter(parent, opts)
     }
 end
 
+-- Dropdown: a header row showing the current value; clicking it expands an
+-- inline list of options below (pushes following rows down via the panel's
+-- UIListLayout -- no overlay z-fighting). Returns api:Get()/api:Set(v).
+function components.Dropdown(parent, opts)
+    opts = opts or {}
+    local options  = opts.options or {}
+    local value    = opts.default or options[1]
+    local onChange = opts.onChange
+
+    local root = Instance.new("Frame")
+    root.Size = UDim2.new(1, 0, 0, 0)
+    root.AutomaticSize = Enum.AutomaticSize.Y
+    root.BackgroundTransparency = 1
+    root.Parent = parent
+    local rl = Instance.new("UIListLayout", root)
+    rl.SortOrder = Enum.SortOrder.LayoutOrder
+    rl.Padding = UDim.new(0, 2)
+
+    local header = baseRow(root, 28)
+    header.LayoutOrder = 1
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(0.5, -10, 1, 0); label.Position = UDim2.fromOffset(10, 0)
+    label.BackgroundTransparency = 1; label.Text = opts.label or "Select"
+    label.TextColor3 = theme.fg; label.Font = theme.font; label.TextSize = 12
+    label.TextXAlignment = Enum.TextXAlignment.Left; label.Parent = header
+
+    local cur = Instance.new("TextButton")
+    cur.Position = UDim2.new(0.5, 4, 0.5, -10); cur.Size = UDim2.new(0.5, -14, 0, 20)
+    cur.BackgroundColor3 = theme.bgDark; cur.AutoButtonColor = false
+    cur.TextColor3 = theme.fg; cur.Font = theme.font; cur.TextSize = 11
+    cur.Text = tostring(value or ""); cur.Parent = header
+
+    local listHost = Instance.new("Frame")
+    listHost.Size = UDim2.new(1, 0, 0, 0); listHost.AutomaticSize = Enum.AutomaticSize.Y
+    listHost.BackgroundTransparency = 1; listHost.Visible = false; listHost.LayoutOrder = 2
+    listHost.Parent = root
+    local ll = Instance.new("UIListLayout", listHost)
+    ll.SortOrder = Enum.SortOrder.LayoutOrder; ll.Padding = UDim.new(0, 1)
+
+    for i, o in ipairs(options) do
+        local ob = Instance.new("TextButton")
+        ob.Size = UDim2.new(1, -20, 0, 22); ob.Position = UDim2.fromOffset(20, 0)
+        ob.BackgroundColor3 = theme.bgAlt; ob.AutoButtonColor = true; ob.BorderSizePixel = 0
+        ob.TextColor3 = theme.fgDim; ob.Font = theme.font; ob.TextSize = 11
+        ob.Text = tostring(o); ob.LayoutOrder = i; ob.Parent = listHost
+        ob.MouseButton1Click:Connect(function()
+            value = o; cur.Text = tostring(o); listHost.Visible = false
+            if onChange then onChange(value) end
+        end)
+    end
+
+    cur.MouseButton1Click:Connect(function()
+        listHost.Visible = not listHost.Visible
+    end)
+
+    local api = {}
+    function api:Get() return value end
+    function api:Set(v)
+        value = v; cur.Text = tostring(v or "")
+        if onChange then onChange(value) end
+    end
+    return api
+end
+
 -- Disconnect every tracked global-UIS connection (slider drag handlers + any
 -- live keybind listen). Called from init.lua's shutdown so a re-execute doesn't
 -- stack listeners across teleports.
