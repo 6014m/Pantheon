@@ -173,12 +173,25 @@ function Container.new(parent, name)
 
     -- Features: stacked inside the padded body area. UIListLayout owns the
     -- height; AutomaticSize on the container propagates up.
-    local features = Instance.new("Frame")
+    local features = Instance.new("ScrollingFrame")
     features.Name = "Features"
     features.Size = UDim2.new(1, 0, 0, 0)
-    features.AutomaticSize = Enum.AutomaticSize.Y
+    features.AutomaticSize = Enum.AutomaticSize.Y          -- frame grows to fit content...
+    features.AutomaticCanvasSize = Enum.AutomaticSize.Y    -- ...and the scroll canvas tracks it
+    features.CanvasSize = UDim2.new(0, 0, 0, 0)
     features.BackgroundTransparency = 1
+    features.BorderSizePixel = 0
+    features.ScrollingDirection = Enum.ScrollingDirection.Y
+    features.ScrollBarThickness = 4
+    features.ScrollBarImageColor3 = theme.accent
     features.Parent = container
+
+    -- Cap the body to the viewport so a tall panel (e.g. Preset Shaders' many
+    -- sliders) scrolls instead of running off the bottom of the screen. Short
+    -- panels stay under the cap, so no scrollbar shows for them.
+    local vph = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize.Y) or 720
+    local cap = Instance.new("UISizeConstraint", features)
+    cap.MaxSize = Vector2.new(math.huge, math.max(160, vph - baseTopY() - 90))
 
     local featuresList = Instance.new("UIListLayout", features)
     featuresList.SortOrder = Enum.SortOrder.LayoutOrder
