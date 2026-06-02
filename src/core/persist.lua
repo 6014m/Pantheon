@@ -1,8 +1,10 @@
--- Per-game settings persistence. Each Roblox PlaceId gets its own JSON file
--- at Pantheon/settings/<placeId>.json so toggles, sliders, and keybinds the
--- user changes in one game don't bleed into another. Mutations are kept in
--- an in-memory cache and flushed to disk on a 0.5s debounce, so dragging a
--- slider doesn't hammer the filesystem.
+-- Per-game settings persistence. Each Roblox universe (game.GameId) gets its
+-- own JSON file at Pantheon/settings/<gameId>.json so toggles, sliders, and
+-- keybinds the user changes in one game don't bleed into another. Keying on
+-- GameId (the universe) instead of PlaceId means settings follow a game across
+-- all its places -- a lobby place and the main place share one config.
+-- Mutations are kept in an in-memory cache and flushed to disk on a 0.5s
+-- debounce, so dragging a slider doesn't hammer the filesystem.
 
 local env = require("core.env")
 local log = require("core.log")
@@ -17,8 +19,8 @@ local cache         = {}
 local loaded        = false
 local saveScheduled = false
 
-local function placeFile()
-    return SETTINGS_FOLDER .. "/" .. tostring(game.PlaceId) .. ".json"
+local function gameFile()
+    return SETTINGS_FOLDER .. "/" .. tostring(game.GameId) .. ".json"
 end
 
 local function ensureFolders()
@@ -46,15 +48,15 @@ function persist.init()
         log.info("persist: filesystem APIs unavailable, persistence disabled")
         return
     end
-    local file = placeFile()
+    local file = gameFile()
     if not env.isfile(file) then
-        log.info("persist: no saved settings for PlaceId " .. tostring(game.PlaceId))
+        log.info("persist: no saved settings for GameId " .. tostring(game.GameId))
         return
     end
     local ok, content = pcall(env.readfile, file)
     if ok and content and #content > 0 then
         cache = jsonDecode(content) or {}
-        log.info("persist: loaded settings for PlaceId " .. tostring(game.PlaceId))
+        log.info("persist: loaded settings for GameId " .. tostring(game.GameId))
     end
 end
 
@@ -68,7 +70,7 @@ end
 local function writeNow()
     if not env.writefile then return end
     ensureFolders()
-    local ok, err = pcall(env.writefile, placeFile(), jsonEncode(cache))
+    local ok, err = pcall(env.writefile, gameFile(), jsonEncode(cache))
     if not ok then
         log.warn("persist: save failed: " .. tostring(err))
     end
