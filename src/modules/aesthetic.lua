@@ -102,6 +102,16 @@ local fx = {}              -- live effect instances by key
 local fxBlurConn = nil     -- motion-blur Heartbeat connection
 local lightOrig  = nil     -- RTX Lighting revert snapshot
 
+-- Preset Shaders is the master: enabling it applies the cinematic Lighting AND
+-- turns on every effect below; disabling it turns them all off. The effects stay
+-- independently toggleable while it's on (turning one off does NOT disable the
+-- master -- that's why this is a manual cascade, not feature.lua `dependencies`,
+-- which kills the parent when a child goes off). The cascade is suppressed during
+-- boot so each effect restores its own saved on/off instead of the master forcing
+-- them all on.
+local SHADER_CHILDREN = { "aesthetic.bloom", "aesthetic.dof", "aesthetic.sunrays", "aesthetic.grade", "aesthetic.motionblur" }
+local shaderBooting = true
+
 local function newFx(key, class)
     if not fx[key] then
         local e = Instance.new(class); e.Enabled = true; e.Parent = Lighting; fx[key] = e
@@ -222,11 +232,15 @@ function Aesthetic.register()
 
     -- ----- RTX shader effects: each its own toggle ---------------------------
     box:add(feature.declare({
-        id          = "aesthetic.rtxlight",
-        name        = "RTX Lighting",
-        description = "Cinematic Lighting tune from the RTX preset: ambient, brightness, exposure, soft shadows, env reflections, sun latitude. Reverts to the game's lighting when off.",
+        id          = "aesthetic.preset",
+        name        = "Preset Shaders",
+        description = "Master RTX look. Enabling applies the cinematic Lighting AND turns on Bloom, Depth of Field, Sun Rays, Color Grade and Motion Blur. Turn any of those off on their own to drop just that effect; disabling Preset Shaders turns them all off. The Lighting tune (below) reverts when off. NOTE: creates client-side post-processing -- avoid on strict-AC games.",
         default     = false,
-        onToggle    = function(v) enableLighting(v) end,
+        onToggle    = function(v)
+            enableLighting(v)
+            if shaderBooting then return end   -- on boot each effect restores its own saved state
+            for _, id in ipairs(SHADER_CHILDREN) do feature.setEnabled(id, v) end
+        end,
         settings    = {
             { type = "slider", name = "Brightness",      key = "b",  min = 0,   max = 10, step = 0.01,  default = sv.brightness,     onChange = function(v) sv.brightness = v;     applyLighting() end },
             { type = "slider", name = "Exposure",        key = "e",  min = -3,  max = 3,  step = 0.01,  default = sv.exposure,       onChange = function(v) sv.exposure = v;       applyLighting() end },
@@ -304,6 +318,7 @@ function Aesthetic.register()
         },
     }).root)
 
+    shaderBooting = false   -- boot done; Preset Shaders now cascades to the effects
     log.info("Aesthetic module registered")
 end
 

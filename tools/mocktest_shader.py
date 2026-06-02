@@ -114,22 +114,18 @@ local function enable(id)
   if not ok then out[id.."_err"]=real.tostring(e) end
   return ok
 end
-out.rtxlight_ok = enable("aesthetic.rtxlight")
-out.brightness_applied = (Lighting.Brightness==6.67)
-out.bloom_ok = enable("aesthetic.bloom")
-out.dof_ok   = enable("aesthetic.dof")
-out.sun_ok   = enable("aesthetic.sunrays")
-out.grade_ok = enable("aesthetic.grade")
-out.blur_ok  = enable("aesthetic.motionblur")
-
 local function countLive(cls) local n=0 for _,o in real.ipairs(ALL) do if not o._destroyed and o.ClassName==cls then n=n+1 end end return n end
+
+-- enable the MASTER -> should cascade every effect on + apply the lighting
+out.preset_ok = enable("aesthetic.preset")
+out.brightness_applied = (Lighting.Brightness==6.67)
 out.n_bloom=countLive("BloomEffect"); out.n_dof=countLive("DepthOfFieldEffect")
 out.n_sun=countLive("SunRaysEffect"); out.n_cc=countLive("ColorCorrectionEffect"); out.n_blur=countLive("BlurEffect")
 
 local okH,eH=real.pcall(function() game:GetService("RunService").Heartbeat:Fire() end)
 out.heartbeat_ok=okH; if not okH then out.heartbeat_err=real.tostring(eH) end
 
--- switch Color Grade tint to Autumn via its dropdown option button
+-- Color Grade is on via the cascade -> switch its tint to Autumn
 local ab; for _,o in real.ipairs(ALL) do if o.ClassName=="TextButton" and o._p.Text=="Autumn" then ab=o end end
 if ab then real.pcall(function() ab._e.MouseButton1Click:Fire() end) end
 local autumn=false
@@ -141,14 +137,18 @@ for _,o in real.ipairs(ALL) do
 end
 out.autumn_tint=autumn
 
-for _,id in real.ipairs({"aesthetic.rtxlight","aesthetic.bloom","aesthetic.dof","aesthetic.sunrays","aesthetic.grade","aesthetic.motionblur"}) do
-  real.pcall(function() feature.setEnabled(id, false) end)
-end
+-- a child can be turned off WITHOUT disabling the master
+real.pcall(function() feature.setEnabled("aesthetic.bloom", false) end)
+out.master_still_on = (feature.getEnabled("aesthetic.preset")==true)
+out.bloom_off_independently = (countLive("BloomEffect")==0)
+
+-- disabling the master cascades everything off
+real.pcall(function() feature.setEnabled("aesthetic.preset", false) end)
 out.fx_after_disable = countLive("BloomEffect")+countLive("DepthOfFieldEffect")+countLive("SunRaysEffect")+countLive("ColorCorrectionEffect")+countLive("BlurEffect")
 
-local pass = ok1 and out.rtxlight_ok and out.brightness_applied and out.bloom_ok and out.dof_ok
-  and out.sun_ok and out.grade_ok and out.blur_ok and out.n_bloom==1 and out.n_dof==1 and out.n_sun==1
-  and out.n_cc==3 and out.n_blur==1 and okH and out.autumn_tint and out.fx_after_disable==0
+local pass = ok1 and out.preset_ok and out.brightness_applied and out.n_bloom==1 and out.n_dof==1
+  and out.n_sun==1 and out.n_cc==3 and out.n_blur==1 and okH and out.autumn_tint
+  and out.master_still_on and out.bloom_off_independently and out.fx_after_disable==0
 local lines={}
 for k,v in real.pairs(out) do lines[#lines+1]="  "..k.." = "..real.tostring(v) end
 real.table.sort(lines)
