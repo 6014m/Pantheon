@@ -317,7 +317,7 @@ function Feature.declare(def)
             elseif opt.type == "slider" then
                 local saved = persist.get(saveKey)
                 local effective = resolveSaved(saved, opt.default)
-                components.Slider(panel, {
+                local sh = components.Slider(panel, {
                     text     = opt.name,
                     min      = opt.min, max = opt.max, step = opt.step,
                     default  = effective,
@@ -326,6 +326,7 @@ function Feature.declare(def)
                         if opt.onChange then opt.onChange(v) end
                     end,
                 })
+                if opt.onCreate then opt.onCreate(sh) end
                 if opt.onChange then
                     local ok, err = pcall(opt.onChange, effective)
                     if not ok then warn("[Pantheon] setting init error:", err) end
@@ -334,7 +335,7 @@ function Feature.declare(def)
             elseif opt.type == "dropdown" then
                 local saved     = persist.get(saveKey)
                 local effective = resolveSaved(saved, opt.default)
-                components.Dropdown(panel, {
+                local dh = components.Dropdown(panel, {
                     label    = opt.name,
                     options  = opt.options,
                     default  = effective,
@@ -343,6 +344,7 @@ function Feature.declare(def)
                         if opt.onChange then opt.onChange(v) end
                     end,
                 })
+                if opt.onCreate then opt.onCreate(dh) end
                 if opt.onChange then
                     local ok, err = pcall(opt.onChange, effective)
                     if not ok then warn("[Pantheon] setting init error:", err) end

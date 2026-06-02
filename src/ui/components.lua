@@ -345,17 +345,20 @@ function components.Dropdown(parent, opts)
     local ll = Instance.new("UIListLayout", listHost)
     ll.SortOrder = Enum.SortOrder.LayoutOrder; ll.Padding = UDim.new(0, 1)
 
-    for i, o in ipairs(options) do
+    local optCount = 0
+    local function addOption(o)
+        optCount = optCount + 1
         local ob = Instance.new("TextButton")
         ob.Size = UDim2.new(1, -20, 0, 22); ob.Position = UDim2.fromOffset(20, 0)
         ob.BackgroundColor3 = theme.bgAlt; ob.AutoButtonColor = true; ob.BorderSizePixel = 0
         ob.TextColor3 = theme.fgDim; ob.Font = theme.font; ob.TextSize = 11
-        ob.Text = tostring(o); ob.LayoutOrder = i; ob.Parent = listHost
+        ob.Text = tostring(o); ob.LayoutOrder = optCount; ob.Parent = listHost
         ob.MouseButton1Click:Connect(function()
             value = o; cur.Text = tostring(o); listHost.Visible = false
             if onChange then onChange(value) end
         end)
     end
+    for _, o in ipairs(options) do addOption(o) end
 
     cur.MouseButton1Click:Connect(function()
         listHost.Visible = not listHost.Visible
@@ -367,6 +370,7 @@ function components.Dropdown(parent, opts)
         value = v; cur.Text = tostring(v or "")
         if onChange then onChange(value) end
     end
+    function api:AddOption(o) addOption(o) end   -- append a new option (e.g. a saved custom preset)
     return api
 end
 

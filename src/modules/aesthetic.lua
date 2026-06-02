@@ -6,6 +6,7 @@
 local feature   = require("ui.feature")
 local window    = require("ui.window")
 local container = require("ui.container")
+local persist   = require("core.persist")
 local log       = require("core.log")
 
 local Lighting   = game:GetService("Lighting")
@@ -33,8 +34,6 @@ local st = {
 
 local enforceConn
 
--- Re-assert whatever is currently enabled. Run once on change and every frame
--- (while anything is on) so games that rewrite Lighting/FOV don't override us.
 local function apply()
     if st.fullbright then
         Lighting.Brightness     = 2
@@ -42,12 +41,8 @@ local function apply()
         Lighting.OutdoorAmbient = Color3.fromRGB(178, 178, 178)
         Lighting.GlobalShadows  = false
     end
-    if st.nofog then
-        Lighting.FogEnd = 1e9
-    end
-    if st.timeOn then
-        Lighting.ClockTime = st.clock
-    end
+    if st.nofog then Lighting.FogEnd = 1e9 end
+    if st.timeOn then Lighting.ClockTime = st.clock end
     if st.fovOn then
         local cam = workspace.CurrentCamera
         if cam then cam.FieldOfView = st.fov end
@@ -76,60 +71,71 @@ local function revertFov()
     if cam then cam.FieldOfView = orig.FieldOfView end
 end
 
--- ===== RTX-style lighting + post-processing =================================
--- Modular: each effect is its OWN toggle (like Fullbright / No Fog) so they can
--- be mixed freely and flipped without opening settings. Values are from the
--- user's RTX paste; Color Grade's Tint picks the Summer / Autumn look.
--- NOTE: the post-process effects are real instances created on Lighting / the
--- Camera (client-side). A strict client anti-cheat can scan for them, so each
--- effect's "i" description flags "avoid on strict-AC games".
+-- ===== RTX-style lighting + post-processing + presets =======================
+-- Each effect is its own toggle (like Fullbright / No Fog) and fully tunable.
+-- "Preset Shaders" is the master + the ONLY thing holding the Summer/Autumn (and
+-- saved custom) presets: enabling it applies the cinematic Lighting AND turns on
+-- every effect; disabling it turns them all off AND resets every value to its
+-- default. A preset configures all values at once; "Save current as new preset"
+-- snapshots the current values as a reusable preset (stored per-game).
+-- NOTE: the post-process effects are real instances on Lighting / the Camera
+-- (client-side) -- a strict client AC can scan for them; avoid on strict-AC games.
 local TINTS = { Summer = Color3.fromRGB(255, 220, 148), Autumn = Color3.fromRGB(217, 145, 57) }
 
--- live values (from the RTX paste); sliders mutate these
-local sv = {
-    brightness = 6.67, exposure = 0.75, shadowSoftness = 0.04, envDiffuse = 0.105,
-    envSpecular = 0.522, geoLat = -15.525,
+-- Fixed colors (no color picker yet) -- applied by the RTX Lighting whenever on.
+local FIXED = {
     ambient = Color3.fromRGB(33, 33, 33), outdoor = Color3.fromRGB(51, 54, 67),
     csTop = Color3.fromRGB(255, 247, 237), csBottom = Color3.fromRGB(0, 0, 0),
+}
+
+-- Every customizable numeric value + its default (from the RTX paste).
+local DEFAULTS = {
+    brightness = 6.67, exposure = 0.75, shadowSoftness = 0.04, envDiffuse = 0.105,
+    envSpecular = 0.522, geoLat = -15.525,
     bloomIntensity = 0.04, bloomSize = 1900, bloomThreshold = 0.915,
     dofFocus = 21.54, dofRadius = 20.77, dofNear = 0.277, dofFar = 0.077,
     sunIntensity = 0.01, sunSpread = 0.146,
-    tint = "Summer", cc1B = 0.176, cc1C = 0.39, cc1S = 0.2,
+    cc1B = 0.176, cc1C = 0.39, cc1S = 0.2,
     blurAmount = 10,
 }
+local NUM_KEYS = {
+    "brightness", "exposure", "shadowSoftness", "envDiffuse", "envSpecular", "geoLat",
+    "bloomIntensity", "bloomSize", "bloomThreshold",
+    "dofFocus", "dofRadius", "dofNear", "dofFar", "sunIntensity", "sunSpread",
+    "cc1B", "cc1C", "cc1S", "blurAmount",
+}
+
+-- live values (start at defaults); sliders mutate these
+local sv = { tint = "Summer" }
+for k, v in pairs(DEFAULTS) do sv[k] = v end
+
+local function builtin(tint) local p = { tint = tint }; for _, k in ipairs(NUM_KEYS) do p[k] = DEFAULTS[k] end; return p end
+local PRESETS = { Summer = builtin("Summer"), Autumn = builtin("Autumn") }
+
+local customPresets = {}   -- name -> { num..., tint } (loaded from persist in register)
+local customCount   = 0
+local handles       = {}   -- sv-field -> component api (captured via onCreate), + .preset
 
 local fx = {}              -- live effect instances by key
-local fxBlurConn = nil     -- motion-blur Heartbeat connection
-local lightOrig  = nil     -- RTX Lighting revert snapshot
+local fxBlurConn = nil
+local lightOrig  = nil
 
--- Preset Shaders is the master: enabling it applies the cinematic Lighting AND
--- turns on every effect below; disabling it turns them all off. The effects stay
--- independently toggleable while it's on (turning one off does NOT disable the
--- master -- that's why this is a manual cascade, not feature.lua `dependencies`,
--- which kills the parent when a child goes off). The cascade is suppressed during
--- boot so each effect restores its own saved on/off instead of the master forcing
--- them all on.
 local SHADER_CHILDREN = { "aesthetic.bloom", "aesthetic.dof", "aesthetic.sunrays", "aesthetic.grade", "aesthetic.motionblur" }
 local shaderBooting = true
 
 local function newFx(key, class)
-    if not fx[key] then
-        local e = Instance.new(class); e.Enabled = true; e.Parent = Lighting; fx[key] = e
-    end
+    if not fx[key] then local e = Instance.new(class); e.Enabled = true; e.Parent = Lighting; fx[key] = e end
     return fx[key]
 end
-local function killFx(key)
-    if fx[key] then pcall(function() fx[key]:Destroy() end); fx[key] = nil end
-end
+local function killFx(key) if fx[key] then pcall(function() fx[key]:Destroy() end); fx[key] = nil end end
 
--- RTX Lighting (the Lighting-property tune; reverts to the captured original)
 local function applyLighting()
     if not lightOrig then return end
     pcall(function()
-        Lighting.Ambient = sv.ambient;                    Lighting.Brightness = sv.brightness
-        Lighting.ColorShift_Top = sv.csTop;               Lighting.ColorShift_Bottom = sv.csBottom
+        Lighting.Ambient = FIXED.ambient;                 Lighting.Brightness = sv.brightness
+        Lighting.ColorShift_Top = FIXED.csTop;            Lighting.ColorShift_Bottom = FIXED.csBottom
         Lighting.EnvironmentDiffuseScale = sv.envDiffuse; Lighting.EnvironmentSpecularScale = sv.envSpecular
-        Lighting.GlobalShadows = true;                    Lighting.OutdoorAmbient = sv.outdoor
+        Lighting.GlobalShadows = true;                    Lighting.OutdoorAmbient = FIXED.outdoor
         Lighting.ShadowSoftness = sv.shadowSoftness;      Lighting.GeographicLatitude = sv.geoLat
         Lighting.ExposureCompensation = sv.exposure
     end)
@@ -182,152 +188,181 @@ local function enableBlur(on)
 end
 
 local function shaderTeardown()
-    enableLighting(false)
-    enableBlur(false)
+    enableLighting(false); enableBlur(false)
     for _, k in ipairs({ "bloom", "dof", "sun", "cc1", "cc2", "cc3" }) do killFx(k) end
+end
+
+-- Apply a preset. `full` pushes every numeric value onto the sliders (which
+-- re-applies the live effects); always sets the tint. On boot `full` is false so
+-- each slider restores its OWN saved value instead of the preset clobbering it.
+local function applyPreset(name, full)
+    local p = PRESETS[name] or customPresets[name]
+    if not p then return end
+    sv.tint = p.tint or "Summer"
+    if full then
+        for _, k in ipairs(NUM_KEYS) do
+            if p[k] ~= nil then
+                sv[k] = p[k]
+                if handles[k] then handles[k]:Set(p[k]) end
+            end
+        end
+    end
+    applyGrade()
+end
+
+local function saveCurrentPreset()
+    customCount = customCount + 1
+    local name = "Custom " .. customCount
+    local p = { tint = sv.tint }
+    for _, k in ipairs(NUM_KEYS) do p[k] = sv[k] end
+    customPresets[name] = p
+    persist.set("aesthetic.shaderPresets", customPresets)
+    persist.set("aesthetic.shaderPresetCount", customCount)
+    if handles.preset then
+        if handles.preset.AddOption then handles.preset:AddOption(name) end
+        handles.preset:Set(name)   -- select it -> applyPreset(name, true)
+    end
+end
+
+local function resetAll()
+    -- Snap every value back to its default + Summer tint. Routing through the
+    -- Preset dropdown updates its label too, and pushes defaults onto every
+    -- slider (their onChange re-applies / persists).
+    if handles.preset then handles.preset:Set("Summer")
+    else applyPreset("Summer", true) end
 end
 
 function Aesthetic.register()
     local box = container.new(window.parent(), "Aesthetic")
 
     box:add(feature.declare({
-        id          = "aesthetic.fullbright",
-        name        = "Fullbright",
-        description = "Max ambient light and no shadows so dark areas are fully lit. Restores the game's lighting when turned off.",
-        default     = false,
-        onToggle    = function(v) st.fullbright = v; if not v then revertFullbright() end; apply(); ensureLoop() end,
+        id = "aesthetic.fullbright", name = "Fullbright",
+        description = "Max ambient light and no shadows so dark areas are fully lit. Restores the game's lighting when off.",
+        default = false, onToggle = function(v) st.fullbright = v; if not v then revertFullbright() end; apply(); ensureLoop() end,
     }).root)
 
     box:add(feature.declare({
-        id          = "aesthetic.nofog",
-        name        = "No Fog",
+        id = "aesthetic.nofog", name = "No Fog",
         description = "Pushes fog out to the horizon so distant geometry is visible.",
-        default     = false,
-        onToggle    = function(v) st.nofog = v; if not v then revertFog() end; apply(); ensureLoop() end,
+        default = false, onToggle = function(v) st.nofog = v; if not v then revertFog() end; apply(); ensureLoop() end,
     }).root)
 
     box:add(feature.declare({
-        id          = "aesthetic.fov",
-        name        = "Custom FOV",
+        id = "aesthetic.fov", name = "Custom FOV",
         description = "Forces the camera field of view. Set the value with the cog slider.",
-        default     = false,
-        onToggle    = function(v) st.fovOn = v; if not v then revertFov() end; apply(); ensureLoop() end,
-        settings    = {
-            { type = "slider", name = "FOV", key = "value", min = 40, max = 120, step = 1, default = 90,
-              onChange = function(x) st.fov = x; if st.fovOn then apply() end end },
-        },
+        default = false, onToggle = function(v) st.fovOn = v; if not v then revertFov() end; apply(); ensureLoop() end,
+        settings = { { type = "slider", name = "FOV", key = "value", min = 40, max = 120, step = 1, default = 90,
+            onChange = function(x) st.fov = x; if st.fovOn then apply() end end } },
     }).root)
 
     box:add(feature.declare({
-        id          = "aesthetic.time",
-        name        = "Custom Time",
+        id = "aesthetic.time", name = "Custom Time",
         description = "Locks the time of day (0-24). Set it with the cog slider -- handy for forcing daytime.",
-        default     = false,
-        onToggle    = function(v) st.timeOn = v; if not v then revertTime() end; apply(); ensureLoop() end,
-        settings    = {
-            { type = "slider", name = "Time of day", key = "value", min = 0, max = 24, step = 1, default = 12,
-              onChange = function(x) st.clock = x; if st.timeOn then apply() end end },
-        },
+        default = false, onToggle = function(v) st.timeOn = v; if not v then revertTime() end; apply(); ensureLoop() end,
+        settings = { { type = "slider", name = "Time of day", key = "value", min = 0, max = 24, step = 1, default = 12,
+            onChange = function(x) st.clock = x; if st.timeOn then apply() end end } },
     }).root)
 
-    -- ----- RTX shader effects: each its own toggle ---------------------------
+    -- ----- Preset Shaders: master + preset holder + base lighting -----------
+    customPresets = persist.get("aesthetic.shaderPresets", {}) or {}
+    customCount   = persist.get("aesthetic.shaderPresetCount", 0) or 0
+    local presetOptions = { "Summer", "Autumn" }
+    for name in pairs(customPresets) do presetOptions[#presetOptions + 1] = name end
+
     box:add(feature.declare({
         id          = "aesthetic.preset",
         name        = "Preset Shaders",
-        description = "Master RTX look. Enabling applies the cinematic Lighting AND turns on Bloom, Depth of Field, Sun Rays, Color Grade and Motion Blur. Turn any of those off on their own to drop just that effect; disabling Preset Shaders turns them all off. The Lighting tune (below) reverts when off. NOTE: creates client-side post-processing -- avoid on strict-AC games.",
+        description = "Master RTX look + preset holder. Enabling applies the cinematic Lighting AND turns on Bloom, Depth of Field, Sun Rays, Color Grade and Motion Blur. Pick a Preset (Summer / Autumn / your saved ones) to configure everything at once, or 'Save current as new preset' to store your own. Turn any effect off on its own; disabling Preset Shaders turns them all off AND resets every value to default. NOTE: client-side post-processing -- avoid on strict-AC games.",
         default     = false,
         onToggle    = function(v)
             enableLighting(v)
-            if shaderBooting then return end   -- on boot each effect restores its own saved state
-            for _, id in ipairs(SHADER_CHILDREN) do feature.setEnabled(id, v) end
+            if shaderBooting then return end
+            if v then
+                for _, id in ipairs(SHADER_CHILDREN) do feature.setEnabled(id, true) end
+            else
+                for _, id in ipairs(SHADER_CHILDREN) do feature.setEnabled(id, false) end
+                resetAll()
+            end
         end,
-        settings    = {
-            { type = "slider", name = "Brightness",      key = "b",  min = 0,   max = 10, step = 0.01,  default = sv.brightness,     onChange = function(v) sv.brightness = v;     applyLighting() end },
-            { type = "slider", name = "Exposure",        key = "e",  min = -3,  max = 3,  step = 0.01,  default = sv.exposure,       onChange = function(v) sv.exposure = v;       applyLighting() end },
-            { type = "slider", name = "Shadow Softness", key = "ss", min = 0,   max = 1,  step = 0.01,  default = sv.shadowSoftness, onChange = function(v) sv.shadowSoftness = v; applyLighting() end },
-            { type = "slider", name = "Env Diffuse",     key = "ed", min = 0,   max = 1,  step = 0.001, default = sv.envDiffuse,     onChange = function(v) sv.envDiffuse = v;     applyLighting() end },
-            { type = "slider", name = "Env Specular",    key = "es", min = 0,   max = 1,  step = 0.001, default = sv.envSpecular,    onChange = function(v) sv.envSpecular = v;    applyLighting() end },
-            { type = "slider", name = "Geo Latitude",    key = "gl", min = -90, max = 90, step = 0.025, default = sv.geoLat,         onChange = function(v) sv.geoLat = v;         applyLighting() end },
+        settings = {
+            { type = "dropdown", name = "Preset", key = "preset", options = presetOptions, default = "Summer",
+              onChange = function(v) applyPreset(v, not shaderBooting) end,
+              onCreate = function(h) handles.preset = h end },
+            { type = "button", name = "Save current as new preset", onClick = function() saveCurrentPreset() end },
+            { type = "section", name = "Lighting" },
+            { type = "slider", name = "Brightness",      key = "b",  min = 0,   max = 10, step = 0.01,  default = DEFAULTS.brightness,     onChange = function(v) sv.brightness = v;     applyLighting() end, onCreate = function(h) handles.brightness = h end },
+            { type = "slider", name = "Exposure",        key = "e",  min = -3,  max = 3,  step = 0.01,  default = DEFAULTS.exposure,       onChange = function(v) sv.exposure = v;       applyLighting() end, onCreate = function(h) handles.exposure = h end },
+            { type = "slider", name = "Shadow Softness", key = "ss", min = 0,   max = 1,  step = 0.01,  default = DEFAULTS.shadowSoftness, onChange = function(v) sv.shadowSoftness = v; applyLighting() end, onCreate = function(h) handles.shadowSoftness = h end },
+            { type = "slider", name = "Env Diffuse",     key = "ed", min = 0,   max = 1,  step = 0.001, default = DEFAULTS.envDiffuse,     onChange = function(v) sv.envDiffuse = v;     applyLighting() end, onCreate = function(h) handles.envDiffuse = h end },
+            { type = "slider", name = "Env Specular",    key = "es", min = 0,   max = 1,  step = 0.001, default = DEFAULTS.envSpecular,    onChange = function(v) sv.envSpecular = v;    applyLighting() end, onCreate = function(h) handles.envSpecular = h end },
+            { type = "slider", name = "Geo Latitude",    key = "gl", min = -90, max = 90, step = 0.025, default = DEFAULTS.geoLat,         onChange = function(v) sv.geoLat = v;         applyLighting() end, onCreate = function(h) handles.geoLat = h end },
         },
     }).root)
 
     box:add(feature.declare({
-        id          = "aesthetic.bloom",
-        name        = "Bloom",
-        description = "Soft glow on bright pixels. Creates a BloomEffect on Lighting (client-side) -- avoid on strict-AC games.",
-        default     = false,
-        onToggle    = function(v) if v then newFx("bloom", "BloomEffect"); applyBloom() else killFx("bloom") end end,
-        settings    = {
-            { type = "slider", name = "Intensity", key = "i", min = 0, max = 4,    step = 0.01,  default = sv.bloomIntensity, onChange = function(v) sv.bloomIntensity = v; applyBloom() end },
-            { type = "slider", name = "Size",      key = "s", min = 0, max = 2000, step = 10,    default = sv.bloomSize,      onChange = function(v) sv.bloomSize = v;      applyBloom() end },
-            { type = "slider", name = "Threshold", key = "t", min = 0, max = 5,    step = 0.005, default = sv.bloomThreshold, onChange = function(v) sv.bloomThreshold = v; applyBloom() end },
+        id = "aesthetic.bloom", name = "Bloom",
+        description = "Soft glow on bright pixels. Client-side BloomEffect -- avoid on strict-AC games.",
+        default = false, onToggle = function(v) if v then newFx("bloom", "BloomEffect"); applyBloom() else killFx("bloom") end end,
+        settings = {
+            { type = "slider", name = "Intensity", key = "i", min = 0, max = 4,    step = 0.01,  default = DEFAULTS.bloomIntensity, onChange = function(v) sv.bloomIntensity = v; applyBloom() end, onCreate = function(h) handles.bloomIntensity = h end },
+            { type = "slider", name = "Size",      key = "s", min = 0, max = 2000, step = 10,    default = DEFAULTS.bloomSize,      onChange = function(v) sv.bloomSize = v;      applyBloom() end, onCreate = function(h) handles.bloomSize = h end },
+            { type = "slider", name = "Threshold", key = "t", min = 0, max = 5,    step = 0.005, default = DEFAULTS.bloomThreshold, onChange = function(v) sv.bloomThreshold = v; applyBloom() end, onCreate = function(h) handles.bloomThreshold = h end },
         },
     }).root)
 
     box:add(feature.declare({
-        id          = "aesthetic.dof",
-        name        = "Depth of Field",
-        description = "Blurs near/far and keeps a focus band sharp. Creates a DepthOfFieldEffect (client-side) -- avoid on strict-AC games.",
-        default     = false,
-        onToggle    = function(v) if v then newFx("dof", "DepthOfFieldEffect"); applyDof() else killFx("dof") end end,
-        settings    = {
-            { type = "slider", name = "Focus Distance",  key = "fd", min = 0, max = 200, step = 0.01,  default = sv.dofFocus,  onChange = function(v) sv.dofFocus = v;  applyDof() end },
-            { type = "slider", name = "In-Focus Radius", key = "fr", min = 0, max = 200, step = 0.01,  default = sv.dofRadius, onChange = function(v) sv.dofRadius = v; applyDof() end },
-            { type = "slider", name = "Near Intensity",  key = "ni", min = 0, max = 1,   step = 0.001, default = sv.dofNear,   onChange = function(v) sv.dofNear = v;   applyDof() end },
-            { type = "slider", name = "Far Intensity",   key = "fi", min = 0, max = 1,   step = 0.001, default = sv.dofFar,    onChange = function(v) sv.dofFar = v;    applyDof() end },
+        id = "aesthetic.dof", name = "Depth of Field",
+        description = "Blurs near/far, keeps a focus band sharp. Client-side DepthOfFieldEffect -- avoid on strict-AC games.",
+        default = false, onToggle = function(v) if v then newFx("dof", "DepthOfFieldEffect"); applyDof() else killFx("dof") end end,
+        settings = {
+            { type = "slider", name = "Focus Distance",  key = "fd", min = 0, max = 200, step = 0.01,  default = DEFAULTS.dofFocus,  onChange = function(v) sv.dofFocus = v;  applyDof() end, onCreate = function(h) handles.dofFocus = h end },
+            { type = "slider", name = "In-Focus Radius", key = "fr", min = 0, max = 200, step = 0.01,  default = DEFAULTS.dofRadius, onChange = function(v) sv.dofRadius = v; applyDof() end, onCreate = function(h) handles.dofRadius = h end },
+            { type = "slider", name = "Near Intensity",  key = "ni", min = 0, max = 1,   step = 0.001, default = DEFAULTS.dofNear,   onChange = function(v) sv.dofNear = v;   applyDof() end, onCreate = function(h) handles.dofNear = h end },
+            { type = "slider", name = "Far Intensity",   key = "fi", min = 0, max = 1,   step = 0.001, default = DEFAULTS.dofFar,    onChange = function(v) sv.dofFar = v;    applyDof() end, onCreate = function(h) handles.dofFar = h end },
         },
     }).root)
 
     box:add(feature.declare({
-        id          = "aesthetic.sunrays",
-        name        = "Sun Rays",
-        description = "Volumetric light shafts from the sun. Creates a SunRaysEffect (client-side) -- avoid on strict-AC games.",
-        default     = false,
-        onToggle    = function(v) if v then newFx("sun", "SunRaysEffect"); applySun() else killFx("sun") end end,
-        settings    = {
-            { type = "slider", name = "Intensity", key = "i", min = 0, max = 1, step = 0.001, default = sv.sunIntensity, onChange = function(v) sv.sunIntensity = v; applySun() end },
-            { type = "slider", name = "Spread",    key = "s", min = 0, max = 1, step = 0.001, default = sv.sunSpread,    onChange = function(v) sv.sunSpread = v;    applySun() end },
+        id = "aesthetic.sunrays", name = "Sun Rays",
+        description = "Volumetric light shafts from the sun. Client-side SunRaysEffect -- avoid on strict-AC games.",
+        default = false, onToggle = function(v) if v then newFx("sun", "SunRaysEffect"); applySun() else killFx("sun") end end,
+        settings = {
+            { type = "slider", name = "Intensity", key = "i", min = 0, max = 1, step = 0.001, default = DEFAULTS.sunIntensity, onChange = function(v) sv.sunIntensity = v; applySun() end, onCreate = function(h) handles.sunIntensity = h end },
+            { type = "slider", name = "Spread",    key = "s", min = 0, max = 1, step = 0.001, default = DEFAULTS.sunSpread,    onChange = function(v) sv.sunSpread = v;    applySun() end, onCreate = function(h) handles.sunSpread = h end },
         },
     }).root)
 
     box:add(feature.declare({
-        id          = "aesthetic.grade",
-        name        = "Color Grade",
-        description = "Cinematic color grade (3 stacked passes). Tint picks the Summer / Autumn season look. Creates ColorCorrectionEffects (client-side) -- avoid on strict-AC games.",
-        default     = false,
-        onToggle    = function(v)
+        id = "aesthetic.grade", name = "Color Grade",
+        description = "Cinematic color grade (3 stacked passes); the season tint comes from the Preset above. Client-side ColorCorrectionEffects -- avoid on strict-AC games.",
+        default = false, onToggle = function(v)
             if v then newFx("cc1", "ColorCorrectionEffect"); newFx("cc2", "ColorCorrectionEffect"); newFx("cc3", "ColorCorrectionEffect"); applyGrade()
             else killFx("cc1"); killFx("cc2"); killFx("cc3") end
         end,
-        settings    = {
-            { type = "dropdown", name = "Tint", key = "tint", options = { "Summer", "Autumn" }, default = "Summer", onChange = function(v) sv.tint = v; applyGrade() end },
-            { type = "slider", name = "Contrast",   key = "c", min = -1, max = 1, step = 0.01,  default = sv.cc1C, onChange = function(v) sv.cc1C = v; applyGrade() end },
-            { type = "slider", name = "Saturation", key = "s", min = -1, max = 1, step = 0.01,  default = sv.cc1S, onChange = function(v) sv.cc1S = v; applyGrade() end },
-            { type = "slider", name = "Brightness", key = "b", min = -1, max = 1, step = 0.001, default = sv.cc1B, onChange = function(v) sv.cc1B = v; applyGrade() end },
+        settings = {
+            { type = "slider", name = "Contrast",   key = "c", min = -1, max = 1, step = 0.01,  default = DEFAULTS.cc1C, onChange = function(v) sv.cc1C = v; applyGrade() end, onCreate = function(h) handles.cc1C = h end },
+            { type = "slider", name = "Saturation", key = "s", min = -1, max = 1, step = 0.01,  default = DEFAULTS.cc1S, onChange = function(v) sv.cc1S = v; applyGrade() end, onCreate = function(h) handles.cc1S = h end },
+            { type = "slider", name = "Brightness", key = "b", min = -1, max = 1, step = 0.001, default = DEFAULTS.cc1B, onChange = function(v) sv.cc1B = v; applyGrade() end, onCreate = function(h) handles.cc1B = h end },
         },
     }).root)
 
     box:add(feature.declare({
-        id          = "aesthetic.motionblur",
-        name        = "Motion Blur",
-        description = "Camera blur scaled by how fast you turn. Creates a BlurEffect on the camera (client-side) -- avoid on strict-AC games.",
-        default     = false,
-        onToggle    = function(v) enableBlur(v) end,
-        settings    = {
-            { type = "slider", name = "Amount", key = "a", min = 0, max = 30, step = 1, default = sv.blurAmount, onChange = function(v) sv.blurAmount = v end },
+        id = "aesthetic.motionblur", name = "Motion Blur",
+        description = "Camera blur scaled by how fast you turn. Client-side BlurEffect on the camera -- avoid on strict-AC games.",
+        default = false, onToggle = function(v) enableBlur(v) end,
+        settings = {
+            { type = "slider", name = "Amount", key = "a", min = 0, max = 30, step = 1, default = DEFAULTS.blurAmount, onChange = function(v) sv.blurAmount = v end, onCreate = function(h) handles.blurAmount = h end },
         },
     }).root)
 
-    shaderBooting = false   -- boot done; Preset Shaders now cascades to the effects
+    shaderBooting = false   -- boot done; the Preset dropdown + master now cascade
     log.info("Aesthetic module registered")
 end
 
--- Re-execute / teardown: drop the enforcement loop and put the game's look
--- back exactly as we found it, so a reload doesn't compound or leave changes.
 function Aesthetic.destroy()
     if enforceConn then enforceConn:Disconnect(); enforceConn = nil end
     revertFullbright(); revertFog(); revertTime(); revertFov()
-    shaderTeardown()   -- destroy post-processing effects + restore RTX Lighting
+    shaderTeardown()
 end
 
 return Aesthetic

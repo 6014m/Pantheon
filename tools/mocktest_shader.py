@@ -115,8 +115,10 @@ local function enable(id)
   return ok
 end
 local function countLive(cls) local n=0 for _,o in real.ipairs(ALL) do if not o._destroyed and o.ClassName==cls then n=n+1 end end return n end
+local function findBtn(txt) for _,o in real.ipairs(ALL) do if not o._destroyed and o.ClassName=="TextButton" and o._p.Text==txt then return o end end end
+local function cc1IsTint(r,g) for _,o in real.ipairs(ALL) do if o.ClassName=="ColorCorrectionEffect" and not o._destroyed and o._p.TintColor and o._p.TintColor._c3 then local t=o._p.TintColor; if real.math.abs(t.R-r/255)<0.02 and real.math.abs(t.G-g/255)<0.02 then return true end end end return false end
 
--- enable the MASTER -> should cascade every effect on + apply the lighting
+-- enable the MASTER -> cascade every effect on + apply the lighting
 out.preset_ok = enable("aesthetic.preset")
 out.brightness_applied = (Lighting.Brightness==6.67)
 out.n_bloom=countLive("BloomEffect"); out.n_dof=countLive("DepthOfFieldEffect")
@@ -125,30 +127,31 @@ out.n_sun=countLive("SunRaysEffect"); out.n_cc=countLive("ColorCorrectionEffect"
 local okH,eH=real.pcall(function() game:GetService("RunService").Heartbeat:Fire() end)
 out.heartbeat_ok=okH; if not okH then out.heartbeat_err=real.tostring(eH) end
 
--- Color Grade is on via the cascade -> switch its tint to Autumn
-local ab; for _,o in real.ipairs(ALL) do if o.ClassName=="TextButton" and o._p.Text=="Autumn" then ab=o end end
-if ab then real.pcall(function() ab._e.MouseButton1Click:Fire() end) end
-local autumn=false
-for _,o in real.ipairs(ALL) do
-  if o.ClassName=="ColorCorrectionEffect" and not o._destroyed and o._p.TintColor and o._p.TintColor._c3 then
-    local t=o._p.TintColor
-    if real.math.abs(t.R-217/255)<0.01 and real.math.abs(t.G-145/255)<0.01 then autumn=true end
-  end
-end
-out.autumn_tint=autumn
+-- pick the Autumn preset (now under Preset Shaders) -> grade tint becomes autumn
+local ab=findBtn("Autumn"); if ab then real.pcall(function() ab._e.MouseButton1Click:Fire() end) end
+out.autumn_applied = cc1IsTint(217,145)
 
--- a child can be turned off WITHOUT disabling the master
+-- save current as a new preset -> a "Custom 1" option is added
+local sb=findBtn("Save current as new preset"); if sb then real.pcall(function() sb._e.MouseButton1Click:Fire() end) end
+out.save_ok = findBtn("Custom 1") ~= nil
+
+-- a child toggles off without disabling the master
 real.pcall(function() feature.setEnabled("aesthetic.bloom", false) end)
 out.master_still_on = (feature.getEnabled("aesthetic.preset")==true)
 out.bloom_off_independently = (countLive("BloomEffect")==0)
 
--- disabling the master cascades everything off
+-- disable master -> all effects off + values reset
 real.pcall(function() feature.setEnabled("aesthetic.preset", false) end)
 out.fx_after_disable = countLive("BloomEffect")+countLive("DepthOfFieldEffect")+countLive("SunRaysEffect")+countLive("ColorCorrectionEffect")+countLive("BlurEffect")
 
+-- re-enable -> grade tint is back to Summer (proves the reset-on-disable)
+real.pcall(function() feature.setEnabled("aesthetic.preset", true) end)
+out.reset_to_summer = cc1IsTint(255,220) and not cc1IsTint(217,145)
+real.pcall(function() feature.setEnabled("aesthetic.preset", false) end)
+
 local pass = ok1 and out.preset_ok and out.brightness_applied and out.n_bloom==1 and out.n_dof==1
-  and out.n_sun==1 and out.n_cc==3 and out.n_blur==1 and okH and out.autumn_tint
-  and out.master_still_on and out.bloom_off_independently and out.fx_after_disable==0
+  and out.n_sun==1 and out.n_cc==3 and out.n_blur==1 and okH and out.autumn_applied and out.save_ok
+  and out.master_still_on and out.bloom_off_independently and out.fx_after_disable==0 and out.reset_to_summer
 local lines={}
 for k,v in real.pairs(out) do lines[#lines+1]="  "..k.." = "..real.tostring(v) end
 real.table.sort(lines)
