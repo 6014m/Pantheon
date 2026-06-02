@@ -30,6 +30,17 @@ local nextId     = 0
 local registry   = {} -- [id] = { setEnabled, getEnabled }
 local dependents = {} -- [depId] = { dependentId, ... }
 
+-- Resolve a persisted value against a declared default. A saved setting counts
+-- even when its value is the literal `false` an OFF toggle writes, so we test
+-- for nil explicitly. The old `(saved ~= nil) and saved or default` idiom
+-- collapsed a saved `false` back to a truthy default -- e.g. a default=true
+-- toggle (Battlegrounds-safe, Camera Lock, Auto prediction, ...) turned OFF
+-- sprang back ON on every reload, which read as "settings don't save".
+local function resolveSaved(saved, default)
+    if saved ~= nil then return saved end
+    return default
+end
+
 local function hexButton(parent, w, h, color, text, font, textSize)
     local host = Instance.new("Frame")
     host.Size = UDim2.fromOffset(w, h)
@@ -285,7 +296,7 @@ function Feature.declare(def)
 
             elseif opt.type == "toggle" then
                 local saved = persist.get(saveKey)
-                local effective = (saved ~= nil) and saved or opt.default
+                local effective = resolveSaved(saved, opt.default)
                 components.Toggle(panel, {
                     text     = opt.name,
                     default  = effective,
@@ -305,7 +316,7 @@ function Feature.declare(def)
 
             elseif opt.type == "slider" then
                 local saved = persist.get(saveKey)
-                local effective = (saved ~= nil) and saved or opt.default
+                local effective = resolveSaved(saved, opt.default)
                 components.Slider(panel, {
                     text     = opt.name,
                     min      = opt.min, max = opt.max, step = opt.step,
@@ -360,7 +371,7 @@ function Feature.declare(def)
     -- don't want a default=true child to drag a default=false parent on.
     do
         local saved = persist.get(id .. ".enabled")
-        local initial = (saved ~= nil) and saved or (def.default == true)
+        local initial = resolveSaved(saved, def.default == true)
         if initial then
             -- Direct assign + applyToggle (no setEnabled) so we don't run
             -- the dependency cascade at boot. Pre-existing behavior, kept.
