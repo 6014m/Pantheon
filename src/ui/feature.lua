@@ -350,6 +350,18 @@ function Feature.declare(def)
                     if not ok then warn("[Pantheon] setting init error:", err) end
                 end
 
+            elseif opt.type == "textbox" then
+                local tb = components.TextBox(panel, {
+                    label       = opt.name,
+                    placeholder = opt.placeholder,
+                    default     = resolveSaved(persist.get(saveKey), opt.default),
+                    onChange    = function(v)
+                        persist.set(saveKey, v)
+                        if opt.onChange then opt.onChange(v) end
+                    end,
+                })
+                if opt.onCreate then opt.onCreate(tb) end
+
             elseif opt.type == "button" then
                 components.Button(panel, {
                     text    = opt.name,

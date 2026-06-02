@@ -374,6 +374,38 @@ function components.Dropdown(parent, opts)
     return api
 end
 
+-- Text input row: label on the left, a TextBox on the right. onChange fires on
+-- focus-lost with the entered text. Used to name custom shader presets.
+function components.TextBox(parent, opts)
+    opts = opts or {}
+    local f = baseRow(parent, 28)
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(0.4, -10, 1, 0); label.Position = UDim2.fromOffset(10, 0)
+    label.BackgroundTransparency = 1; label.Text = opts.label or "Name"
+    label.TextColor3 = theme.fg; label.Font = theme.font; label.TextSize = 12
+    label.TextXAlignment = Enum.TextXAlignment.Left; label.Parent = f
+
+    local box = Instance.new("TextBox")
+    box.Position = UDim2.new(0.4, 4, 0.5, -10); box.Size = UDim2.new(0.6, -14, 0, 20)
+    box.BackgroundColor3 = theme.bgDark; box.BorderSizePixel = 0
+    box.TextColor3 = theme.fg; box.PlaceholderColor3 = theme.fgDim
+    box.Font = theme.font; box.TextSize = 11
+    box.Text = opts.default or ""; box.PlaceholderText = opts.placeholder or ""
+    box.ClearTextOnFocus = false; box.TextXAlignment = Enum.TextXAlignment.Left
+    box.Parent = f
+    local pad = Instance.new("UIPadding", box); pad.PaddingLeft = UDim.new(0, 6)
+
+    box.FocusLost:Connect(function()
+        if opts.onChange then opts.onChange(box.Text) end
+    end)
+
+    local api = {}
+    function api:Get() return box.Text end
+    function api:Set(v) box.Text = v or "" end
+    return api
+end
+
 -- Disconnect every tracked global-UIS connection (slider drag handlers + any
 -- live keybind listen). Called from init.lua's shutdown so a re-execute doesn't
 -- stack listeners across teleports.

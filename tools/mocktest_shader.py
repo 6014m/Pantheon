@@ -41,7 +41,7 @@ local Vector3={new=function(x,y,z) return V(x,y,z) end}
 local function newEvent() local h={}; local e={}; function e:Connect(fn) h[#h+1]=fn; return {Disconnect=function() end} end
   function e:Fire(...) for _,fn in real.ipairs(h) do fn(...) end end return e end
 local EVT={MouseButton1Click=true,InputBegan=true,InputChanged=true,InputEnded=true,Changed=true,
-  ChildAdded=true,ChildRemoved=true,Heartbeat=true,RenderStepped=true,Stepped=true}
+  ChildAdded=true,ChildRemoved=true,Heartbeat=true,RenderStepped=true,Stepped=true,FocusLost=true}
 
 local MT
 local function newInst(cls) return real.setmetatable({_inst=true,ClassName=cls,Name=cls,_ch={},_p={},_e={}}, MT) end
@@ -71,9 +71,12 @@ function game:GetService(n) if n=="Workspace" then return Workspace end return s
 local task={ spawn=function(fn,...) real.pcall(fn,...) end, delay=function() end, wait=function() end }
 
 local CACHE={}
+local GLOBALCACHE={}
 local persist={}
 persist.get=function(k,d) local v=CACHE[k]; if v==nil then return d end return v end
 persist.set=function(k,v) CACHE[k]=v end
+persist.getGlobal=function(k,d) local v=GLOBALCACHE[k]; if v==nil then return d end return v end
+persist.setGlobal=function(k,v) GLOBALCACHE[k]=v end
 persist.scheduleSave=function() end; persist.flush=function() end
 persist.slug=function(s) s=real.string.lower(s or "_"); s=real.string.gsub(s,"[^%w]+","_"); s=real.string.gsub(s,"^_+",""); s=real.string.gsub(s,"_+$",""); if s=="" then return "_" end return s end
 persist.keyToString=function(k) if not k then return nil end return real.tostring(k) end
@@ -116,7 +119,7 @@ local function enable(id)
 end
 local function countLive(cls) local n=0 for _,o in real.ipairs(ALL) do if not o._destroyed and o.ClassName==cls then n=n+1 end end return n end
 local function findBtn(txt) for _,o in real.ipairs(ALL) do if not o._destroyed and o.ClassName=="TextButton" and o._p.Text==txt then return o end end end
-local function cc1IsTint(r,g) for _,o in real.ipairs(ALL) do if o.ClassName=="ColorCorrectionEffect" and not o._destroyed and o._p.TintColor and o._p.TintColor._c3 then local t=o._p.TintColor; if real.math.abs(t.R-r/255)<0.02 and real.math.abs(t.G-g/255)<0.02 then return true end end end return false end
+local function countBtn(txt) local n=0 for _,o in real.ipairs(ALL) do if not o._destroyed and o.ClassName=="TextButton" and o._p.Text==txt then n=n+1 end end return n end
 
 -- enable the MASTER -> cascade every effect on + apply the lighting
 out.preset_ok = enable("aesthetic.preset")
@@ -124,34 +127,46 @@ out.brightness_applied = (Lighting.Brightness==6.67)
 out.n_bloom=countLive("BloomEffect"); out.n_dof=countLive("DepthOfFieldEffect")
 out.n_sun=countLive("SunRaysEffect"); out.n_cc=countLive("ColorCorrectionEffect"); out.n_blur=countLive("BlurEffect")
 
+-- ENFORCE: the game overwrites Brightness -> a RenderStepped tick restores it
+Lighting.Brightness = 99
+real.pcall(function() game:GetService("RunService").RenderStepped:Fire() end)
+out.enforce_restores = (Lighting.Brightness==6.67)
+
 local okH,eH=real.pcall(function() game:GetService("RunService").Heartbeat:Fire() end)
 out.heartbeat_ok=okH; if not okH then out.heartbeat_err=real.tostring(eH) end
 
--- pick the Autumn preset (now under Preset Shaders) -> grade tint becomes autumn
-local ab=findBtn("Autumn"); if ab then real.pcall(function() ab._e.MouseButton1Click:Fire() end) end
-out.autumn_applied = cc1IsTint(217,145)
+-- Summer/Autumn removed; only "Default" (+ saved customs)
+out.has_default = findBtn("Default") ~= nil
+out.no_summer = findBtn("Summer") == nil
+out.no_autumn = findBtn("Autumn") == nil
 
--- save current as a new preset -> a "Custom 1" option is added
+-- NAME + SAVE: type a name into the TextBox, hit Save -> option added + GLOBAL store
+for _,o in real.ipairs(ALL) do if o.ClassName=="TextBox" then o._p.Text="MyShader" end end
 local sb=findBtn("Save current as new preset"); if sb then real.pcall(function() sb._e.MouseButton1Click:Fire() end) end
-out.save_ok = findBtn("Custom 1") ~= nil
+out.save_named = findBtn("MyShader") ~= nil
+local g = persist.getGlobal("aesthetic.shaderPresets")
+out.save_global = (real.type(g)=="table" and g["MyShader"]~=nil)
 
 -- a child toggles off without disabling the master
 real.pcall(function() feature.setEnabled("aesthetic.bloom", false) end)
 out.master_still_on = (feature.getEnabled("aesthetic.preset")==true)
 out.bloom_off_independently = (countLive("BloomEffect")==0)
 
--- disable master -> all effects off + values reset
+-- disable master -> all effects off + reset (Shader dropdown back to "Default")
 real.pcall(function() feature.setEnabled("aesthetic.preset", false) end)
 out.fx_after_disable = countLive("BloomEffect")+countLive("DepthOfFieldEffect")+countLive("SunRaysEffect")+countLive("ColorCorrectionEffect")+countLive("BlurEffect")
+out.reset_dropdown = (countBtn("MyShader")==1)   -- cur reset to Default; only the option remains
 
--- re-enable -> grade tint is back to Summer (proves the reset-on-disable)
+-- re-enable -> defaults applied
 real.pcall(function() feature.setEnabled("aesthetic.preset", true) end)
-out.reset_to_summer = cc1IsTint(255,220) and not cc1IsTint(217,145)
+out.reenable_default = (Lighting.Brightness==6.67)
 real.pcall(function() feature.setEnabled("aesthetic.preset", false) end)
 
 local pass = ok1 and out.preset_ok and out.brightness_applied and out.n_bloom==1 and out.n_dof==1
-  and out.n_sun==1 and out.n_cc==3 and out.n_blur==1 and okH and out.autumn_applied and out.save_ok
-  and out.master_still_on and out.bloom_off_independently and out.fx_after_disable==0 and out.reset_to_summer
+  and out.n_sun==1 and out.n_cc==3 and out.n_blur==1 and out.enforce_restores and okH
+  and out.has_default and out.no_summer and out.no_autumn and out.save_named and out.save_global
+  and out.master_still_on and out.bloom_off_independently and out.fx_after_disable==0
+  and out.reset_dropdown and out.reenable_default
 local lines={}
 for k,v in real.pairs(out) do lines[#lines+1]="  "..k.." = "..real.tostring(v) end
 real.table.sort(lines)

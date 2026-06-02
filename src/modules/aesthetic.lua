@@ -1,6 +1,6 @@
 -- Aesthetic: client-side "how the game looks" tweaks (Lighting + camera).
--- Each feature persists via [[ui.feature]]; a single RenderStepped pass
--- re-applies the active basic ones so games that overwrite Lighting don't win.
+-- Each feature persists via [[ui.feature]] (per-game); SAVED shader presets are
+-- stored GLOBALLY (persist.getGlobal/setGlobal) so they follow you to any game.
 -- Everything is reverted on disable and on module teardown (re-execute safe).
 
 local feature   = require("ui.feature")
@@ -14,7 +14,6 @@ local RunService = game:GetService("RunService")
 
 local Aesthetic = {}
 
--- Snapshot the game's original look once so toggles can revert cleanly.
 local orig = {
     Ambient        = Lighting.Ambient,
     OutdoorAmbient = Lighting.OutdoorAmbient,
@@ -25,78 +24,52 @@ local orig = {
     FieldOfView    = (workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView) or 70,
 }
 
-local st = {
-    fullbright = false,
-    nofog      = false,
-    fovOn      = false, fov   = 90,
-    timeOn     = false, clock = 12,
-}
-
+local st = { fullbright = false, nofog = false, fovOn = false, fov = 90, timeOn = false, clock = 12 }
 local enforceConn
 
 local function apply()
     if st.fullbright then
-        Lighting.Brightness     = 2
-        Lighting.Ambient        = Color3.fromRGB(178, 178, 178)
-        Lighting.OutdoorAmbient = Color3.fromRGB(178, 178, 178)
-        Lighting.GlobalShadows  = false
+        Lighting.Brightness = 2; Lighting.Ambient = Color3.fromRGB(178, 178, 178)
+        Lighting.OutdoorAmbient = Color3.fromRGB(178, 178, 178); Lighting.GlobalShadows = false
     end
     if st.nofog then Lighting.FogEnd = 1e9 end
     if st.timeOn then Lighting.ClockTime = st.clock end
-    if st.fovOn then
-        local cam = workspace.CurrentCamera
-        if cam then cam.FieldOfView = st.fov end
-    end
+    if st.fovOn then local cam = workspace.CurrentCamera; if cam then cam.FieldOfView = st.fov end end
 end
-
 local function ensureLoop()
     local need = st.fullbright or st.nofog or st.timeOn or st.fovOn
-    if need and not enforceConn then
-        enforceConn = RunService.RenderStepped:Connect(apply)
-    elseif not need and enforceConn then
-        enforceConn:Disconnect(); enforceConn = nil
-    end
+    if need and not enforceConn then enforceConn = RunService.RenderStepped:Connect(apply)
+    elseif not need and enforceConn then enforceConn:Disconnect(); enforceConn = nil end
 end
 
 local function revertFullbright()
-    Lighting.Brightness     = orig.Brightness
-    Lighting.Ambient        = orig.Ambient
-    Lighting.OutdoorAmbient = orig.OutdoorAmbient
-    Lighting.GlobalShadows  = orig.GlobalShadows
+    Lighting.Brightness = orig.Brightness; Lighting.Ambient = orig.Ambient
+    Lighting.OutdoorAmbient = orig.OutdoorAmbient; Lighting.GlobalShadows = orig.GlobalShadows
 end
 local function revertFog()  Lighting.FogEnd   = orig.FogEnd   end
 local function revertTime() Lighting.ClockTime = orig.ClockTime end
-local function revertFov()
-    local cam = workspace.CurrentCamera
-    if cam then cam.FieldOfView = orig.FieldOfView end
-end
+local function revertFov() local cam = workspace.CurrentCamera; if cam then cam.FieldOfView = orig.FieldOfView end end
 
 -- ===== RTX-style lighting + post-processing + presets =======================
--- Each effect is its own toggle (like Fullbright / No Fog) and fully tunable.
--- "Preset Shaders" is the master + the ONLY thing holding the Summer/Autumn (and
--- saved custom) presets: enabling it applies the cinematic Lighting AND turns on
--- every effect; disabling it turns them all off AND resets every value to its
--- default. A preset configures all values at once; "Save current as new preset"
--- snapshots the current values as a reusable preset (stored per-game).
--- NOTE: the post-process effects are real instances on Lighting / the Camera
--- (client-side) -- a strict client AC can scan for them; avoid on strict-AC games.
-local TINTS = { Summer = Color3.fromRGB(255, 220, 148), Autumn = Color3.fromRGB(217, 145, 57) }
-
--- Fixed colors (no color picker yet) -- applied by the RTX Lighting whenever on.
+-- Each effect is its own toggle (like Fullbright). "Preset Shaders" is the master
+-- + the holder of saved presets: enabling it applies the lighting AND turns every
+-- effect on; disabling it turns them all off AND resets every value to default.
+-- A RenderStepped pass re-asserts all values each frame so the GAME can't override
+-- the shader. Presets (and the "Default") live in the GLOBAL store, so a shader
+-- you save in one game shows up in every game. NOTE: real client-side post-process
+-- instances on Lighting/Camera -- a strict client AC can scan them; avoid there.
+local GRADE_TINT = Color3.fromRGB(255, 220, 148)   -- baked warm RTX grade tint
 local FIXED = {
     ambient = Color3.fromRGB(33, 33, 33), outdoor = Color3.fromRGB(51, 54, 67),
     csTop = Color3.fromRGB(255, 247, 237), csBottom = Color3.fromRGB(0, 0, 0),
 }
-
--- Every customizable numeric value + its default (from the RTX paste).
 local DEFAULTS = {
     brightness = 6.67, exposure = 0.75, shadowSoftness = 0.04, envDiffuse = 0.105,
     envSpecular = 0.522, geoLat = -15.525,
     bloomIntensity = 0.04, bloomSize = 1900, bloomThreshold = 0.915,
     dofFocus = 21.54, dofRadius = 20.77, dofNear = 0.277, dofFar = 0.077,
     sunIntensity = 0.01, sunSpread = 0.146,
-    cc1B = 0.176, cc1C = 0.39, cc1S = 0.2,
-    blurAmount = 10,
+    cc1B = 0.176, cc1C = 0.39, cc1S = 0.2, blurAmount = 10,
 }
 local NUM_KEYS = {
     "brightness", "exposure", "shadowSoftness", "envDiffuse", "envSpecular", "geoLat",
@@ -105,29 +78,34 @@ local NUM_KEYS = {
     "cc1B", "cc1C", "cc1S", "blurAmount",
 }
 
--- live values (start at defaults); sliders mutate these
-local sv = { tint = "Summer" }
+local sv = {}
 for k, v in pairs(DEFAULTS) do sv[k] = v end
 
-local function builtin(tint) local p = { tint = tint }; for _, k in ipairs(NUM_KEYS) do p[k] = DEFAULTS[k] end; return p end
-local PRESETS = { Summer = builtin("Summer"), Autumn = builtin("Autumn") }
+local function builtin() local p = {}; for _, k in ipairs(NUM_KEYS) do p[k] = DEFAULTS[k] end; return p end
+local PRESETS = { Default = builtin() }   -- Summer/Autumn removed; just a reset baseline
 
-local customPresets = {}   -- name -> { num..., tint } (loaded from persist in register)
+local customPresets = {}   -- name -> { numeric values } (GLOBAL: persist.getGlobal)
 local customCount   = 0
-local handles       = {}   -- sv-field -> component api (captured via onCreate), + .preset
+local handles       = {}   -- sv-field -> component api; + .preset, .name
 
-local fx = {}              -- live effect instances by key
+local fx = {}
 local fxBlurConn = nil
 local lightOrig  = nil
+local shaderEnsureEnforce   -- forward decl (assigned after the apply* fns)
+local shaderEnforceConn
 
 local SHADER_CHILDREN = { "aesthetic.bloom", "aesthetic.dof", "aesthetic.sunrays", "aesthetic.grade", "aesthetic.motionblur" }
 local shaderBooting = true
 
 local function newFx(key, class)
     if not fx[key] then local e = Instance.new(class); e.Enabled = true; e.Parent = Lighting; fx[key] = e end
+    if shaderEnsureEnforce then shaderEnsureEnforce() end
     return fx[key]
 end
-local function killFx(key) if fx[key] then pcall(function() fx[key]:Destroy() end); fx[key] = nil end end
+local function killFx(key)
+    if fx[key] then pcall(function() fx[key]:Destroy() end); fx[key] = nil end
+    if shaderEnsureEnforce then shaderEnsureEnforce() end
+end
 
 local function applyLighting()
     if not lightOrig then return end
@@ -156,13 +134,14 @@ local function enableLighting(on)
         for k, v in pairs(lightOrig) do pcall(function() Lighting[k] = v end) end
         lightOrig = nil
     end
+    if shaderEnsureEnforce then shaderEnsureEnforce() end
 end
 
 local function applyBloom() local e = fx.bloom; if e then e.Intensity = sv.bloomIntensity; e.Size = sv.bloomSize; e.Threshold = sv.bloomThreshold end end
 local function applyDof()   local e = fx.dof;   if e then e.FocusDistance = sv.dofFocus; e.InFocusRadius = sv.dofRadius; e.NearIntensity = sv.dofNear; e.FarIntensity = sv.dofFar end end
 local function applySun()   local e = fx.sun;   if e then e.Intensity = sv.sunIntensity; e.Spread = sv.sunSpread end end
 local function applyGrade()
-    if fx.cc1 then fx.cc1.Brightness = sv.cc1B; fx.cc1.Contrast = sv.cc1C; fx.cc1.Saturation = sv.cc1S; fx.cc1.TintColor = TINTS[sv.tint] or TINTS.Summer end
+    if fx.cc1 then fx.cc1.Brightness = sv.cc1B; fx.cc1.Contrast = sv.cc1C; fx.cc1.Saturation = sv.cc1S; fx.cc1.TintColor = GRADE_TINT end
     if fx.cc2 then fx.cc2.Brightness = 0;   fx.cc2.Contrast = -0.07; fx.cc2.Saturation = 0;    fx.cc2.TintColor = Color3.fromRGB(255, 247, 239) end
     if fx.cc3 then fx.cc3.Brightness = 0.2; fx.cc3.Contrast = 0.45;  fx.cc3.Saturation = -0.1; fx.cc3.TintColor = Color3.fromRGB(255, 255, 255) end
 end
@@ -170,66 +149,75 @@ end
 local function enableBlur(on)
     if on then
         local cam = workspace.CurrentCamera
-        if not cam then return end
-        fx.blur = Instance.new("BlurEffect"); fx.blur.Parent = cam
-        local last = cam.CFrame.LookVector
-        fxBlurConn = RunService.Heartbeat:Connect(function()
-            local c = workspace.CurrentCamera
-            if not c then return end
-            if not fx.blur or fx.blur.Parent == nil then fx.blur = Instance.new("BlurEffect"); fx.blur.Parent = c end
-            local mag = (c.CFrame.LookVector - last).Magnitude
-            fx.blur.Size = math.abs(mag) * (sv.blurAmount or 10) * 5 / 2
-            last = c.CFrame.LookVector
-        end)
+        if cam then
+            fx.blur = Instance.new("BlurEffect"); fx.blur.Parent = cam
+            local last = cam.CFrame.LookVector
+            fxBlurConn = RunService.Heartbeat:Connect(function()
+                local c = workspace.CurrentCamera
+                if not c then return end
+                if not fx.blur or fx.blur.Parent == nil then fx.blur = Instance.new("BlurEffect"); fx.blur.Parent = c end
+                local mag = (c.CFrame.LookVector - last).Magnitude
+                fx.blur.Size = math.abs(mag) * (sv.blurAmount or 10) * 5 / 2
+                last = c.CFrame.LookVector
+            end)
+        end
     else
         if fxBlurConn then pcall(function() fxBlurConn:Disconnect() end); fxBlurConn = nil end
         killFx("blur")
     end
+    if shaderEnsureEnforce then shaderEnsureEnforce() end
+end
+
+-- Re-assert all active shader values every frame so the game can't override them.
+-- Each apply* self-gates (no-op unless its part is enabled), so this only does
+-- real work for what's on. Runs only while something is active.
+shaderEnsureEnforce = function()
+    local need = lightOrig ~= nil or fx.bloom or fx.dof or fx.sun or fx.cc1 or fx.blur
+    if need and not shaderEnforceConn then
+        shaderEnforceConn = RunService.RenderStepped:Connect(function()
+            applyLighting(); applyBloom(); applyDof(); applySun(); applyGrade()
+        end)
+    elseif not need and shaderEnforceConn then
+        shaderEnforceConn:Disconnect(); shaderEnforceConn = nil
+    end
 end
 
 local function shaderTeardown()
+    if shaderEnforceConn then shaderEnforceConn:Disconnect(); shaderEnforceConn = nil end
     enableLighting(false); enableBlur(false)
     for _, k in ipairs({ "bloom", "dof", "sun", "cc1", "cc2", "cc3" }) do killFx(k) end
 end
 
--- Apply a preset. `full` pushes every numeric value onto the sliders (which
--- re-applies the live effects); always sets the tint. On boot `full` is false so
--- each slider restores its OWN saved value instead of the preset clobbering it.
+-- Apply a preset's numeric values. `full` pushes them onto the sliders (which
+-- re-apply the live effects); on boot `full` is false so each slider restores its
+-- own saved value instead of the preset clobbering it.
 local function applyPreset(name, full)
     local p = PRESETS[name] or customPresets[name]
-    if not p then return end
-    sv.tint = p.tint or "Summer"
-    if full then
-        for _, k in ipairs(NUM_KEYS) do
-            if p[k] ~= nil then
-                sv[k] = p[k]
-                if handles[k] then handles[k]:Set(p[k]) end
-            end
-        end
+    if not (p and full) then return end
+    for _, k in ipairs(NUM_KEYS) do
+        if p[k] ~= nil then sv[k] = p[k]; if handles[k] then handles[k]:Set(p[k]) end end
     end
-    applyGrade()
 end
 
 local function saveCurrentPreset()
-    customCount = customCount + 1
-    local name = "Custom " .. customCount
-    local p = { tint = sv.tint }
+    local name = (handles.name and handles.name:Get()) or ""
+    name = tostring(name):gsub("^%s*(.-)%s*$", "%1")
+    if name == "" then customCount = customCount + 1; name = "Custom " .. customCount end
+    local isNew = customPresets[name] == nil
+    local p = {}
     for _, k in ipairs(NUM_KEYS) do p[k] = sv[k] end
     customPresets[name] = p
-    persist.set("aesthetic.shaderPresets", customPresets)
-    persist.set("aesthetic.shaderPresetCount", customCount)
+    persist.setGlobal("aesthetic.shaderPresets", customPresets)
+    persist.setGlobal("aesthetic.shaderPresetCount", customCount)
     if handles.preset then
-        if handles.preset.AddOption then handles.preset:AddOption(name) end
-        handles.preset:Set(name)   -- select it -> applyPreset(name, true)
+        if isNew and handles.preset.AddOption then handles.preset:AddOption(name) end
+        handles.preset:Set(name)
     end
+    if handles.name then handles.name:Set("") end
 end
 
 local function resetAll()
-    -- Snap every value back to its default + Summer tint. Routing through the
-    -- Preset dropdown updates its label too, and pushes defaults onto every
-    -- slider (their onChange re-applies / persists).
-    if handles.preset then handles.preset:Set("Summer")
-    else applyPreset("Summer", true) end
+    if handles.preset then handles.preset:Set("Default") else applyPreset("Default", true) end
 end
 
 function Aesthetic.register()
@@ -263,16 +251,28 @@ function Aesthetic.register()
             onChange = function(x) st.clock = x; if st.timeOn then apply() end end } },
     }).root)
 
-    -- ----- Preset Shaders: master + preset holder + base lighting -----------
-    customPresets = persist.get("aesthetic.shaderPresets", {}) or {}
-    customCount   = persist.get("aesthetic.shaderPresetCount", 0) or 0
-    local presetOptions = { "Summer", "Autumn" }
+    -- Saved shaders are GLOBAL so they follow the user across games.
+    customPresets = persist.getGlobal("aesthetic.shaderPresets", {}) or {}
+    customCount   = persist.getGlobal("aesthetic.shaderPresetCount", 0) or 0
+    -- One-time migration: shaders used to be saved per-game. If the global store
+    -- is empty but THIS game has old per-game saves, lift them into global so a
+    -- shader made before this update isn't lost.
+    if next(customPresets) == nil then
+        local old = persist.get("aesthetic.shaderPresets", nil)
+        if type(old) == "table" and next(old) ~= nil then
+            customPresets = old
+            customCount = persist.get("aesthetic.shaderPresetCount", 0) or 0
+            persist.setGlobal("aesthetic.shaderPresets", customPresets)
+            persist.setGlobal("aesthetic.shaderPresetCount", customCount)
+        end
+    end
+    local presetOptions = { "Default" }
     for name in pairs(customPresets) do presetOptions[#presetOptions + 1] = name end
 
     box:add(feature.declare({
         id          = "aesthetic.preset",
         name        = "Preset Shaders",
-        description = "Master RTX look + preset holder. Enabling applies the cinematic Lighting AND turns on Bloom, Depth of Field, Sun Rays, Color Grade and Motion Blur. Pick a Preset (Summer / Autumn / your saved ones) to configure everything at once, or 'Save current as new preset' to store your own. Turn any effect off on its own; disabling Preset Shaders turns them all off AND resets every value to default. NOTE: client-side post-processing -- avoid on strict-AC games.",
+        description = "Master RTX look + your saved shaders. Enabling applies the cinematic Lighting AND turns on Bloom, Depth of Field, Sun Rays, Color Grade and Motion Blur, and re-asserts every value each frame so the GAME can't override it. Pick a saved shader to load it; type a Name + 'Save' to store the current look (saved shaders are GLOBAL -- they show up in every game). Turn any effect off on its own; disabling Preset Shaders turns them all off AND resets to defaults. NOTE: client-side post-processing -- avoid on strict-AC games.",
         default     = false,
         onToggle    = function(v)
             enableLighting(v)
@@ -285,9 +285,11 @@ function Aesthetic.register()
             end
         end,
         settings = {
-            { type = "dropdown", name = "Preset", key = "preset", options = presetOptions, default = "Summer",
+            { type = "dropdown", name = "Shader", key = "preset", options = presetOptions, default = "Default",
               onChange = function(v) applyPreset(v, not shaderBooting) end,
               onCreate = function(h) handles.preset = h end },
+            { type = "textbox", name = "Name", key = "savename", placeholder = "name your shader",
+              onCreate = function(h) handles.name = h end },
             { type = "button", name = "Save current as new preset", onClick = function() saveCurrentPreset() end },
             { type = "section", name = "Lighting" },
             { type = "slider", name = "Brightness",      key = "b",  min = 0,   max = 10, step = 0.01,  default = DEFAULTS.brightness,     onChange = function(v) sv.brightness = v;     applyLighting() end, onCreate = function(h) handles.brightness = h end },
@@ -334,7 +336,7 @@ function Aesthetic.register()
 
     box:add(feature.declare({
         id = "aesthetic.grade", name = "Color Grade",
-        description = "Cinematic color grade (3 stacked passes); the season tint comes from the Preset above. Client-side ColorCorrectionEffects -- avoid on strict-AC games.",
+        description = "Cinematic color grade (3 stacked passes). Client-side ColorCorrectionEffects -- avoid on strict-AC games.",
         default = false, onToggle = function(v)
             if v then newFx("cc1", "ColorCorrectionEffect"); newFx("cc2", "ColorCorrectionEffect"); newFx("cc3", "ColorCorrectionEffect"); applyGrade()
             else killFx("cc1"); killFx("cc2"); killFx("cc3") end
@@ -355,7 +357,7 @@ function Aesthetic.register()
         },
     }).root)
 
-    shaderBooting = false   -- boot done; the Preset dropdown + master now cascade
+    shaderBooting = false
     log.info("Aesthetic module registered")
 end
 

@@ -12,12 +12,17 @@ local log = require("core.log")
 local FOLDER          = "Pantheon"
 local SETTINGS_FOLDER = FOLDER .. "/settings"
 local SAVE_DELAY      = 0.5
+local GLOBAL_FILE     = SETTINGS_FOLDER .. "/global.json"   -- cross-game store (e.g. saved shaders)
 
 local persist = {}
 
 local cache         = {}
 local loaded        = false
 local saveScheduled = false
+
+local globalCache         = {}
+local globalLoaded        = false
+local globalSaveScheduled = false
 
 local function gameFile()
     return SETTINGS_FOLDER .. "/" .. tostring(game.GameId) .. ".json"
@@ -109,10 +114,48 @@ end
 
 -- Synchronous flush. Called by the shutdown teardown so pending debounced
 -- writes aren't lost when the user re-executes Pantheon mid-debounce.
+-- ---- Global (cross-game) store --------------------------------------------
+-- A second store NOT keyed by GameId, for things that should follow the user to
+-- every game (e.g. saved shader presets). Same debounced-write model.
+local function loadGlobal()
+    if globalLoaded then return end
+    globalLoaded = true
+    if not env.readfile or not env.isfile then return end
+    if not env.isfile(GLOBAL_FILE) then return end
+    local ok, content = pcall(env.readfile, GLOBAL_FILE)
+    if ok and content and #content > 0 then globalCache = jsonDecode(content) or {} end
+end
+
+function persist.getGlobal(key, default)
+    loadGlobal()
+    local v = globalCache[key]
+    if v == nil then return default end
+    return v
+end
+
+local function writeGlobalNow()
+    if not env.writefile then return end
+    ensureFolders()
+    local ok, err = pcall(env.writefile, GLOBAL_FILE, jsonEncode(globalCache))
+    if not ok then log.warn("persist: global save failed: " .. tostring(err)) end
+end
+
+-- No value-dedup: callers (e.g. shader presets) mutate a table in place and pass
+-- the same reference, so an == check would wrongly skip the save.
+function persist.setGlobal(key, value)
+    loadGlobal()
+    globalCache[key] = value
+    if not globalSaveScheduled and env.writefile then
+        globalSaveScheduled = true
+        task.delay(SAVE_DELAY, function() globalSaveScheduled = false; writeGlobalNow() end)
+    end
+end
+
 function persist.flush()
-    if not loaded then return end
     saveScheduled = false
-    writeNow()
+    if loaded then writeNow() end
+    globalSaveScheduled = false
+    if globalLoaded then writeGlobalNow() end
 end
 
 -- ---- KeyCode <-> string helpers -------------------------------------------
