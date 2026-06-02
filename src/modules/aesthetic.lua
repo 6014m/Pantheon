@@ -93,16 +93,25 @@ local fxBlurConn = nil
 local lightOrig  = nil
 local shaderEnsureEnforce   -- forward decl (assigned after the apply* fns)
 local shaderEnforceConn
+-- effect keys the user enabled -> kept alive (recreated) even if the GAME deletes
+-- the instance from Lighting; their class so the enforcer can rebuild them.
+local FX_CLASS = { bloom = "BloomEffect", dof = "DepthOfFieldEffect", sun = "SunRaysEffect",
+                   cc1 = "ColorCorrectionEffect", cc2 = "ColorCorrectionEffect", cc3 = "ColorCorrectionEffect" }
+local want = {}
 
 local SHADER_CHILDREN = { "aesthetic.bloom", "aesthetic.dof", "aesthetic.sunrays", "aesthetic.grade", "aesthetic.motionblur" }
 local shaderBooting = true
 
 local function newFx(key, class)
-    if not fx[key] then local e = Instance.new(class); e.Enabled = true; e.Parent = Lighting; fx[key] = e end
+    want[key] = true
+    if not fx[key] or fx[key].Parent == nil then
+        local e = Instance.new(class); e.Enabled = true; e.Parent = Lighting; fx[key] = e
+    end
     if shaderEnsureEnforce then shaderEnsureEnforce() end
     return fx[key]
 end
 local function killFx(key)
+    want[key] = nil
     if fx[key] then pcall(function() fx[key]:Destroy() end); fx[key] = nil end
     if shaderEnsureEnforce then shaderEnsureEnforce() end
 end
@@ -172,10 +181,17 @@ end
 -- Each apply* self-gates (no-op unless its part is enabled), so this only does
 -- real work for what's on. Runs only while something is active.
 shaderEnsureEnforce = function()
-    local need = lightOrig ~= nil or fx.bloom or fx.dof or fx.sun or fx.cc1 or fx.blur
+    local need = lightOrig ~= nil or next(want) ~= nil
     if need and not shaderEnforceConn then
         shaderEnforceConn = RunService.RenderStepped:Connect(function()
-            applyLighting(); applyBloom(); applyDof(); applySun(); applyGrade()
+            applyLighting()
+            -- rebuild any wanted effect the game may have deleted, then re-assert values
+            for key in pairs(want) do
+                if not fx[key] or fx[key].Parent == nil then
+                    local e = Instance.new(FX_CLASS[key]); e.Enabled = true; e.Parent = Lighting; fx[key] = e
+                end
+            end
+            applyBloom(); applyDof(); applySun(); applyGrade()
         end)
     elseif not need and shaderEnforceConn then
         shaderEnforceConn:Disconnect(); shaderEnforceConn = nil

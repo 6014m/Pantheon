@@ -132,6 +132,11 @@ Lighting.Brightness = 99
 real.pcall(function() game:GetService("RunService").RenderStepped:Fire() end)
 out.enforce_restores = (Lighting.Brightness==6.67)
 
+-- SELF-HEAL: the game deletes the Bloom effect -> a tick rebuilds it
+for _,o in real.ipairs(ALL) do if o.ClassName=="BloomEffect" and not o._destroyed then o:Destroy() end end
+real.pcall(function() game:GetService("RunService").RenderStepped:Fire() end)
+out.self_heal = (countLive("BloomEffect")==1)
+
 local okH,eH=real.pcall(function() game:GetService("RunService").Heartbeat:Fire() end)
 out.heartbeat_ok=okH; if not okH then out.heartbeat_err=real.tostring(eH) end
 
@@ -163,7 +168,7 @@ out.reenable_default = (Lighting.Brightness==6.67)
 real.pcall(function() feature.setEnabled("aesthetic.preset", false) end)
 
 local pass = ok1 and out.preset_ok and out.brightness_applied and out.n_bloom==1 and out.n_dof==1
-  and out.n_sun==1 and out.n_cc==3 and out.n_blur==1 and out.enforce_restores and okH
+  and out.n_sun==1 and out.n_cc==3 and out.n_blur==1 and out.enforce_restores and out.self_heal and okH
   and out.has_default and out.no_summer and out.no_autumn and out.save_named and out.save_global
   and out.master_still_on and out.bloom_off_independently and out.fx_after_disable==0
   and out.reset_dropdown and out.reenable_default
