@@ -53,7 +53,7 @@ local theme = {
 
     -- Slide sound: played per panel as it slides on/off screen (master toggle).
     -- Set slideSoundId = "" to disable.
-    slideSoundId = "rbxassetid://106626079056148",
+    slideSoundId = "rbxassetid://9113081793",  -- "Airy Whoosh Blast 4 (SFX)" (ProSoundEffects, public-domain)
     slideVolume  = 0.5,
 }
 
