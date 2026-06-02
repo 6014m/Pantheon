@@ -50,16 +50,59 @@ local function captureOrig(c)
     return p
 end
 
--- Per-event Sound (NEVER a persistent one -- a Sound created at script load
--- crashes Wave); Debris reaps it after it has played. Parented to SoundService
--- so it plays 2D. No-op when the id is cleared.
+-- Custom slide SFX via getcustomasset: download the bundled swoosh from the repo
+-- once, cache it to the Wave workspace, and resolve a content id. This sidesteps
+-- Roblox's private-audio wall (uploaded audio only plays in games you own). The
+-- Sound is parented INTO the protected gethui ScreenGui (not SoundService) so a
+-- game scanning instances for a foreign custom-asset SoundId can't see it.
+local SFX_URL  = "https://raw.githubusercontent.com/6014m/Pantheon/main/assets/swoosh.mp3"
+local SFX_PATH = "Pantheon/sfx/slide_v1.mp3"
+local customSoundId
+local customTried = false
+
+local function httpBinary(url)
+    if env.request then
+        local ok, res = pcall(env.request, { Url = url, Method = "GET" })
+        if ok and res and res.Body and #res.Body > 0
+           and (not res.StatusCode or res.StatusCode == 200) then
+            return res.Body
+        end
+    end
+    local ok, body = pcall(env.HttpGet, url)
+    if ok and body and #body > 0 then return body end
+    return nil
+end
+
+local function resolveCustomSound()
+    if customTried then return customSoundId end
+    customTried = true
+    if not env.getcustomasset then return nil end
+    pcall(function()
+        if not (env.isfile and env.isfile(SFX_PATH)) then
+            if env.makefolder and env.isfolder then
+                if not env.isfolder("Pantheon")     then env.makefolder("Pantheon")     end
+                if not env.isfolder("Pantheon/sfx") then env.makefolder("Pantheon/sfx") end
+            end
+            local data = httpBinary(SFX_URL)
+            if data and env.writefile then env.writefile(SFX_PATH, data) end
+        end
+        if env.isfile and env.isfile(SFX_PATH) then
+            customSoundId = env.getcustomasset(SFX_PATH)
+        end
+    end)
+    return customSoundId
+end
+
+-- Per-event Sound (NEVER persistent -- a Sound created at load crashes Wave);
+-- Debris reaps it. Uses the custom swoosh once resolved, else the library id.
 local function playSlideSound()
-    if not theme.slideSoundId or theme.slideSoundId == "" then return end
+    local id = customSoundId or theme.slideSoundId
+    if not id or id == "" then return end
     pcall(function()
         local snd = Instance.new("Sound")
-        snd.SoundId = theme.slideSoundId
+        snd.SoundId = id
         snd.Volume  = theme.slideVolume or 0.5
-        snd.Parent  = SoundService
+        snd.Parent  = s.screenGui or SoundService   -- hide inside the protected GUI
         snd:Play()
         Debris:AddItem(snd, 2)
     end)
@@ -248,6 +291,7 @@ function Window.init()
     s.container = containerHost
     s.openBtn   = buildHexButton(sg)
     s.spinTarget, s.spinTween = 0, nil   -- match the fresh button's Rotation = 0
+    task.spawn(resolveCustomSound)       -- download/cache the custom swoosh off the boot path
 
     keybinds.set("ui.master_toggle", s.masterKey, Window.toggle)
 end

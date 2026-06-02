@@ -23,6 +23,7 @@ env.makefolder  = makefolder
 env.isfolder    = isfolder
 env.delfolder   = delfolder
 env.listfiles   = listfiles
+env.getcustomasset = getcustomasset or getsynasset or (syn and syn.getcustomasset)
 
 env.hookfunction      = hookfunction
 env.hookmetamethod    = hookmetamethod
