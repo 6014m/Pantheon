@@ -11,9 +11,14 @@
 
 local hex = {}
 
-function hex.build(parent, w, h, color, zIndex)
+function hex.build(parent, w, h, color, zIndex, texture)
+    -- texture (optional): { image, src, transparency, tint }. When given, each
+    -- row becomes an ImageLabel showing its horizontal band of `image` (assumed
+    -- `src` px square) over the base `color`, so the picture fills the hex
+    -- silhouette -- used to give the "P" button the same carbon look as panels.
     local rows = math.max(8, math.ceil(h))
     local rowH = h / rows
+    local src  = texture and (texture.src or 128) or nil
 
     local host = Instance.new("Frame")
     host.Size = UDim2.fromOffset(w, h)
@@ -27,12 +32,27 @@ function hex.build(parent, w, h, color, zIndex)
         local rowW = w - distFromMid * w / h
         if rowW < 1 then rowW = 1 end
 
-        local row = Instance.new("Frame")
+        local row
+        if texture then
+            -- Sample the sub-rect of the image that lines up with this row so
+            -- the whole picture is reconstructed inside the hex outline.
+            local left = w / 2 - rowW / 2
+            row = Instance.new("ImageLabel")
+            row.BackgroundColor3 = color           -- base tints through the texture
+            row.Image = texture.image
+            row.ScaleType = Enum.ScaleType.Stretch
+            row.ImageRectOffset = Vector2.new(left / w * src, (yCenter - rowH / 2) / h * src)
+            row.ImageRectSize   = Vector2.new(rowW / w * src, rowH / h * src)
+            row.ImageTransparency = texture.transparency or 0
+            if texture.tint then row.ImageColor3 = texture.tint end
+        else
+            row = Instance.new("Frame")
+            row.BackgroundColor3 = color
+        end
         -- +1 on height so adjacent rows overlap by ~1px, hiding gaps.
         row.Size = UDim2.fromOffset(rowW, rowH + 1)
         row.Position = UDim2.fromOffset(w / 2, yCenter)
         row.AnchorPoint = Vector2.new(0.5, 0.5)
-        row.BackgroundColor3 = color
         row.BorderSizePixel = 0
         row.Parent = host
     end

@@ -27,6 +27,7 @@ local theme = {
     panelTextureTransparency = 0.82,
     panelTextureTint         = Color3.fromRGB(255, 255, 255),
     panelTextureTile         = 96,
+    panelTextureSrc          = 128,   -- carbon_fiber.png native px; used to sample the hex "P" button
 
     -- Wurst-style ON/OFF state colors
     on       = Color3.fromRGB(60, 222, 60),

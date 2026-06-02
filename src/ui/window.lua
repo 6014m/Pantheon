@@ -115,7 +115,17 @@ local function buildHexButton(sg)
     host.ZIndex = 10
     host.Parent = sg
 
-    hex.build(host, 46, 40, theme.accent, 10)
+    if theme.panelTexture and theme.panelTexture ~= "" then
+        -- Same carbon-fiber treatment as the panels, over the accent base.
+        hex.build(host, 46, 40, theme.accent, 10, {
+            image        = theme.panelTexture,
+            src          = theme.panelTextureSrc or 128,
+            transparency = theme.panelTextureTransparency,
+            tint         = theme.panelTextureTint,
+        })
+    else
+        hex.build(host, 46, 40, theme.accent, 10)
+    end
 
     local label = Instance.new("TextLabel")
     label.Size = UDim2.fromScale(1, 1)
