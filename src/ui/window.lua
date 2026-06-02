@@ -35,6 +35,8 @@ local s = {
     visible   = true,
     masterKey = Enum.KeyCode.RightControl,
     dragConns = {},   -- global UIS connections for the "P" button drag; cleared on destroy
+    spinTarget = 0,   -- accumulated target Rotation for the spin (always a multiple of 360)
+    spinTween = nil,
 }
 
 -- [container Frame] = { x = origX, y = origY } captured the first time we see
@@ -115,11 +117,17 @@ end
 
 local function spinButton(clockwise)
     if not s.openBtn then return end
-    local delta = clockwise and 360 or -360
-    TweenService:Create(s.openBtn,
+    -- Accumulate the TARGET (kept a multiple of 360 so it always lands upright)
+    -- instead of reading the live, mid-tween Rotation -- rapid toggling otherwise
+    -- compounds partial spins and leaves the P at a crooked angle. Cancel the
+    -- in-flight spin so overlapping tweens don't fight.
+    s.spinTarget = (s.spinTarget or 0) + (clockwise and 360 or -360)
+    if s.spinTween then pcall(function() s.spinTween:Cancel() end) end
+    s.spinTween = TweenService:Create(s.openBtn,
         TweenInfo.new(SPIN_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-        { Rotation = s.openBtn.Rotation + delta }
-    ):Play()
+        { Rotation = s.spinTarget }
+    )
+    s.spinTween:Play()
 end
 
 local function buildHexButton(sg)
@@ -239,6 +247,7 @@ function Window.init()
     s.screenGui = sg
     s.container = containerHost
     s.openBtn   = buildHexButton(sg)
+    s.spinTarget, s.spinTween = 0, nil   -- match the fresh button's Rotation = 0
 
     keybinds.set("ui.master_toggle", s.masterKey, Window.toggle)
 end
