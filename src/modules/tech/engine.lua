@@ -457,10 +457,21 @@ end
 -- (string name, e.g. "Q"/"One"); a.fire = "auto"|"button"|"key" (default auto).
 ACTIONS.usebtn = function(a)
     local fire = a.fire or "auto"
-    local res = scanner.cached() or scanner.scan()
-    local entry
-    for _, b in ipairs(res.buttons or {}) do
-        if b.name == a.move then entry = b; break end
+    local function findEntry()
+        local res = scanner.cached() or scanner.scan()
+        for _, b in ipairs(res.buttons or {}) do
+            if b.name == a.move then return b end
+        end
+        return nil
+    end
+    local entry = findEntry()
+    -- Cached hotbar buttons go STALE when the game rebuilds its UI (respawn, move
+    -- swap) -- firing or clicking a DESTROYED button does nothing, which reads as
+    -- "Use Move (click) stopped working" even though a real click still works. If
+    -- the match is missing or its button is gone, drop the cache and re-scan live.
+    if not entry or (entry.button and not entry.button.Parent) then
+        scanner.clearCache()
+        entry = findEntry()
     end
     -- Explicit "press key": VIM the key. Works for MANUAL moves the scanner
     -- can't see (no live button to click) -- only needs a key.
