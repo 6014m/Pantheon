@@ -6,6 +6,9 @@ local theme = {
     -- near-black; panels are kept distinct by the carbon-fiber texture below
     -- rather than by color.
     accent   = Color3.fromRGB(120, 125, 133),
+    -- Darker grey just for the draggable container header bands + the "P"
+    -- button (kept separate from `accent` so slider/section text stays legible).
+    headerBand = Color3.fromRGB(60, 63, 70),
     bg       = Color3.fromRGB(24, 25, 28),
     bgAlt    = Color3.fromRGB(35, 37, 41),
     bgDark   = Color3.fromRGB(15, 16, 18),

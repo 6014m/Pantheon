@@ -90,8 +90,8 @@ function Container.new(parent, name)
         if h <= 0 then return end
         local pct = math.clamp(HEADER_H / h, 0.001, 0.999)
         gradient.Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0,                                 theme.accent),
-            ColorSequenceKeypoint.new(pct,                               theme.accent),
+            ColorSequenceKeypoint.new(0,                                 theme.headerBand),
+            ColorSequenceKeypoint.new(pct,                               theme.headerBand),
             ColorSequenceKeypoint.new(math.min(pct + 0.005, 1),          theme.bg),
             ColorSequenceKeypoint.new(1,                                 theme.bg),
         })
