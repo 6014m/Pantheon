@@ -37,9 +37,10 @@ local s = {
     dragConns = {},   -- global UIS connections for the "P" button drag; cleared on destroy
     spinTarget = 0,   -- accumulated target Rotation for the spin (always a multiple of 360)
     spinTween = nil,
-    tweens  = {},     -- [container] = running slide tween
-    targets = {},     -- [container] = {x,y} the slide is heading to (for settle-snap)
-    animGen = 0,      -- bumped per toggle so stale staggered starts no-op
+    tweens   = {},    -- [container] = running slide tween
+    targets  = {},    -- [container] = {x,y} the slide is heading to (for settle-snap)
+    animating = {},   -- [container] = true while mid-toggle (running OR pending stagger)
+    animGen  = 0,     -- bumped per toggle so stale staggered starts no-op
 }
 
 -- [container Frame] = { x = origX, y = origY } captured the first time we see
@@ -119,11 +120,16 @@ local function animateContainers(showing)
     -- reopened overlapping. Only the OPEN (visible) containers participate.
     s.animGen = s.animGen + 1
     local gen = s.animGen
-    for c, tw in pairs(s.tweens) do
-        pcall(function() tw:Cancel() end)
+    -- Settle EVERY container still mid-toggle -- running tween OR pending stagger
+    -- start -- by snapping it to where it was heading. Containers at rest (e.g.
+    -- the user dragged one) aren't in s.animating, so their position is left
+    -- alone and captured correctly below.
+    for c in pairs(s.animating) do
+        if s.tweens[c] then pcall(function() s.tweens[c]:Cancel() end) end
         local t = s.targets[c]
         if t and c and c.Parent then c.Position = UDim2.fromOffset(t.x, t.y) end
     end
+    s.animating = {}
     s.tweens = {}
 
     local list = {}
@@ -152,6 +158,7 @@ local function animateContainers(showing)
         origPositions[c] = home
         local targetX = showing and home.x or OFF_SCREEN_X
         s.targets[c] = { x = targetX, y = home.y }
+        s.animating[c] = true     -- mark NOW so a re-toggle during the stagger still settles it
 
         -- Pre-position off-screen before the show tween so the user doesn't
         -- see it teleport visually first.
@@ -170,7 +177,9 @@ local function animateContainers(showing)
             )
             local tw = TweenService:Create(c, info, { Position = UDim2.fromOffset(targetX, home.y) })
             s.tweens[c] = tw
-            tw.Completed:Connect(function() if s.tweens[c] == tw then s.tweens[c] = nil end end)
+            tw.Completed:Connect(function()
+                if s.tweens[c] == tw then s.tweens[c] = nil; s.animating[c] = nil end
+            end)
             tw:Play()
         end)
     end
@@ -348,7 +357,7 @@ function Window.destroy()
     for _, c in ipairs(s.dragConns) do pcall(function() c:Disconnect() end) end
     s.dragConns = {}
     for _, tw in pairs(s.tweens) do pcall(function() tw:Cancel() end) end
-    s.tweens, s.targets = {}, {}
+    s.tweens, s.targets, s.animating = {}, {}, {}
     pcall(function() container.cleanup() end)
 
     if s.screenGui then
