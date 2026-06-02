@@ -175,9 +175,8 @@ function Container.new(parent, name)
     -- height; AutomaticSize on the container propagates up.
     local features = Instance.new("ScrollingFrame")
     features.Name = "Features"
-    features.Size = UDim2.new(1, 0, 0, 0)
-    features.AutomaticSize = Enum.AutomaticSize.Y          -- frame grows to fit content...
-    features.AutomaticCanvasSize = Enum.AutomaticSize.Y    -- ...and the scroll canvas tracks it
+    features.Size = UDim2.new(1, 0, 0, 0)                  -- height set by fitFeatures()
+    features.AutomaticCanvasSize = Enum.AutomaticSize.Y    -- canvas tracks content
     features.CanvasSize = UDim2.new(0, 0, 0, 0)
     features.BackgroundTransparency = 1
     features.BorderSizePixel = 0
@@ -186,16 +185,23 @@ function Container.new(parent, name)
     features.ScrollBarImageColor3 = theme.accent
     features.Parent = container
 
-    -- Cap the body to the viewport so a tall panel (e.g. Preset Shaders' many
-    -- sliders) scrolls instead of running off the bottom of the screen. Short
-    -- panels stay under the cap, so no scrollbar shows for them.
-    local vph = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize.Y) or 720
-    local cap = Instance.new("UISizeConstraint", features)
-    cap.MaxSize = Vector2.new(math.huge, math.max(160, vph - baseTopY() - 90))
-
     local featuresList = Instance.new("UIListLayout", features)
     featuresList.SortOrder = Enum.SortOrder.LayoutOrder
     featuresList.Padding = UDim.new(0, 1)
+
+    -- Body height = content height, capped to the viewport so a tall panel scrolls
+    -- instead of running off-screen. (AutomaticSize on a ScrollingFrame fights
+    -- AutomaticCanvasSize and never actually scrolls -- size from the layout's
+    -- content height instead, and only enable scrolling once it overflows.)
+    local vph = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize.Y) or 720
+    local capH = math.max(160, vph - baseTopY() - 90)
+    local function fitFeatures()
+        local h = featuresList.AbsoluteContentSize.Y
+        features.Size = UDim2.new(1, 0, 0, math.min(h, capH))
+        features.ScrollingEnabled = h > capH
+    end
+    featuresList:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(fitFeatures)
+    fitFeatures()
 
     -- Drag
     do

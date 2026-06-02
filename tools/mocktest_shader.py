@@ -11,10 +11,10 @@ rt = lupa.LuaRuntime(unpack_returned_tuples=True)
 rt.globals().python_read_file = read_file
 print("Lua:", rt.eval("_VERSION"))
 
-# Drives REAL ui/feature + ui/components (incl. new Dropdown) + modules/aesthetic:
-# register -> enable Preset Shaders -> apply -> switch preset -> fire Heartbeat
-# (motion blur) -> disable. Asserts Lighting was set/reverted, effects created/
-# destroyed, and the preset tint switches. Catches runtime errors the parse check
+# Drives REAL ui/feature + ui/components (incl. Dropdown) + modules/aesthetic:
+# register -> enable each modular RTX effect feature -> verify the effect was
+# created + Lighting applied -> switch Color Grade tint -> fire Heartbeat (motion
+# blur) -> disable all -> verify cleanup. Catches runtime errors the parse check
 # can't (per the "mock-execute UI constructors" rule).
 LUA = r"""
 local real = { math=math, string=string, table=table, os=os, pcall=pcall, ipairs=ipairs,
@@ -34,7 +34,6 @@ local Color3= { new=function(r,g,b) return {_c3=true,R=r or 0,G=g or 0,B=b or 0}
 local VMT={}
 local function V(x,y,z) return real.setmetatable({_v=true,X=x or 0,Y=y or 0,Z=z or 0}, VMT) end
 VMT.__sub=function(a,b) return V(a.X-b.X,a.Y-b.Y,a.Z-b.Z) end
-VMT.__add=function(a,b) return V(a.X+b.X,a.Y+b.Y,a.Z+b.Z) end
 VMT.__index=function(t,k) if k=="Magnitude" then return real.math.sqrt(t.X*t.X+t.Y*t.Y+t.Z*t.Z) end return nil end
 local Vector2={new=function(x,y) return V(x,y,0) end}
 local Vector3={new=function(x,y,z) return V(x,y,z) end}
@@ -51,12 +50,13 @@ local METH={}
 function METH:GetChildren() local t={} for i,c in real.ipairs(self._ch) do t[i]=c end return t end
 function METH:Destroy() self._destroyed=true; self._p.Parent=nil end
 function METH:Connect() return {Disconnect=function() end} end
+function METH:GetPropertyChangedSignal() return { Connect=function() return {Disconnect=function() end} end } end
 MT={ __index=function(s,k)
     if k=="Parent" then return s._p.Parent end
     if EVT[k] then s._e[k]=s._e[k] or newEvent(); return s._e[k] end
     if METH[k] then return METH[k] end
     if s._p[k]~=nil then return s._p[k] end
-    if k=="AbsoluteSize" or k=="AbsolutePosition" then return V(0,0,0) end
+    if k=="AbsoluteSize" or k=="AbsolutePosition" or k=="AbsoluteContentSize" then return V(0,0,0) end
     return nil end,
   __newindex=function(s,k,v) if k=="Parent" then setParent(s,v) else s._p[k]=v end end }
 local ALL={}
@@ -65,18 +65,16 @@ local Instance={ new=function(cls,parent) local o=newInst(cls); if parent then s
 local SERVICES={}
 local function svc(n) SERVICES[n]=SERVICES[n] or newInst(n); return SERVICES[n] end
 local Workspace=svc("Workspace"); Workspace.CurrentCamera=newInst("Camera")
-Workspace.CurrentCamera.CFrame={LookVector=V(0,0,1)}
+Workspace.CurrentCamera.CFrame={LookVector=V(0,0,1)}; Workspace.CurrentCamera.ViewportSize=V(1280,720,0)
 local game=newInst("DataModel"); game.PlaceId=1; game.GameId=1
 function game:GetService(n) if n=="Workspace" then return Workspace end return svc(n) end
 local task={ spawn=function(fn,...) real.pcall(fn,...) end, delay=function() end, wait=function() end }
 
--- in-memory persist mock (feature.lua needs get/set/slug/keyToString/stringToKey)
 local CACHE={}
-local persist={ get=function(_,k,d) local v=CACHE[k]; if v==nil then return d end return v end,
-  set=function(_,k,v) CACHE[k]=v end, scheduleSave=function() end, flush=function() end }
--- feature calls persist.get(key,default) (dot, not colon) -> adjust:
+local persist={}
 persist.get=function(k,d) local v=CACHE[k]; if v==nil then return d end return v end
 persist.set=function(k,v) CACHE[k]=v end
+persist.scheduleSave=function() end; persist.flush=function() end
 persist.slug=function(s) s=real.string.lower(s or "_"); s=real.string.gsub(s,"[^%w]+","_"); s=real.string.gsub(s,"^_+",""); s=real.string.gsub(s,"_+$",""); if s=="" then return "_" end return s end
 persist.keyToString=function(k) if not k then return nil end return real.tostring(k) end
 persist.stringToKey=function(s) if s==nil then return nil end return Enum.KeyCode.Unknown end
@@ -108,60 +106,49 @@ local aesthetic=myrequire("modules.aesthetic")
 local feature=myrequire("ui.feature")
 local Lighting=game:GetService("Lighting")
 
--- 1. register builds the whole panel (dropdown + 19 sliders) via REAL components/feature
 local ok1,e1=real.pcall(function() aesthetic.register() end)
 out.register_ok=ok1; if not ok1 then out.register_err=real.tostring(e1) end
 
--- count the sliders + dropdown actually built
-local nSlider,nDropOpt=0,0
-for _,o in real.ipairs(ALL) do
-  if o.ClassName=="TextButton" and (o._p.Text=="Summer" or o._p.Text=="Autumn") then nDropOpt=nDropOpt+1 end
+local function enable(id)
+  local ok,e=real.pcall(function() feature.setEnabled(id, true) end)
+  if not ok then out[id.."_err"]=real.tostring(e) end
+  return ok
 end
-out.dropdown_option_buttons=nDropOpt   -- expect >=2 (the option list)
-
--- 2. enable Preset Shaders -> shEnable(true): build effects + apply Lighting
-local ok2,e2=real.pcall(function() feature.setEnabled("aesthetic.shader", true) end)
-out.enable_ok=ok2; if not ok2 then out.enable_err=real.tostring(e2) end
+out.rtxlight_ok = enable("aesthetic.rtxlight")
 out.brightness_applied = (Lighting.Brightness==6.67)
-local fx={}
-for _,o in real.ipairs(ALL) do if not o._destroyed then fx[o.ClassName]=(fx[o.ClassName] or 0)+1 end end
-out.bloom = fx.BloomEffect or 0
-out.colorcorrection = fx.ColorCorrectionEffect or 0   -- expect 3
-out.dof = fx.DepthOfFieldEffect or 0
-out.sunrays = fx.SunRaysEffect or 0
-out.blur = fx.BlurEffect or 0
+out.bloom_ok = enable("aesthetic.bloom")
+out.dof_ok   = enable("aesthetic.dof")
+out.sun_ok   = enable("aesthetic.sunrays")
+out.grade_ok = enable("aesthetic.grade")
+out.blur_ok  = enable("aesthetic.motionblur")
 
--- 3. fire Heartbeat once -> motion blur callback must not error
-local ok3,e3=real.pcall(function() game:GetService("RunService").Heartbeat:Fire() end)
-out.heartbeat_ok=ok3; if not ok3 then out.heartbeat_err=real.tostring(e3) end
+local function countLive(cls) local n=0 for _,o in real.ipairs(ALL) do if not o._destroyed and o.ClassName==cls then n=n+1 end end return n end
+out.n_bloom=countLive("BloomEffect"); out.n_dof=countLive("DepthOfFieldEffect")
+out.n_sun=countLive("SunRaysEffect"); out.n_cc=countLive("ColorCorrectionEffect"); out.n_blur=countLive("BlurEffect")
 
--- 4. switch preset to Autumn via the dropdown option button -> cc1 tint changes
-local autumnBtn
-for _,o in real.ipairs(ALL) do if o.ClassName=="TextButton" and o._p.Text=="Autumn" then autumnBtn=o end end
-if autumnBtn then real.pcall(function() autumnBtn._e.MouseButton1Click:Fire() end) end
--- find a ColorCorrectionEffect tinted autumn (217,145,57)
-local autumnTintHit=false
+local okH,eH=real.pcall(function() game:GetService("RunService").Heartbeat:Fire() end)
+out.heartbeat_ok=okH; if not okH then out.heartbeat_err=real.tostring(eH) end
+
+-- switch Color Grade tint to Autumn via its dropdown option button
+local ab; for _,o in real.ipairs(ALL) do if o.ClassName=="TextButton" and o._p.Text=="Autumn" then ab=o end end
+if ab then real.pcall(function() ab._e.MouseButton1Click:Fire() end) end
+local autumn=false
 for _,o in real.ipairs(ALL) do
   if o.ClassName=="ColorCorrectionEffect" and not o._destroyed and o._p.TintColor and o._p.TintColor._c3 then
     local t=o._p.TintColor
-    if real.math.abs(t.R-217/255)<0.01 and real.math.abs(t.G-145/255)<0.01 then autumnTintHit=true end
+    if real.math.abs(t.R-217/255)<0.01 and real.math.abs(t.G-145/255)<0.01 then autumn=true end
   end
 end
-out.autumn_tint_applied=autumnTintHit
+out.autumn_tint=autumn
 
--- 5. disable -> effects destroyed + Lighting reverted
-local ok5,e5=real.pcall(function() feature.setEnabled("aesthetic.shader", false) end)
-out.disable_ok=ok5; if not ok5 then out.disable_err=real.tostring(e5) end
-local liveFx=0
-for _,o in real.ipairs(ALL) do
-  if not o._destroyed and (o.ClassName=="BloomEffect" or o.ClassName=="ColorCorrectionEffect"
-     or o.ClassName=="DepthOfFieldEffect" or o.ClassName=="SunRaysEffect" or o.ClassName=="BlurEffect") then liveFx=liveFx+1 end
+for _,id in real.ipairs({"aesthetic.rtxlight","aesthetic.bloom","aesthetic.dof","aesthetic.sunrays","aesthetic.grade","aesthetic.motionblur"}) do
+  real.pcall(function() feature.setEnabled(id, false) end)
 end
-out.fx_after_disable=liveFx   -- expect 0
+out.fx_after_disable = countLive("BloomEffect")+countLive("DepthOfFieldEffect")+countLive("SunRaysEffect")+countLive("ColorCorrectionEffect")+countLive("BlurEffect")
 
-local pass = ok1 and ok2 and ok3 and ok5 and out.brightness_applied and out.colorcorrection==3
-  and out.bloom==1 and out.dof==1 and out.sunrays==1 and out.blur==1 and out.autumn_tint_applied
-  and out.fx_after_disable==0 and nDropOpt>=2
+local pass = ok1 and out.rtxlight_ok and out.brightness_applied and out.bloom_ok and out.dof_ok
+  and out.sun_ok and out.grade_ok and out.blur_ok and out.n_bloom==1 and out.n_dof==1 and out.n_sun==1
+  and out.n_cc==3 and out.n_blur==1 and okH and out.autumn_tint and out.fx_after_disable==0
 local lines={}
 for k,v in real.pairs(out) do lines[#lines+1]="  "..k.." = "..real.tostring(v) end
 real.table.sort(lines)
