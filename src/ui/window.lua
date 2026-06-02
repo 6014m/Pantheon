@@ -37,6 +37,9 @@ local s = {
     dragConns = {},   -- global UIS connections for the "P" button drag; cleared on destroy
     spinTarget = 0,   -- accumulated target Rotation for the spin (always a multiple of 360)
     spinTween = nil,
+    tweens  = {},     -- [container] = running slide tween
+    targets = {},     -- [container] = {x,y} the slide is heading to (for settle-snap)
+    animGen = 0,      -- bumped per toggle so stale staggered starts no-op
 }
 
 -- [container Frame] = { x = origX, y = origY } captured the first time we see
@@ -109,9 +112,20 @@ local function playSlideSound()
 end
 
 local function animateContainers(showing)
-    -- Only the OPEN (visible) containers participate, so the stagger reflects
-    -- what's actually on screen instead of assuming every menu is open (which
-    -- made the slide crawl when most menus were closed).
+    -- Settle any in-flight animation FIRST: cancel running tweens, snap each
+    -- container to the spot it was heading to, and bump a generation token so
+    -- still-pending staggered starts from the previous toggle no-op. Without this,
+    -- a fast open/close captured a mid-slide position as "home" and panels
+    -- reopened overlapping. Only the OPEN (visible) containers participate.
+    s.animGen = s.animGen + 1
+    local gen = s.animGen
+    for c, tw in pairs(s.tweens) do
+        pcall(function() tw:Cancel() end)
+        local t = s.targets[c]
+        if t and c and c.Parent then c.Position = UDim2.fromOffset(t.x, t.y) end
+    end
+    s.tweens = {}
+
     local list = {}
     for _, c in ipairs(s.container:GetChildren()) do
         if c:IsA("GuiObject") and c.Visible then
@@ -119,7 +133,7 @@ local function animateContainers(showing)
         end
     end
 
-    -- On hide, capture each container's CURRENT spot as its home so it slides
+    -- On hide, capture each container's now-SETTLED spot as its home so it slides
     -- back exactly there on the next show (honoring user drags + auto-slots).
     if not showing then
         for _, c in ipairs(list) do
@@ -137,6 +151,7 @@ local function animateContainers(showing)
         local home = origPositions[c] or { x = c.Position.X.Offset, y = c.Position.Y.Offset }
         origPositions[c] = home
         local targetX = showing and home.x or OFF_SCREEN_X
+        s.targets[c] = { x = targetX, y = home.y }
 
         -- Pre-position off-screen before the show tween so the user doesn't
         -- see it teleport visually first.
@@ -145,15 +160,18 @@ local function animateContainers(showing)
         end
 
         task.delay((i - 1) * STAGGER_DELAY, function()
+            if gen ~= s.animGen then return end          -- superseded by a newer toggle
+            if not (c and c.Parent) then return end
             playSlideSound()
             local info = TweenInfo.new(
                 TWEEN_DURATION,
                 Enum.EasingStyle.Quad,
                 showing and Enum.EasingDirection.Out or Enum.EasingDirection.In
             )
-            TweenService:Create(c, info, {
-                Position = UDim2.fromOffset(targetX, home.y),
-            }):Play()
+            local tw = TweenService:Create(c, info, { Position = UDim2.fromOffset(targetX, home.y) })
+            s.tweens[c] = tw
+            tw.Completed:Connect(function() if s.tweens[c] == tw then s.tweens[c] = nil end end)
+            tw:Play()
         end)
     end
 end
@@ -329,6 +347,8 @@ function Window.destroy()
     -- (both live on the global service, so destroying the GUI doesn't sever them).
     for _, c in ipairs(s.dragConns) do pcall(function() c:Disconnect() end) end
     s.dragConns = {}
+    for _, tw in pairs(s.tweens) do pcall(function() tw:Cancel() end) end
+    s.tweens, s.targets = {}, {}
     pcall(function() container.cleanup() end)
 
     if s.screenGui then
