@@ -23,7 +23,7 @@ local theme = {
     -- Carbon-fiber texture tiled over container bodies so the near-black panels
     -- don't blend into each other / the world. Upload assets/carbon_fiber.png to
     -- Roblox and put its id in panelTexture; "" disables the overlay entirely.
-    panelTexture             = "",
+    panelTexture             = "rbxassetid://83752823743620",
     panelTextureTransparency = 0.82,
     panelTextureTint         = Color3.fromRGB(255, 255, 255),
     panelTextureTile         = 96,
