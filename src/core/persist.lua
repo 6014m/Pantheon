@@ -93,6 +93,20 @@ function persist.set(key, value)
     persist.scheduleSave()
 end
 
+-- Remove every cached key starting with `prefix` (e.g. "ui.pos." to wipe saved
+-- panel positions). Schedules a save if anything changed.
+function persist.clearPrefix(prefix)
+    if not loaded then persist.init() end
+    local changed = false
+    for k in pairs(cache) do
+        if type(k) == "string" and string.sub(k, 1, #prefix) == prefix then
+            cache[k] = nil
+            changed = true
+        end
+    end
+    if changed then persist.scheduleSave() end
+end
+
 -- Synchronous flush. Called by the shutdown teardown so pending debounced
 -- writes aren't lost when the user re-executes Pantheon mid-debounce.
 function persist.flush()

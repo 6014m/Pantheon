@@ -14,6 +14,7 @@ local theme     = require("ui.theme")
 local hex       = require("ui.hex")
 local keybinds  = require("core.keybinds")
 local container = require("ui.container")
+local persist   = require("core.persist")
 
 local UIS          = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
@@ -170,10 +171,16 @@ local function buildHexButton(sg)
             local delta = input.Position - dragStart
             if delta.Magnitude > 4 then moved = true end
             local g = theme.gridSize or 16
-            host.Position = UDim2.new(
-                startPos.X.Scale, math.floor((startPos.X.Offset + delta.X) / g + 0.5) * g,
-                startPos.Y.Scale, math.floor((startPos.Y.Offset + delta.Y) / g + 0.5) * g
-            )
+            -- Snap the DELTA so the grid starts where the button was grabbed.
+            local nx = startPos.X.Offset + math.floor(delta.X / g + 0.5) * g
+            local ny = startPos.Y.Offset + math.floor(delta.Y / g + 0.5) * g
+            -- Clamp on-screen (centered anchor; Y is bottom-anchored so offsets
+            -- are negative-up).
+            local pSz   = host.Parent.AbsoluteSize
+            local hw, hh = host.AbsoluteSize.X / 2, host.AbsoluteSize.Y / 2
+            nx = math.clamp(nx, hw, math.max(hw, pSz.X - hw))
+            ny = math.clamp(ny, hh - pSz.Y, -hh)
+            host.Position = UDim2.new(startPos.X.Scale, nx, startPos.Y.Scale, ny)
         end
     end)
     s.dragConns[#s.dragConns + 1] = UIS.InputEnded:Connect(function(input)
@@ -189,6 +196,13 @@ end
 
 function Window.init()
     if s.screenGui then return end
+
+    -- One-time: drop legacy saved panel positions so panels re-home to the new
+    -- below-topbar / grid-aligned defaults. Guarded so it runs once per game.
+    if not persist.get("ui.posReset_v1", false) then
+        persist.clearPrefix("ui.pos.")
+        persist.set("ui.posReset_v1", true)
+    end
 
     local sg = Instance.new("ScreenGui")
     sg.Name = "PantheonGui"

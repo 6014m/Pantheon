@@ -200,10 +200,15 @@ function Container.new(parent, name)
             if input.UserInputType == Enum.UserInputType.MouseMovement
                or input.UserInputType == Enum.UserInputType.Touch then
                 local delta = input.Position - dragStart
-                container.Position = UDim2.new(
-                    startPos.X.Scale, snap(startPos.X.Offset + delta.X),
-                    startPos.Y.Scale, snap(startPos.Y.Offset + delta.Y)
-                )
+                -- Snap the DELTA so the grid starts where the panel was grabbed.
+                local nx = startPos.X.Offset + snap(delta.X)
+                local ny = startPos.Y.Offset + snap(delta.Y)
+                -- Clamp so the panel can't be dragged off-screen.
+                local pSz = container.Parent.AbsoluteSize
+                local sSz = container.AbsoluteSize
+                nx = math.clamp(nx, 0, math.max(0, pSz.X - sSz.X))
+                ny = math.clamp(ny, 0, math.max(0, pSz.Y - sSz.Y))
+                container.Position = UDim2.new(startPos.X.Scale, nx, startPos.Y.Scale, ny)
             end
         end)
         dragConns[#dragConns + 1] = UIS.InputEnded:Connect(function(input)
