@@ -99,6 +99,28 @@ function Container.new(parent, name)
     updateGradient()
     container:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateGradient)
 
+    -- Carbon-fiber texture over the panel so the near-black bodies stay distinct
+    -- from each other and the world. Tiled, behind content (ZIndex 0), rounded
+    -- so the rectangular tile doesn't poke past the chamfered edge. Skipped
+    -- entirely when no texture asset is configured (theme.panelTexture == "").
+    if theme.panelTexture and theme.panelTexture ~= "" then
+        local carbon = Instance.new("ImageLabel")
+        carbon.Name = "CarbonTexture"
+        carbon.BackgroundTransparency = 1
+        carbon.Image = theme.panelTexture
+        carbon.ScaleType = Enum.ScaleType.Tile
+        carbon.TileSize = UDim2.fromOffset(theme.panelTextureTile or 96, theme.panelTextureTile or 96)
+        carbon.ImageColor3 = theme.panelTextureTint or Color3.new(1, 1, 1)
+        carbon.ImageTransparency = theme.panelTextureTransparency or 0.85
+        -- Cover the full panel, countering the container's UIPadding (like headerHost).
+        carbon.Size = UDim2.new(1, 12, 1, HEADER_H + CHAMFER + 4)
+        carbon.Position = UDim2.fromOffset(-6, -HEADER_H)
+        carbon.ZIndex = 0
+        carbon.Parent = container
+        local cc = Instance.new("UICorner", carbon)
+        cc.CornerRadius = UDim.new(0, CHAMFER)
+    end
+
     -- Header text sits over the accent band. Positioned in the unpadded
     -- top region (0 .. HEADER_H) so it doesn't get shoved by UIPadding.
     local headerText = Instance.new("TextLabel")
