@@ -10,6 +10,12 @@ local theme = {
     fgDim    = Color3.fromRGB(150, 150, 160),
     border   = Color3.fromRGB(45, 45, 50),
 
+    -- "P" open button: the glyph is drawn in the SAME color as its hex fill
+    -- (theme.accent) so it blends, and a stroke keeps it legible. Tweak these
+    -- to restyle the logo without touching window.lua.
+    logoStroke          = Color3.fromRGB(230, 230, 235),
+    logoStrokeThickness = 1.5,
+
     -- Wurst-style ON/OFF state colors
     on       = Color3.fromRGB(60, 222, 60),
     off      = Color3.fromRGB(222, 60, 60),

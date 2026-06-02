@@ -121,11 +121,17 @@ local function buildHexButton(sg)
     label.Size = UDim2.fromScale(1, 1)
     label.BackgroundTransparency = 1
     label.Text = "P"
-    label.TextColor3 = theme.fg
+    label.TextColor3 = theme.accent          -- match the hex button it sits on
     label.Font = theme.fontBold
     label.TextSize = 18
     label.ZIndex = 12
     label.Parent = host
+
+    -- Border so the same-colored "P" stays visible against its hex fill.
+    local labelStroke = Instance.new("UIStroke")
+    labelStroke.Thickness = theme.logoStrokeThickness or 1.5
+    labelStroke.Color     = theme.logoStroke or theme.fg
+    labelStroke.Parent    = label
 
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.fromScale(1, 1)
