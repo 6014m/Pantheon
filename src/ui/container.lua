@@ -11,7 +11,8 @@
 local theme   = require("ui.theme")
 local persist = require("core.persist")
 
-local UIS = game:GetService("UserInputService")
+local UIS        = game:GetService("UserInputService")
+local GuiService = game:GetService("GuiService")
 
 local Container = {}
 Container.__index = Container
@@ -44,6 +45,21 @@ local navRef = nil
 local function posKey(name)  return "ui.pos."  .. persist.slug(name) end
 local function openKey(name) return "ui.open." .. persist.slug(name) end
 
+-- Default Y for auto-placed containers: the Roblox topbar height + a margin.
+-- The ScreenGui uses IgnoreGuiInset, so without this offset panels spawn UNDER
+-- the topbar in games that show it. The bottom-anchored P button is unaffected.
+local function baseTopY()
+    local ok, inset = pcall(function() return GuiService:GetGuiInset() end)
+    return ((ok and inset and inset.Y) or 36) + 16
+end
+
+-- Quantize a position to the drag-snap grid so panels snap to a grid instead
+-- of free pixel drag.
+local function snap(v)
+    local g = theme.gridSize or 16
+    return math.floor(v / g + 0.5) * g
+end
+
 local IMAGE_ID     = "rbxassetid://77797049442743"
 local CHAMFER      = 24
 local SLICE_CENTER = Rect.new(CHAMFER, CHAMFER, 64 - CHAMFER, 64 - CHAMFER)
@@ -61,7 +77,7 @@ function Container.new(parent, name)
     container.Name = "Container_" .. name
     container.Size = UDim2.new(0, containerW, 0, HEADER_H + CHAMFER + 4)
     container.AutomaticSize = Enum.AutomaticSize.Y
-    container.Position = UDim2.fromOffset(x, 16)
+    container.Position = UDim2.fromOffset(x, baseTopY())
     container.BackgroundTransparency = 1
     container.Image = IMAGE_ID
     container.ImageColor3 = Color3.new(1, 1, 1)          -- white so the UIGradient tints freely
@@ -185,8 +201,8 @@ function Container.new(parent, name)
                or input.UserInputType == Enum.UserInputType.Touch then
                 local delta = input.Position - dragStart
                 container.Position = UDim2.new(
-                    startPos.X.Scale, startPos.X.Offset + delta.X,
-                    startPos.Y.Scale, startPos.Y.Offset + delta.Y
+                    startPos.X.Scale, snap(startPos.X.Offset + delta.X),
+                    startPos.Y.Scale, snap(startPos.Y.Offset + delta.Y)
                 )
             end
         end)
@@ -244,7 +260,7 @@ function Container:_placeIfNeeded()
     slots[k] = self
     self.slot = k
     local w, gap = theme.containerWidth, theme.containerGap
-    local baseX, baseY = 16 + w + gap, 16
+    local baseX, baseY = 16 + w + gap, baseTopY()
     if navRef and navRef.root then
         baseX = navRef.root.Position.X.Offset + w + gap
         baseY = navRef.root.Position.Y.Offset

@@ -169,9 +169,10 @@ local function buildHexButton(sg)
            or input.UserInputType == Enum.UserInputType.Touch then
             local delta = input.Position - dragStart
             if delta.Magnitude > 4 then moved = true end
+            local g = theme.gridSize or 16
             host.Position = UDim2.new(
-                startPos.X.Scale, startPos.X.Offset + delta.X,
-                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+                startPos.X.Scale, math.floor((startPos.X.Offset + delta.X) / g + 0.5) * g,
+                startPos.Y.Scale, math.floor((startPos.Y.Offset + delta.Y) / g + 0.5) * g
             )
         end
     end)
