@@ -50,6 +50,11 @@ local theme = {
     rowHeight      = 30,
     cornerRadius   = UDim.new(0, 0),
     padding        = 6,
+
+    -- Slide sound: played per panel as it slides on/off screen (master toggle).
+    -- Set slideSoundId = "" to disable.
+    slideSoundId = "rbxassetid://106626079056148",
+    slideVolume  = 0.5,
 }
 
 return theme

@@ -18,6 +18,8 @@ local persist   = require("core.persist")
 
 local UIS          = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
+local SoundService = game:GetService("SoundService")
+local Debris       = game:GetService("Debris")
 
 local Window = {}
 
@@ -44,6 +46,21 @@ local function captureOrig(c)
     local p = { x = c.Position.X.Offset, y = c.Position.Y.Offset }
     origPositions[c] = p
     return p
+end
+
+-- Per-event Sound (NEVER a persistent one -- a Sound created at script load
+-- crashes Wave); Debris reaps it after it has played. Parented to SoundService
+-- so it plays 2D. No-op when the id is cleared.
+local function playSlideSound()
+    if not theme.slideSoundId or theme.slideSoundId == "" then return end
+    pcall(function()
+        local snd = Instance.new("Sound")
+        snd.SoundId = theme.slideSoundId
+        snd.Volume  = theme.slideVolume or 0.5
+        snd.Parent  = SoundService
+        snd:Play()
+        Debris:AddItem(snd, 2)
+    end)
 end
 
 local function animateContainers(showing)
@@ -83,6 +100,7 @@ local function animateContainers(showing)
         end
 
         task.delay((i - 1) * STAGGER_DELAY, function()
+            playSlideSound()
             local info = TweenInfo.new(
                 TWEEN_DURATION,
                 Enum.EasingStyle.Quad,
