@@ -202,7 +202,12 @@ Engine.ACTIONS = ACTIONS
 -- playing a specific anim) can read the id out of trigger.<field>. Stateless
 -- checks just ignore the arg.
 local CONDITIONS = {}
-CONDITIONS.locked_on = function() return state.target ~= nil end
+-- "Locked on" = the Lock-On camera is actually ENGAGED: master toggle on AND a
+-- target. NOT merely "a target exists" -- state.target is written by Target Select
+-- independently of Lock-On (see state.lua), so the old `state.target ~= nil` check
+-- passed whenever Target Select had picked someone, firing a "lockon only" tech even
+-- with Lock-On off. Matches the same engaged-check releaseHold() already uses.
+CONDITIONS.locked_on = function() return state.lockon_enabled == true and state.target ~= nil end
 CONDITIONS.shiftlock = function() return state.shiftlock_active == true end
 
 -- target_playing: TRUE iff the current target's Animator currently has a track
