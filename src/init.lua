@@ -57,6 +57,7 @@ aesthetic.register()
 -- can find one for this PlaceId. (Requiring in a non-matching game just adds to
 -- the registry table; its .register() only runs if the PlaceId matches.)
 require("games.jjs")
+require("games.evilplate")
 
 -- Per-game module (if registered for this PlaceId)
 local gameMod = registry.current()

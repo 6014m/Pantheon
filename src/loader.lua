@@ -64,6 +64,7 @@ local files = {
     { "modules.system",            "modules/system.lua" },
     { "modules.aesthetic",         "modules/aesthetic.lua" },
     { "games.jjs",                 "games/jjs.lua" },
+    { "games.evilplate",           "games/evilplate.lua" },
     { "init",                      "init.lua" },
 }
 

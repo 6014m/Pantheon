@@ -42,6 +42,7 @@ BUILD_ORDER = [
     "modules/system",
     "modules/aesthetic",
     "games/jjs",
+    "games/evilplate",
     "init",
 ]
 
