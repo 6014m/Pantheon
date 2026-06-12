@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Offline mock-test for modules/misc/autoobby.lua (PathfindingService version).
+"""Offline mock-test for modules/misc/autoobby.lua (A* node-graph pathfinder).
 
-Checks (under a fake Roblox env): the feature declaration, the damage heuristic,
-jumpVelocity/jumpHeight, computePath (returns waypoints on Success / nil on NoPath),
-rayCollide (returns a collidable hit), and the setActive lifecycle.
-
-The live nav loop / movement / pathfinding follow can only be checked in-game.
+Validates the pure pieces under a fake Roblox env: feature def, jump physics
+(getJumpPhysics / airTimeForDeltaY), hazard detection, the Heap priority queue,
+A* over a hand-built graph, findNearestNode, rayCollide, and the setActive
+lifecycle. The Roblox-only pipeline (scanParts/buildNodes/buildEdges/executor)
+can only be checked in-game.
 """
 import sys
 from lupa import LuaRuntime
@@ -16,8 +16,6 @@ SRC = open(r"C:\Users\killt\Desktop\custom scripts\[Uni] Pantheon\src\modules\mi
 PREAMBLE = r"""
 __DEF = nil
 __SPAWNED = 0
-__PATH_STATUS = nil
-__WAYPOINTS = nil
 
 local VMT = {}
 function VMT.__add(a,b) return Vector3.new(a.X+b.X,a.Y+b.Y,a.Z+b.Z) end
@@ -38,7 +36,7 @@ Vector3 = { new=function(x,y,z) return setmetatable({X=x or 0,Y=y or 0,Z=z or 0}
 Vector2 = { new=function(x,y) return {X=x or 0,Y=y or 0} end }
 UDim    = { new=function(s,o) return {Scale=s,Offset=o} end }
 UDim2   = { new=function() return {} end, fromOffset=function() return {} end, fromScale=function() return {} end }
-CFrame  = { lookAt=function(a,b) return { LookVector=(b-a).Unit } end, new=function() return {} end }
+CFrame  = { lookAt=function(a,b) return {} end, new=function() return {} end }
 Color3  = { new=function(r,g,b) return {R=r or 0,G=g or 0,B=b or 0} end,
             fromRGB=function(r,g,b) return {R=(r or 0)/255,G=(g or 0)/255,B=(b or 0)/255} end }
 Enum = setmetatable({}, { __index=function(t,cat)
@@ -60,19 +58,17 @@ end
 Instance = { new=function(class,parent) local i=mkInstance(class); if parent then i.Parent=parent end; return i end }
 
 local function newSignal() return { Connect=function() return {Disconnect=function() end} end } end
-
 __CHAR = { Name="Char" }
 function __CHAR:FindFirstChild(n) if n=="HumanoidRootPart" then return __HRP end return nil end
 function __CHAR:FindFirstChildOfClass(c) if c=="Humanoid" then return __HUM end return nil end
 __HRP = setmetatable({ Name="HumanoidRootPart" }, { __index=function(_,k)
   if k=="Position" then return Vector3.new(0,3,0) end
-  if k=="CFrame" then return { LookVector=Vector3.new(1,0,0), Position=Vector3.new(0,3,0) } end
   if k=="AssemblyLinearVelocity" then return Vector3.new(0,0,0) end
   return nil end, __newindex=function() end })
 __HUM = { UseJumpPower=true, JumpPower=50, JumpHeight=7.2, WalkSpeed=16, Health=100, AutoRotate=true }
 function __HUM:GetState() return Enum.HumanoidStateType.Running end
 function __HUM:Move() end
-function __HUM:ChangeState() end
+function __HUM:MoveTo() end
 __MOUSE = { Target=nil, Hit={ Position=Vector3.new(20,0,0) }, TargetFilter=nil }
 
 local Players = { LocalPlayer={ Character=__CHAR, GetMouse=function() return __MOUSE end,
@@ -80,13 +76,8 @@ local Players = { LocalPlayer={ Character=__CHAR, GetMouse=function() return __M
 local RunService = { Heartbeat={ Wait=function() return 1/60 end, Connect=function() return {Disconnect=function() end} end },
                      RenderStepped=newSignal() }
 local UIS = { InputBegan=newSignal() }
-local Pathfinder = { CreatePath=function(_, p)
-  return { Status = (__PATH_STATUS or Enum.PathStatus.Success),
-           ComputeAsync=function() end,
-           GetWaypoints=function() return __WAYPOINTS or {} end } end }
 
-workspace = { Gravity=196.2, CurrentCamera={ CFrame={ LookVector=Vector3.new(1,0,0) },
-  WorldToViewportPoint=function() return Vector3.new(100,100,5), true end } }
+workspace = { Gravity=196.2, CurrentCamera={ WorldToViewportPoint=function() return Vector3.new(100,100,5), true end } }
 __PLATFORMS = {}
 function workspace:Raycast(origin, dir, params)
   if dir.Y >= 0 then return nil end
@@ -103,7 +94,6 @@ game = { GetService=function(_,n)
   if n=="Players" then return Players end
   if n=="RunService" then return RunService end
   if n=="UserInputService" then return UIS end
-  if n=="PathfindingService" then return Pathfinder end
   return {} end }
 task = { spawn=function() __SPAWNED=__SPAWNED+1; return {} end, wait=function() end, defer=function() end }
 
@@ -144,46 +134,50 @@ ck("keybind G", __DEF.defaultKey==Enum.KeyCode.G)
 ck("has 3 settings", __DEF.settings and #__DEF.settings==3)
 
 local D = AOB._diag
+
+-- jump physics
 local humJP = { UseJumpPower=true, JumpPower=50, WalkSpeed=16 }
-local humJH = { UseJumpPower=false, JumpHeight=7.2, WalkSpeed=16 }
-ck("jumpVelocity uses JumpPower", D.jumpVelocity(humJP)==50)
-ck("jumpVelocity from JumpHeight ~53.15", approx(D.jumpVelocity(humJH), 53.153))
-ck("jumpHeight from JumpPower ~6.37", approx(D.jumpHeight(humJP), 6.371))
-ck("jumpHeight from JumpHeight ==7.2", approx(D.jumpHeight(humJH), 7.2))
+local phys = D.getJumpPhysics(humJP)
+ck("getJumpPhysics jumpVel==50", phys.jumpVel==50)
+ck("getJumpPhysics maxJumpDist ~6.93", approx(phys.maxJumpDist, 6.93))
+ck("airTimeForDeltaY flat ~0.51", approx(D.airTimeForDeltaY(phys, 0), 0.5097))
+ck("airTimeForDeltaY above apex -> nil", D.airTimeForDeltaY(phys, 10)==nil)
 
-ck("name: KillBrick flagged", D.isDamage(mkPart("KillBrick"))==true)
-ck("ancestor name flagged", D.isDamage(mkPart("Platform", {parent=mkPart("Killzone")}))==true)
-ck("red colour flagged", D.isDamage(mkPart("Block", {color=Color3.new(0.9,0.1,0.1)}))==true)
-ck("lava material flagged", D.isDamage(mkPart("Block", {material=Enum.Material.CrackedLava}))==true)
-ck("plain grey platform safe", D.isDamage(mkPart("Platform"))==false)
+-- hazard detection
+ck("isHazard KillBrick", D.isHazard(mkPart("KillBrick"))==true)
+ck("isHazard Lava name", D.isHazard(mkPart("Lava"))==true)
+ck("isHazard CrackedLava material", D.isHazard(mkPart("X", {material=Enum.Material.CrackedLava}))==true)
+ck("isHazard strong-red", D.isHazard(mkPart("X", {color=Color3.new(0.9,0.1,0.1)}))==true)
+ck("isHazard grey platform safe", D.isHazard(mkPart("Platform"))==false)
 
--- planChain: builds a chain of reachable jump landings start -> ... -> goal
-__PLATFORMS = {
-  { x=-1.5, z=0, topY=0, hx=2.5, hz=4, part=mkPart("Start") },   -- x[-4,1]
-  { x=7,    z=0, topY=0, hx=2,   hz=4, part=mkPart("A") },        -- x[5,9]
-  { x=14,   z=0, topY=0, hx=2,   hz=4, part=mkPart("B") },        -- x[12,16]
-}
-local chain = D.planChain(Vector3.new(0,3,0), humJP, Vector3.new(14,0,0))
-ck("planChain builds a multi-hop chain", chain ~= nil and #chain >= 2)
-ck("planChain ends on the goal", #chain>0 and approx(chain[#chain].X, 14))
-ck("planChain first hop lands on platform A", chain[1] ~= nil and chain[1].X >= 5 and chain[1].X <= 9)
+-- Heap (binary min-heap priority queue)
+local h = D.Heap.new()
+h:push("c", 3); h:push("a", 1); h:push("b", 2)
+ck("Heap pops min first (a)", h:pop()=="a")
+ck("Heap pops next (b)", h:pop()=="b")
+ck("Heap pops last (c)", h:pop()=="c")
 
--- rayCollide returns a collidable hit (passes mock 'collidable' parts straight through)
+-- A* over a hand-built graph A -> B -> C
+local A = { pos=Vector3.new(0,0,0),  edges={} }
+local B = { pos=Vector3.new(5,0,0),  edges={} }
+local C = { pos=Vector3.new(10,0,0), edges={} }
+A.edges = { { to=B, cost=5 } }
+B.edges = { { to=C, cost=5 } }
+local path = D.aStar(A, C)
+ck("aStar finds a 3-node path", path ~= nil and #path == 3)
+ck("aStar path runs A..C", path ~= nil and path[1].node == A and path[#path].node == C)
+ck("findNearestNode picks B near (4,0,0)", D.findNearestNode({A,B,C}, Vector3.new(4,0,0)) == B)
+
+-- rayCollide finds the floor (passes mock 'collidable' parts straight through)
 __PLATFORMS = { { x=0, z=0, topY=0, hx=4, hz=4, part=mkPart("Floor") } }
 local hit = D.rayCollide(Vector3.new(0,5,0), Vector3.new(0,-20,0))
 ck("rayCollide finds the floor", hit ~= nil and approx(hit.Position.Y, 0))
 
--- reachable (distance judgement)
-ck("reachable 6-stud flat jump", D.reachable(humJP, 6, 0)==true)
-ck("reject 12-stud flat jump", D.reachable(humJP, 12, 0)==false)
-ck("reject too-high jump (dy=10>peak)", D.reachable(humJP, 2, 10)==false)
-
 -- lifecycle
 local onToggle = __DEF.onToggle
-onToggle(true)
-ck("setActive(true) spawned nav loop", __SPAWNED>=1)
+onToggle(true);  ck("setActive(true) spawned nav loop", __SPAWNED>=1)
 onToggle(false); ck("setActive(false) no error", true)
-AOB.destroy(); ck("destroy no error", true)
+AOB.destroy();   ck("destroy no error", true)
 
 print("")
 print(("RESULT: %d passed, %d failed"):format(pass, fail))
