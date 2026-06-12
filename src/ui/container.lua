@@ -101,10 +101,16 @@ function Container.new(parent, name)
     gradient.Rotation = 90                                -- top -> bottom
     gradient.Parent = container
 
+    local lastGradPct = -1
     local function updateGradient()
         local h = container.AbsoluteSize.Y
         if h <= 0 then return end
         local pct = math.clamp(HEADER_H / h, 0.001, 0.999)
+        -- The seam sits at `pct` of the height; skip rebuilding the 4-stop
+        -- ColorSequence when a size change doesn't move it visibly (AbsoluteSize
+        -- fires repeatedly as feature/cog panels expand and collapse).
+        if math.abs(pct - lastGradPct) < 0.002 then return end
+        lastGradPct = pct
         gradient.Color = ColorSequence.new({
             ColorSequenceKeypoint.new(0,                                 theme.headerBand),
             ColorSequenceKeypoint.new(pct,                               theme.headerBand),

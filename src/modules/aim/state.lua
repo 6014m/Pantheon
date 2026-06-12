@@ -205,24 +205,25 @@ function state.getLeadTime()
     return lead
 end
 
+-- A part that belongs to a different *player's* character (not ours, and not an
+-- NPC / dummy / mount). Hoisted to module scope (was a per-call closure) so
+-- isGrabbing's ~20Hz polling doesn't reallocate two closures every call;
+-- `character` is threaded through as a parameter.
+local function foreignPlayerPart(p, character)
+    if not p or not p.Parent then return false end
+    if p:IsDescendantOf(character) then return false end
+    local m = p:FindFirstAncestorOfClass("Model")
+    return m ~= nil and m ~= character
+        and PlayersService:GetPlayerFromCharacter(m) ~= nil
+end
+
+local function joinsToForeign(j, character)
+    return (j:IsA("Weld") or j:IsA("WeldConstraint") or j:IsA("Motor6D"))
+        and (foreignPlayerPart(j.Part0, character) or foreignPlayerPart(j.Part1, character))
+end
+
 function state.isWeldedToOther(character)
     if not character then return false end
-
-    -- A part that belongs to a different *player's* character (not ours, and
-    -- not an NPC / dummy / mount).
-    local function foreignPlayerPart(p)
-        if not p or not p.Parent then return false end
-        if p:IsDescendantOf(character) then return false end
-        local m = p:FindFirstAncestorOfClass("Model")
-        return m ~= nil and m ~= character
-            and PlayersService:GetPlayerFromCharacter(m) ~= nil
-    end
-
-    local function joinsToForeign(j)
-        return (j:IsA("Weld") or j:IsA("WeldConstraint") or j:IsA("Motor6D"))
-            and (foreignPlayerPart(j.Part0) or foreignPlayerPart(j.Part1))
-    end
-
     for _, d in ipairs(character:GetDescendants()) do
         if d:IsA("BasePart") then
             -- GetJoints() finds joints by their Part0/Part1 references no matter
@@ -234,13 +235,13 @@ function state.isWeldedToOther(character)
             local ok, joints = pcall(function() return d:GetJoints() end)
             if ok and joints then
                 for _, j in ipairs(joints) do
-                    if joinsToForeign(j) then return true end
+                    if joinsToForeign(j, character) then return true end
                 end
             end
         elseif d:IsA("Weld") or d:IsA("WeldConstraint") or d:IsA("Motor6D") then
             -- Fallback: a weld instance parented inside our own character, in
             -- case GetJoints under-reports WeldConstraints on this executor.
-            if joinsToForeign(d) then return true end
+            if joinsToForeign(d, character) then return true end
         end
     end
     return false

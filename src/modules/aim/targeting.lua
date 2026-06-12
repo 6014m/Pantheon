@@ -13,6 +13,13 @@ local Workspace = game:GetService("Workspace")
 
 local Targeting = {}
 
+-- Reused across isVisibleChar calls so the per-candidate visibility raycast
+-- (Target Select runs getBestTarget at 30Hz x N players when the visibility check
+-- is on) doesn't allocate a fresh RaycastParams + ignore table every time.
+local visParams = RaycastParams.new()
+visParams.FilterType = Enum.RaycastFilterType.Blacklist
+local visIgnore = {}
+
 local function rootOf(char)
     return char and char:FindFirstChild("HumanoidRootPart")
 end
@@ -51,21 +58,20 @@ local function isVisibleChar(char)
     local direction = root.Position - origin
     if direction.Magnitude <= 0.01 then return true end
 
-    local ignoreList = { Players.LocalPlayer.Character }
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Blacklist
-    params.FilterDescendantsInstances = ignoreList
+    table.clear(visIgnore)
+    visIgnore[1] = Players.LocalPlayer.Character
+    visParams.FilterDescendantsInstances = visIgnore
 
     while true do
-        local result = Workspace:Raycast(origin, direction, params)
+        local result = Workspace:Raycast(origin, direction, visParams)
         if not result then return true end
 
         local hit = result.Instance
         if hit:IsDescendantOf(char) then return true end
 
         if hit:IsA("BasePart") and (hit.Transparency or 0) > 0.4 and not hit.CanCollide then
-            table.insert(ignoreList, hit)
-            params.FilterDescendantsInstances = ignoreList
+            visIgnore[#visIgnore + 1] = hit
+            visParams.FilterDescendantsInstances = visIgnore
             local dirUnit = direction.Unit
             origin = result.Position + dirUnit * 0.05
             direction = root.Position - origin

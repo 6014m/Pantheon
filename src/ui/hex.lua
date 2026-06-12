@@ -1,6 +1,8 @@
 -- Hexagon shape builder. Draws a flat-top regular hexagon as a stack of
--- horizontal rows whose width matches the hex's geometry at that y. With
--- ~1 row per pixel of height, the diagonal edges look smooth.
+-- horizontal rows whose width matches the hex's geometry at that y. Rows are
+-- ~2px tall and each overlaps its neighbor by 1px to hide the seam, so the
+-- diagonal edges still read smooth while halving the GuiObject count vs the old
+-- 1-row-per-pixel build (the hub draws ~3 hexes per feature row, so it adds up).
 --
 -- Geometry for a flat-top hex inscribed in w x h:
 --   * widest at the vertical middle (width = w)
@@ -16,7 +18,9 @@ function hex.build(parent, w, h, color, zIndex, texture)
     -- row becomes an ImageLabel showing its horizontal band of `image` (assumed
     -- `src` px square) over the base `color`, so the picture fills the hex
     -- silhouette -- used to give the "P" button the same carbon look as panels.
-    local rows = math.max(8, math.ceil(h))
+    -- ~2px per row (was ~1px). rowH+1 sizing below keeps a 1px overlap so the
+    -- coarser stepping doesn't open gaps on the diagonal edges.
+    local rows = math.max(8, math.ceil(h / 2))
     local rowH = h / rows
     local src  = texture and (texture.src or 128) or nil
 

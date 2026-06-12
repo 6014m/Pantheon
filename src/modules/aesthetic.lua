@@ -27,10 +27,17 @@ local orig = {
 local st = { fullbright = false, nofog = false, fovOn = false, fov = 90, timeOn = false, clock = 12 }
 local enforceConn
 
+-- Color constants hoisted out of the per-frame enforcers (apply / applyGrade run
+-- on RenderStepped while active). Building these with Color3.fromRGB every frame
+-- allocated a fresh userdata 60x/sec for a value that never changes -- pure GC churn.
+local FB_GREY  = Color3.fromRGB(178, 178, 178)   -- fullbright ambient
+local CC2_TINT = Color3.fromRGB(255, 247, 239)   -- color-grade pass 2 tint
+local CC3_TINT = Color3.fromRGB(255, 255, 255)   -- color-grade pass 3 tint
+
 local function apply()
     if st.fullbright then
-        Lighting.Brightness = 2; Lighting.Ambient = Color3.fromRGB(178, 178, 178)
-        Lighting.OutdoorAmbient = Color3.fromRGB(178, 178, 178); Lighting.GlobalShadows = false
+        Lighting.Brightness = 2; Lighting.Ambient = FB_GREY
+        Lighting.OutdoorAmbient = FB_GREY; Lighting.GlobalShadows = false
     end
     if st.nofog then Lighting.FogEnd = 1e9 end
     if st.timeOn then Lighting.ClockTime = st.clock end
@@ -151,8 +158,8 @@ local function applyDof()   local e = fx.dof;   if e then e.FocusDistance = sv.d
 local function applySun()   local e = fx.sun;   if e then e.Intensity = sv.sunIntensity; e.Spread = sv.sunSpread end end
 local function applyGrade()
     if fx.cc1 then fx.cc1.Brightness = sv.cc1B; fx.cc1.Contrast = sv.cc1C; fx.cc1.Saturation = sv.cc1S; fx.cc1.TintColor = GRADE_TINT end
-    if fx.cc2 then fx.cc2.Brightness = 0;   fx.cc2.Contrast = -0.07; fx.cc2.Saturation = 0;    fx.cc2.TintColor = Color3.fromRGB(255, 247, 239) end
-    if fx.cc3 then fx.cc3.Brightness = 0.2; fx.cc3.Contrast = 0.45;  fx.cc3.Saturation = -0.1; fx.cc3.TintColor = Color3.fromRGB(255, 255, 255) end
+    if fx.cc2 then fx.cc2.Brightness = 0;   fx.cc2.Contrast = -0.07; fx.cc2.Saturation = 0;    fx.cc2.TintColor = CC2_TINT end
+    if fx.cc3 then fx.cc3.Brightness = 0.2; fx.cc3.Contrast = 0.45;  fx.cc3.Saturation = -0.1; fx.cc3.TintColor = CC3_TINT end
 end
 
 local function enableBlur(on)
