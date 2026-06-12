@@ -63,6 +63,29 @@ local function reexecNow()
 end
 System.reexec = reexecNow
 
+-- "Unload Pantheon": the user-facing unexecute. Two-click confirm because the
+-- button sits right next to "Re-Execute Now" -- a misclick here would otherwise
+-- nuke the whole hub. Delegates to the bundle's full teardown + global-erase
+-- (genv.Pantheon.unload), with a hand-rolled fallback for older bundles.
+local unloadArmed = false
+local function unloadPantheon()
+    if not unloadArmed then
+        unloadArmed = true
+        notify.warn("Click 'Unload Pantheon' again to fully remove the hub.")
+        task.delay(4, function() unloadArmed = false end)
+        return
+    end
+    unloadArmed = false
+    local genv = (getgenv and getgenv()) or _G
+    if genv.Pantheon and type(genv.Pantheon.unload) == "function" then
+        genv.Pantheon.unload()
+    elseif genv.Pantheon and type(genv.Pantheon.shutdown) == "function" then
+        pcall(genv.Pantheon.shutdown)
+        genv.Pantheon          = nil
+        genv.PANTHEON_TP_QUEUED = nil
+    end
+end
+
 local function queuePayload()
     if not queueteleport then return false end
     return (pcall(queueteleport, PAYLOAD))
@@ -105,11 +128,12 @@ function System.register()
     box:add(feature.declare({
         id          = "system.auto_reexec",
         name        = "Auto Re-Execute (teleport)",
-        description = "Re-runs Pantheon automatically after a Roblox teleport (e.g. JJS lobby to a match) so the hub follows you. Uses your executor's queue_on_teleport. Use 'Re-Execute Now' to reload the latest build on demand.",
+        description = "Re-runs Pantheon automatically after a Roblox teleport (e.g. JJS lobby to a match) so the hub follows you. Uses your executor's queue_on_teleport. Use 'Re-Execute Now' to reload the latest build on demand, or 'Unload Pantheon' to fully remove the hub (un-execute) -- it tears everything down and clears its globals so the game is left clean.",
         default     = true,
         onToggle    = setAuto,
         settings    = {
             { type = "button", name = "Re-Execute Now", onClick = function() reexecNow() end },
+            { type = "button", name = "Unload Pantheon", onClick = function() unloadPantheon() end },
         },
     }).root)
     log.info("System module registered")

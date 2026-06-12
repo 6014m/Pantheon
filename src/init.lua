@@ -77,7 +77,7 @@ nav.populate()
 -- Order matters: aim first (it stops render binds and unhooks the UIS
 -- __newindex, so leftover input events from the about-to-die UI don't reach
 -- already-torn-down state), then UI, then keybinds, then persist flush.
-genv.Pantheon.shutdown = function()
+local function shutdown()
     -- Per-game module FIRST, while aim/shiftlock are still alive, so it can undo
     -- state it set on register (e.g. JJS force-enables shiftlock PAIR mode).
     -- Without this the game module's register() re-ran on every teleport (Auto
@@ -93,6 +93,33 @@ genv.Pantheon.shutdown = function()
     pcall(function() if notify.destroy     then notify.destroy()     end end)
     pcall(function() if keybinds.destroy then keybinds.destroy() end end)
     pcall(function() if persist.flush    then persist.flush()    end end)
+end
+genv.Pantheon.shutdown = shutdown
+
+-- Full removal ("Unload" / unexecute, from the Pantheon menu's cog). shutdown()
+-- tears everything down but deliberately leaves the genv.Pantheon handle in place
+-- so a later re-execute can find it and replace the instance. unload() is the
+-- harder stop the user asked for: it runs the same teardown, then erases every
+-- global handle so nothing -- not a stray reference, not the teleport latch --
+-- can resurrect the hub. The game is left as if Pantheon never ran.
+--
+-- Caveat: an already-registered Auto Re-Execute teleport payload can't be
+-- un-queued on most executors, so teleporting AFTER unload may still reload a
+-- fresh Pantheon. Turn Auto Re-Execute off first if you want it gone across
+-- teleports too.
+genv.Pantheon.unload = function()
+    pcall(shutdown)
+    -- Native Roblox toast: independent of our just-destroyed GUI, so it's the one
+    -- confirmation the user still sees after everything else is gone.
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title    = "Pantheon",
+            Text     = "Unloaded. Re-run the loadstring to bring it back.",
+            Duration = 4,
+        })
+    end)
+    genv.Pantheon          = nil
+    genv.PANTHEON_TP_QUEUED = nil
 end
 
 local buildTag = rawget(_G, "PANTHEON_BUILD") or "?"
