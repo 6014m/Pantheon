@@ -1,19 +1,15 @@
--- Auto Obby: navigates the local character to a goal you click, using Roblox's
--- PathfindingService for routing and driving the body with direct velocity so it
--- actually moves on an executor.
+-- Auto Obby: set a final destination, and it PLANS the whole chain of jumps up
+-- front (start -> platform -> platform -> ... -> goal), then executes them one by
+-- one. Planning fixed, validated landing spots is far more stable than deciding
+-- every frame. The planned jumps are drawn as dots so you can see the route.
 --
--- Two lessons this is built around (they're why naive versions don't work):
---  1) MOVEMENT: Humanoid:Move is zeroed every frame by the default control script,
---     and Wave often can't disable controls -- so we set HumanoidRootPart velocity
---     directly each frame (horizontal at WalkSpeed, vertical kept for gravity/jumps).
---  2) RAYCASTS: RaycastParams.RespectCanCollide isn't honored on Wave, so we cast
---     THROUGH non-collidable parts (invisible zone walls) by hand to the first solid
---     surface -- used for footing checks and the fallback's gap detection.
---
--- Flow: engage with the keybind -> a preview reticle tracks your cursor -> click to
--- drop a goal -> PathfindingService routes there (walking the waypoints, jumping at
--- Jump waypoints) and recomputes as you go. If no path is found it heads straight at
--- the goal and auto-jumps gaps. Modes: Legit (real jump) / Tween (gravity arc).
+-- Two hard-won rules baked in:
+--   * MOVEMENT: drive HumanoidRootPart velocity each frame (Wave can't disable the
+--     default controls, so Humanoid:Move/MoveTo alone get zeroed). On the ground we
+--     still use MoveTo for the walk animation; in the air we MUST keep horizontal
+--     velocity toward the landing or the jump drops straight into the gap.
+--   * RAYCASTS: RespectCanCollide isn't honored on Wave, so rayCollide() casts
+--     THROUGH non-collidable parts (invisible zone walls) to the real surface.
 
 local feature = require("ui.feature")
 local notify  = require("ui.notify")
@@ -23,7 +19,6 @@ local env     = require("core.env")
 local Players          = game:GetService("Players")
 local RunService       = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local Pathfinder       = game:GetService("PathfindingService")
 local Workspace        = workspace
 
 local AutoObby = {}
@@ -34,17 +29,16 @@ local s = {
     active      = false,
     mode        = "Legit",
     avoidDamage = true,
-    reachPct    = 0.85,   -- jump-reach safety margin (don't attempt marginal jumps)
-    speedMult   = 1.0,    -- WalkSpeed multiplier for the drive (1 = exact walk speed)
+    reachPct    = 0.85,
+    speedMult   = 1.0,
     goal        = nil,
-    targetPoint = nil,    -- the world point the mover steers toward (a waypoint / goal)
-    busy        = false,  -- mid tween arc
+    plan        = nil,   -- { Vector3 landing points ..., goal }
+    planIndex   = 1,
+    targetPoint = nil,   -- world point the mover steers toward (current mini-dest / landing)
+    busy        = false,
     lastJump    = 0,
     lastStuck   = 0,
-    stallSince  = 0,      -- when MoveTo stopped producing motion (-> velocity fallback)
-    waypoints   = nil,
-    wpIndex     = 1,
-    pathStamp   = 0,
+    stallSince  = 0,
     ctrlLoop    = nil,
     moveConn    = nil,
     markConn    = nil,
@@ -55,10 +49,10 @@ local s = {
 }
 
 local GOAL_RADIUS = 5
-local WP_REACH    = 3.5     -- within this of a waypoint = advance to the next
+local ARRIVE      = 4      -- within this (horizontal) of a mini-dest = advance
 local JUMP_CD     = 0.3
-local RECOMPUTE   = 1.0     -- re-run pathfinding at most this often (s)
 local STEP_HEIGHT = 2.5
+local EDGE        = 2.0    -- gap detected this far ahead -> jump
 
 local GROUNDED = {
     [Enum.HumanoidStateType.Running]          = true,
@@ -92,7 +86,7 @@ local function isDamage(part)
     return false
 end
 
--- ---- character + physics -----------------------------------------------------
+-- ---- helpers -----------------------------------------------------------------
 local function rig()
     local c = LP.Character
     if not c then return nil end
@@ -113,9 +107,8 @@ local function jumpHeight(hum)
     if hum.UseJumpPower then return (hum.JumpPower * hum.JumpPower) / (2 * g) end
     return hum.JumpHeight
 end
--- Can a jump clear horizontal `dx` to a landing `dy` above (dy<0 = below)? Flat case
--- is the community max-reach formula d = 2*JumpPower*WalkSpeed/Gravity; elevated case
--- solves the full projectile. `reachPct` is the safety margin.
+-- can a jump clear dx horizontally to a point dy above (dy<0=below)? uses the same
+-- effective speed the air-control carries at (WalkSpeed*Speed%).
 local function reachable(hum, dx, dy)
     local g = Workspace.Gravity
     local v = jumpVelocity(hum)
@@ -124,17 +117,15 @@ local function reachable(hum, dx, dy)
     local disc = v * v - 2 * g * dy
     if disc < 0 then return false end
     local tLand = (v + math.sqrt(disc)) / g
-    -- horizontal carry during the jump is WalkSpeed*speedMult (see applyMovement),
-    -- so judge reach with the SAME effective speed -> matches what it can really clear.
     return dx <= hum.WalkSpeed * s.speedMult * tLand * s.reachPct
 end
 
--- ---- raycast that ignores non-collidable parts -------------------------------
 local rp = RaycastParams.new()
 rp.FilterType = Enum.RaycastFilterType.Exclude
 rp.IgnoreWater = true
 pcall(function() rp.RespectCanCollide = true end)
 local rpIgnore = {}
+-- raycast that passes THROUGH non-collidable parts to the first collidable surface
 local function rayCollide(origin, dir)
     rpIgnore[1] = LP.Character
     for i = #rpIgnore, 2, -1 do rpIgnore[i] = nil end
@@ -157,6 +148,10 @@ end
 local function groundUnder(pos, depth)
     return rayCollide(pos + Vector3.new(0, 2.5, 0), Vector3.new(0, -(depth or 80), 0))
 end
+local function solidTop(rc, footY, jh)
+    return rc and rc.Normal.Y > 0.6 and rc.Instance.CanCollide ~= false
+        and not isDamage(rc.Instance) and (not footY or (rc.Position.Y - footY) <= (jh or 99) + 2)
+end
 
 -- ---- default-controls toggle -------------------------------------------------
 local function getControls()
@@ -176,7 +171,7 @@ local function setControls(on)
     if c then pcall(function() if on then c:Enable() else c:Disable() end end) end
 end
 
--- ---- body rotation (camera stays free) ---------------------------------------
+-- ---- body rotation (camera free) ---------------------------------------------
 local rot = { att = nil, align = nil, owned = false }
 local function faceDir(hrp, hum, dir)
     dir = flat(dir)
@@ -206,58 +201,71 @@ local function destroyRot()
     rot.owned = false
 end
 
--- ---- per-frame mover ---------------------------------------------------------
--- Prefer Humanoid:MoveTo -- that's REAL walking (animation, acceleration, correct
--- speed) and works when the default controls can be disabled. If it isn't actually
--- moving us (executor couldn't disable controls), fall back to a direct velocity
--- kick after a brief stall so it still works on locked-down clients. When there's
--- NO target we touch nothing, so your own movement is never affected.
-local function applyMovement()
-    if not s.active or s.busy then return end
-    local tp = s.targetPoint
-    if not tp then return end                       -- idle: leave manual control alone
-    local _, hrp, hum = rig()
-    if not (hrp and hum) then return end
-    local d = flat(tp - hrp.Position)
-    if d.Magnitude < 0.4 then return end
-    d = d.Unit
-    faceDir(hrp, hum, d)
-    local v = hrp.AssemblyLinearVelocity
-    local want = hum.WalkSpeed * s.speedMult
-    if want <= 0 then want = 16 end
-
-    if GROUNDED[hum:GetState()] then
-        -- WALKING: natural Humanoid:MoveTo (animation, acceleration, correct speed).
-        -- Velocity kick only as a fallback if MoveTo stalls (controls couldn't be off).
-        hum:MoveTo(hrp.Position + d * 8)
-        local horiz = math.sqrt(v.X * v.X + v.Z * v.Z)
-        if horiz < want * 0.3 then
-            if s.stallSince == 0 then s.stallSince = os.clock() end
-            if os.clock() - s.stallSince > 0.3 then
-                hrp.AssemblyLinearVelocity = Vector3.new(d.X * want, v.Y, d.Z * want)
+-- ---- the planner: build the chain of jumps to the goal -----------------------
+-- From the current platform, repeatedly find the next platform ACROSS A GAP toward
+-- the goal that the character can actually reach, until close to the goal. Returns
+-- a list of landing positions (the mini-destinations), ending on the goal.
+local PLAN_ANGLES = { 0, 16, -16, 33, -33, 52, -52 }
+local function planChain(startPos, hum, goal)
+    local g    = Workspace.Gravity
+    local jh   = jumpHeight(hum)
+    local maxD = (2 * jumpVelocity(hum) * hum.WalkSpeed * s.speedMult / g) * s.reachPct
+    local chain, cur = {}, startPos
+    local goalFlat = flat(goal)
+    for _ = 1, 30 do
+        if (flat(cur) - goalFlat).Magnitude <= maxD then chain[#chain + 1] = goal; break end
+        local curG  = groundUnder(cur, 60)
+        local footY = curG and curG.Position.Y or cur.Y
+        local heading = goalFlat - flat(cur)
+        if heading.Magnitude < 1 then break end
+        heading = heading.Unit
+        -- pick the next platform-after-a-gap with the most progress toward the goal
+        local best, bestProg
+        for _, deg in ipairs(PLAN_ANGLES) do
+            local dir, sawGap, dist = rotateY(heading, math.rad(deg)).Unit, false, 2
+            while dist <= maxD + 3 do
+                local p  = cur + dir * dist
+                local rc = rayCollide(Vector3.new(p.X, footY + jh + 6, p.Z), Vector3.new(0, -(jh + 6 + 90), 0))
+                if solidTop(rc, footY, jh) then
+                    if sawGap then   -- first solid ground after a gap = next platform
+                        if reachable(hum, dist, rc.Position.Y - footY) then
+                            local prog = (goalFlat - flat(cur)).Magnitude - (goalFlat - flat(rc.Position)).Magnitude
+                            if prog > 1 and (not bestProg or prog > bestProg) then best, bestProg = rc.Position, prog end
+                        end
+                        break
+                    end
+                else
+                    sawGap = true
+                end
+                dist = dist + 1.5
             end
-        else
-            s.stallSince = 0
         end
-    else
-        -- AIRBORNE (mid-jump): Humanoid.Jump only adds VERTICAL velocity, so without
-        -- this the body pops straight up and drops into the gap. Carry horizontal
-        -- velocity toward the landing every frame (keep the vertical for the arc) so
-        -- the jump actually crosses. (Research: must move the humanoid while airborne.)
-        s.stallSince = 0
-        hrp.AssemblyLinearVelocity = Vector3.new(d.X * want, v.Y, d.Z * want)
-        hum:MoveTo(hrp.Position + d * 8)
+        if not best then break end
+        chain[#chain + 1] = best
+        -- the NEXT jump is taken from this platform's FAR edge (we walk across it
+        -- first), so measure the next reach from there, not from the landing.
+        local eh = goalFlat - flat(best)
+        eh = (eh.Magnitude > 1) and eh.Unit or heading
+        local edge, ed = best, 1
+        while ed <= 50 do
+            local p  = best + eh * ed
+            local rc = rayCollide(Vector3.new(p.X, best.Y + 3, p.Z), Vector3.new(0, -12, 0))
+            if not solidTop(rc, best.Y) then break end
+            edge = rc.Position; ed = ed + 1
+        end
+        cur = edge
     end
+    return chain
 end
 
--- ---- tween jump (gravity arc to a point) -------------------------------------
-local function tweenJumpTo(hum, hrp, targetPos)
+-- ---- jump execution (Tween arc) ----------------------------------------------
+local function tweenJumpTo(hum, hrp, targetHrp)
     s.busy = true
     local g = Workspace.Gravity
     local v = jumpVelocity(hum)
     local start = hrp.Position
-    local dy = targetPos.Y - start.Y
-    local horiz = flat(targetPos - start)
+    local dy = targetHrp.Y - start.Y
+    local horiz = flat(targetHrp - start)
     local dx = horiz.Magnitude
     local dir = (dx > 0.01) and (horiz / dx) or flat(hrp.CFrame.LookVector).Unit
     local disc = v * v - 2 * g * dy
@@ -277,11 +285,9 @@ local function tweenJumpTo(hum, hrp, targetPos)
         hrp.CFrame = CFrame.lookAt(pos, pos + dir)
         hrp.AssemblyLinearVelocity = dir * hs + Vector3.new(0, v - g * t, 0)
     end
-    if hrp and hrp.Parent then    -- snap onto real ground, never phase through
-        local snap = groundUnder(Vector3.new(targetPos.X, targetPos.Y + 3, targetPos.Z), 14)
-        local fy = snap and (snap.Position.Y + (start.Y - (groundUnder(start, 14) or snap).Position.Y)) or targetPos.Y
-        if snap then fy = snap.Position.Y + 3 end
-        local p = Vector3.new(targetPos.X, fy, targetPos.Z)
+    if hrp and hrp.Parent then
+        local snap = groundUnder(Vector3.new(targetHrp.X, targetHrp.Y + 3, targetHrp.Z), 14)
+        local p = (snap and solidTop(snap)) and Vector3.new(targetHrp.X, snap.Position.Y + (start.Y - groundUnder(start, 14).Position.Y), targetHrp.Z) or targetHrp
         hrp.CFrame = CFrame.lookAt(p, p + dir)
         hrp.AssemblyLinearVelocity = ZERO
     end
@@ -290,108 +296,87 @@ local function tweenJumpTo(hum, hrp, targetPos)
     s.lastJump = os.clock()
 end
 
--- ---- pathfinding -------------------------------------------------------------
-local function computePath(fromPos, goalPos, hum)
-    local path = Pathfinder:CreatePath({
-        AgentRadius     = 2,
-        AgentHeight     = 5,
-        AgentCanJump    = true,
-        AgentJumpHeight = math.max(jumpHeight(hum), 5),
-        AgentMaxSlope   = 70,
-        WaypointSpacing = 4,
-        Costs           = { CrackedLava = math.huge, Water = math.huge },
-    })
-    local ok = pcall(function() path:ComputeAsync(fromPos, goalPos) end)
-    if ok and path.Status == Enum.PathStatus.Success then
-        return path:GetWaypoints()
-    end
-    return nil
-end
-
--- Accurate jump decision. Returns the landing GROUND position if a jump should fire
--- RIGHT NOW: ground ends within EDGE studs ahead in the travel direction AND a
--- reachable, SAFE surface is across the gap (scans a fan so it can take a sideways
--- landing). Edge-timed so it never jumps early; reachability uses the real distance.
-local EDGE = 2.0
-local GAP_ANGLES = { 0, 18, -18, 36, -36, 55, -55 }
-local function gapJumpTarget(hrp, hum, moveDir, footY)
-    local a  = hrp.Position + moveDir * EDGE
-    local ag = rayCollide(Vector3.new(a.X, footY + STEP_HEIGHT, a.Z), Vector3.new(0, -(STEP_HEIGHT + 5), 0))
-    if ag and ag.Normal.Y > 0.6 and ag.Instance.CanCollide ~= false and not isDamage(ag.Instance) then
-        return nil   -- ground continues right ahead -> just walk
-    end
-    local jh   = jumpHeight(hum)
-    local maxD = (2 * jumpVelocity(hum) * hum.WalkSpeed / Workspace.Gravity) * s.reachPct
-    local best, bestD
-    for _, deg in ipairs(GAP_ANGLES) do
-        local dir = rotateY(moveDir, math.rad(deg)).Unit
-        local d = 4
-        while d <= maxD do
-            local p  = hrp.Position + dir * d
-            local lp = rayCollide(Vector3.new(p.X, footY + jh + 4, p.Z), Vector3.new(0, -(jh + 4 + 50), 0))
-            if lp and lp.Normal.Y > 0.6 and lp.Instance.CanCollide ~= false and not isDamage(lp.Instance)
-               and reachable(hum, d, lp.Position.Y - footY) then
-                if not bestD or d < bestD then best, bestD = lp.Position, d end
-                break
+-- ---- per-frame mover ---------------------------------------------------------
+local function applyMovement()
+    if not s.active or s.busy then return end
+    local tp = s.targetPoint
+    if not tp then return end                       -- idle: don't touch manual control
+    local _, hrp, hum = rig()
+    if not (hrp and hum) then return end
+    local d = flat(tp - hrp.Position)
+    if d.Magnitude < 0.4 then return end
+    d = d.Unit
+    faceDir(hrp, hum, d)
+    local v = hrp.AssemblyLinearVelocity
+    local want = hum.WalkSpeed * s.speedMult
+    if want <= 0 then want = 16 end
+    if GROUNDED[hum:GetState()] then
+        hum:MoveTo(hrp.Position + d * 8)            -- natural walk
+        local horiz = math.sqrt(v.X * v.X + v.Z * v.Z)
+        if horiz < want * 0.3 then
+            if s.stallSince == 0 then s.stallSince = os.clock() end
+            if os.clock() - s.stallSince > 0.3 then
+                hrp.AssemblyLinearVelocity = Vector3.new(d.X * want, v.Y, d.Z * want)
             end
-            d = d + 2
-        end
+        else s.stallSince = 0 end
+    else
+        -- airborne: carry horizontal toward the landing so the jump crosses the gap
+        s.stallSince = 0
+        hrp.AssemblyLinearVelocity = Vector3.new(d.X * want, v.Y, d.Z * want)
+        hum:MoveTo(hrp.Position + d * 8)
     end
-    return best   -- nearest reachable safe landing across the gap, or nil (too wide)
 end
 
--- one navigation step (run from the control loop; may yield in ComputeAsync/tween)
+-- ---- the executor: walk/jump along the planned chain -------------------------
 local function stepNav()
     local _, hrp, hum = rig()
     if not (hrp and hum) or hum.Health <= 0 then
-        s.targetPoint = nil; s.waypoints = nil; setControls(true); releaseRot(hum); return
+        s.targetPoint, s.plan = nil, nil; setControls(true); releaseRot(hum); return
     end
     if not s.goal then
-        s.targetPoint, s.waypoints, s.stallSince = nil, nil, 0
-        setControls(true); releaseRot(hum); return
-    end
-    if flat(s.goal - hrp.Position).Magnitude <= GOAL_RADIUS then
-        s.goal, s.targetPoint, s.waypoints, s.stallSince = nil, nil, nil, 0
-        setControls(true); releaseRot(hum)
-        notify.success("Auto Obby: reached the goal"); return
+        s.targetPoint, s.plan, s.stallSince = nil, nil, 0; setControls(true); releaseRot(hum); return
     end
     setControls(false)
     if s.busy then return end
-    if not GROUNDED[hum:GetState()] then return end   -- airborne: keep steering at the landing
 
+    if not s.plan then
+        s.plan = planChain(hrp.Position, hum, s.goal)
+        s.planIndex = 1
+        if #s.plan == 0 then s.plan = { s.goal } end
+        notify.info(("Auto Obby: planned %d hops"):format(#s.plan))
+    end
+
+    if not GROUNDED[hum:GetState()] then return end   -- airborne: mover steers to the mini-dest
+
+    -- advance past any mini-destinations we've reached
+    local tgt = s.plan[s.planIndex]
+    while tgt and flat(tgt - hrp.Position).Magnitude < ARRIVE do
+        s.planIndex = s.planIndex + 1
+        tgt = s.plan[s.planIndex]
+    end
+    if not tgt then
+        if flat(s.goal - hrp.Position).Magnitude <= GOAL_RADIUS then
+            s.goal, s.targetPoint, s.plan = nil, nil, nil
+            setControls(true); releaseRot(hum); notify.success("Auto Obby: reached the goal"); return
+        end
+        s.plan = nil; return   -- exhausted but short of the goal -> replan
+    end
+    s.targetPoint = tgt
+
+    -- jump when ground actually ends just ahead toward the mini-dest; the mover air-
+    -- controls across to the planned landing (a fixed, validated platform point).
     local now = os.clock()
-    -- routing: PathfindingService for walls/corners; recompute periodically. Obbies
-    -- often have NO nav path (it avoids jumps) -- then we just head at the goal; the
-    -- edge-timed jump below is what actually clears the gaps.
-    if not s.waypoints or s.wpIndex > #s.waypoints or (now - s.pathStamp) > RECOMPUTE then
-        local wps = computePath(hrp.Position, s.goal, hum)
-        s.pathStamp = now
-        if wps and #wps >= 2 then s.waypoints, s.wpIndex = wps, 2 else s.waypoints = nil end
-    end
-    if s.waypoints then
-        local wp = s.waypoints[s.wpIndex]
-        while wp and flat(wp.Position - hrp.Position).Magnitude < WP_REACH do
-            s.wpIndex = s.wpIndex + 1; wp = s.waypoints[s.wpIndex]
-        end
-        s.targetPoint = wp and wp.Position or s.goal
-    else
-        s.targetPoint = s.goal
-        if now - s.lastStuck > 5 then
-            s.lastStuck = now
-            notify.warn("Auto Obby: no nav path -- heading at the goal, jumping gaps")
-        end
-    end
-
-    -- accurate, edge-timed jump (replaces pathfinding's early / misjudged jumps)
     if now - s.lastJump > JUMP_CD then
         local gr = groundUnder(hrp.Position, 14)
-        local md = gr and flat(s.targetPoint - hrp.Position) or nil
+        local md = gr and flat(tgt - hrp.Position) or nil
         if gr and md.Magnitude > 0.5 then
-            local landing = gapJumpTarget(hrp, hum, md.Unit, gr.Position.Y)
-            if landing then
-                s.targetPoint = landing   -- air-control toward the landing (may be sideways)
+            md = md.Unit
+            local footY = gr.Position.Y
+            local a  = hrp.Position + md * EDGE
+            local ag = rayCollide(Vector3.new(a.X, footY + STEP_HEIGHT, a.Z), Vector3.new(0, -(STEP_HEIGHT + 5), 0))
+            if not solidTop(ag, footY, jumpHeight(hum)) then   -- gap right ahead -> jump
                 if s.mode == "Tween" then
-                    tweenJumpTo(hum, hrp, landing + Vector3.new(0, hrp.Position.Y - gr.Position.Y, 0))
+                    tweenJumpTo(hum, hrp, Vector3.new(tgt.X, tgt.Y + (hrp.Position.Y - footY), tgt.Z))
                 else
                     hum.Jump = true; s.lastJump = now
                 end
@@ -406,14 +391,14 @@ local function startControl()
         while s.active do
             local ok, err = pcall(stepNav)
             if not ok then log.warn("autoobby nav: " .. tostring(err)) end
-            task.wait(0.07)
+            task.wait(0.06)
         end
         s.ctrlLoop = nil
     end)
 end
 
 -- ---- markers (2D projected; nothing in workspace) ----------------------------
-local mk = { gui = nil, preview = nil, placed = nil, label = nil }
+local mk = { gui = nil, preview = nil, placed = nil, label = nil, dots = {} }
 local function ensureMarkers()
     if mk.gui and mk.gui.Parent then return end
     local sg = Instance.new("ScreenGui")
@@ -421,15 +406,22 @@ local function ensureMarkers()
     sg.ResetOnSpawn = false; sg.IgnoreGuiInset = false; sg.DisplayOrder = 50
     sg.Parent = env.guiParent(); env.protectGui(sg)
 
+    -- planned-hop dots (a pool we position each frame)
+    mk.dots = {}
+    for i = 1, 28 do
+        local dt = Instance.new("Frame")
+        dt.Size = UDim2.fromOffset(8, 8); dt.AnchorPoint = Vector2.new(0.5, 0.5)
+        dt.BackgroundColor3 = Color3.fromRGB(120, 220, 255); dt.BackgroundTransparency = 0.15
+        dt.BorderSizePixel = 0; dt.Visible = false; dt.Parent = sg
+        Instance.new("UICorner", dt).CornerRadius = UDim.new(1, 0)
+        mk.dots[i] = dt
+    end
+
     local pv = Instance.new("Frame")
     pv.Size = UDim2.fromOffset(26, 26); pv.AnchorPoint = Vector2.new(0.5, 0.5)
     pv.BackgroundTransparency = 1; pv.Visible = false; pv.Parent = sg
     Instance.new("UICorner", pv).CornerRadius = UDim.new(1, 0)
     local pvs = Instance.new("UIStroke", pv); pvs.Color = Color3.fromRGB(120, 220, 255); pvs.Thickness = 2; pvs.Transparency = 0.1
-    local dot = Instance.new("Frame", pv)
-    dot.Size = UDim2.fromOffset(4, 4); dot.AnchorPoint = Vector2.new(0.5, 0.5); dot.Position = UDim2.fromScale(0.5, 0.5)
-    dot.BackgroundColor3 = Color3.fromRGB(120, 220, 255); dot.BorderSizePixel = 0
-    Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
 
     local pl = Instance.new("Frame")
     pl.Size = UDim2.fromOffset(18, 18); pl.AnchorPoint = Vector2.new(0.5, 0.5); pl.Rotation = 45
@@ -448,39 +440,44 @@ local function cursorWorld()
     if m and m.Target and m.Target.Parent then return m.Hit.Position end
     return nil
 end
+local function project(cam, world, frame)
+    local vp = cam:WorldToViewportPoint(world)
+    if vp.Z > 0 then frame.Visible = true; frame.Position = UDim2.fromOffset(vp.X, vp.Y); return true end
+    frame.Visible = false; return false
+end
 local function updateMarkers()
     local cam = Workspace.CurrentCamera
     if not (cam and mk.gui) then return end
     local cw = cursorWorld()
-    if cw then
-        local vp = cam:WorldToViewportPoint(cw)
-        if vp.Z > 0 then mk.preview.Visible = true; mk.preview.Position = UDim2.fromOffset(vp.X, vp.Y)
-        else mk.preview.Visible = false end
-    else mk.preview.Visible = false end
+    if cw then project(cam, cw, mk.preview) else mk.preview.Visible = false end
     if s.goal then
-        local vp = cam:WorldToViewportPoint(s.goal)
-        if vp.Z > 0 then
-            mk.placed.Visible = true; mk.placed.Position = UDim2.fromOffset(vp.X, vp.Y)
+        if project(cam, s.goal, mk.placed) then
             local _, hrp = rig()
             if hrp then mk.label.Text = ("GOAL  %d"):format(math.floor(flat(s.goal - hrp.Position).Magnitude)) end
-        else mk.placed.Visible = false end
+        end
     else mk.placed.Visible = false end
+    -- planned hops
+    for i, dt in ipairs(mk.dots) do
+        local pt = s.plan and s.plan[i]
+        if pt then dt.Visible = (i >= (s.planIndex or 1)) and project(cam, pt, dt) else dt.Visible = false end
+    end
 end
 local function hideMarkers()
     if mk.preview then mk.preview.Visible = false end
     if mk.placed  then mk.placed.Visible  = false end
+    for _, dt in ipairs(mk.dots) do dt.Visible = false end
 end
 local function destroyMarkers()
     if mk.gui then pcall(function() mk.gui:Destroy() end) end
-    mk.gui, mk.preview, mk.placed, mk.label = nil, nil, nil, nil
+    mk.gui, mk.preview, mk.placed, mk.label, mk.dots = nil, nil, nil, nil, {}
 end
 
--- ---- click to set goal -------------------------------------------------------
+-- ---- click to set the final destination --------------------------------------
 local function onInput(input, gpe)
     if gpe then return end
     if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
     local cw = cursorWorld()
-    if cw then s.goal, s.waypoints = cw, nil; notify.info("Auto Obby: goal set") end
+    if cw then s.goal, s.plan = cw, nil; notify.info("Auto Obby: destination set") end
 end
 
 -- ---- lifecycle ---------------------------------------------------------------
@@ -491,15 +488,15 @@ local function setActive(v)
     if v then
         s.mouse = s.mouse or LP:GetMouse()
         pcall(function() s.mouse.TargetFilter = LP.Character end)
-        s.targetPoint, s.waypoints = nil, nil
+        s.targetPoint, s.plan = nil, nil
         ensureMarkers()
         if not s.clickConn then s.clickConn = UserInputService.InputBegan:Connect(onInput) end
         if not s.markConn  then s.markConn  = RunService.RenderStepped:Connect(updateMarkers) end
         if not s.moveConn  then s.moveConn  = RunService.Heartbeat:Connect(applyMovement) end
         startControl()
-        notify.success("Auto Obby ON -- click a spot to set a goal")
+        notify.success("Auto Obby ON -- click a final destination")
     else
-        s.goal, s.targetPoint, s.waypoints = nil, nil, nil
+        s.goal, s.targetPoint, s.plan = nil, nil, nil
         for _, k in ipairs({ "clickConn", "markConn", "moveConn" }) do
             if s[k] then s[k]:Disconnect(); s[k] = nil end
         end
@@ -514,7 +511,7 @@ function AutoObby.register(box)
     box:add(feature.declare({
         id          = "misc.autoobby",
         name        = "Auto Obby",
-        description = "Pathfinds the local character to a goal you click. Engage with the keybind, a preview reticle follows your cursor, click a spot to drop a GOAL marker, and it routes there with Roblox PathfindingService -- walking, jumping the gaps, recomputing as it goes, and routing around obstacles (so it naturally takes angled / sideways routes). Drives the body via direct velocity so it actually moves under an executor, ignores non-collidable parts (invisible zone walls), and avoids lava + detected kill blocks. If no path is found it heads straight at the goal and auto-jumps gaps. Legit = real jumps; Tween = a gravity-accurate jump arc (drives your position -- a strict client anticheat may flag it). Turning it off clears the goal + markers and hands movement back.",
+        description = "Set a final destination and it auto-completes the obby to it. Engage with the keybind, a preview reticle follows your cursor, click a spot to set the GOAL -- it then PLANS the whole chain of jumps up front (drawn as blue dots) and executes them one platform at a time, only making jumps your character can actually make and avoiding damage / kill blocks. Drives the body by velocity so it works under the executor, carries horizontal speed through each jump so it clears the gap (doesn't drop in), rotates to face travel, and ignores non-collidable parts. Legit = real jumps; Tween = a scripted arc (drives your position -- a strict anticheat may flag it). It leaves your own movement alone when idle, and clears everything when off. Speed % tunes how far it jumps; re-plan by clicking a new spot.",
         default     = false,
         defaultKey  = Enum.KeyCode.G,
         onToggle    = setActive,
@@ -537,12 +534,10 @@ function AutoObby.destroy()
     end
     local _, _, hum = rig()
     releaseRot(hum); destroyRot(); destroyMarkers(); setControls(true)
-    s.goal, s.targetPoint, s.waypoints = nil, nil, nil
+    s.goal, s.targetPoint, s.plan = nil, nil, nil
 end
 
--- pure-ish helpers for the offline mock test
 AutoObby._diag = { isDamage = isDamage, jumpVelocity = jumpVelocity, jumpHeight = jumpHeight,
-                   computePath = computePath, rayCollide = rayCollide,
-                   reachable = reachable, gapJumpTarget = gapJumpTarget }
+                   reachable = reachable, rayCollide = rayCollide, planChain = planChain }
 
 return AutoObby

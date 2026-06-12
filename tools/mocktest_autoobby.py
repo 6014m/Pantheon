@@ -157,15 +157,16 @@ ck("red colour flagged", D.isDamage(mkPart("Block", {color=Color3.new(0.9,0.1,0.
 ck("lava material flagged", D.isDamage(mkPart("Block", {material=Enum.Material.CrackedLava}))==true)
 ck("plain grey platform safe", D.isDamage(mkPart("Platform"))==false)
 
--- computePath: Success -> waypoints, NoPath -> nil
-__PATH_STATUS = Enum.PathStatus.Success
-__WAYPOINTS = { {Position=Vector3.new(0,3,0), Action=Enum.PathWaypointAction.Walk},
-                {Position=Vector3.new(6,3,0), Action=Enum.PathWaypointAction.Walk},
-                {Position=Vector3.new(12,3,0), Action=Enum.PathWaypointAction.Jump} }
-local wps = D.computePath(Vector3.new(0,3,0), Vector3.new(12,3,0), humJP)
-ck("computePath returns waypoints on Success", wps ~= nil and #wps==3)
-__PATH_STATUS = Enum.PathStatus.NoPath
-ck("computePath returns nil on NoPath", D.computePath(Vector3.new(0,3,0), Vector3.new(99,3,0), humJP)==nil)
+-- planChain: builds a chain of reachable jump landings start -> ... -> goal
+__PLATFORMS = {
+  { x=-1.5, z=0, topY=0, hx=2.5, hz=4, part=mkPart("Start") },   -- x[-4,1]
+  { x=7,    z=0, topY=0, hx=2,   hz=4, part=mkPart("A") },        -- x[5,9]
+  { x=14,   z=0, topY=0, hx=2,   hz=4, part=mkPart("B") },        -- x[12,16]
+}
+local chain = D.planChain(Vector3.new(0,3,0), humJP, Vector3.new(14,0,0))
+ck("planChain builds a multi-hop chain", chain ~= nil and #chain >= 2)
+ck("planChain ends on the goal", #chain>0 and approx(chain[#chain].X, 14))
+ck("planChain first hop lands on platform A", chain[1] ~= nil and chain[1].X >= 5 and chain[1].X <= 9)
 
 -- rayCollide returns a collidable hit (passes mock 'collidable' parts straight through)
 __PLATFORMS = { { x=0, z=0, topY=0, hx=4, hz=4, part=mkPart("Floor") } }
@@ -176,17 +177,6 @@ ck("rayCollide finds the floor", hit ~= nil and approx(hit.Position.Y, 0))
 ck("reachable 6-stud flat jump", D.reachable(humJP, 6, 0)==true)
 ck("reject 12-stud flat jump", D.reachable(humJP, 12, 0)==false)
 ck("reject too-high jump (dy=10>peak)", D.reachable(humJP, 2, 10)==false)
-
--- gapJumpTarget: continuous ground -> no jump; reachable gap -> landing; too wide -> nil
-__PLATFORMS = { { x=8, z=0, topY=0, hx=12, hz=4, part=mkPart("Floor") } }   -- x[-4,20]
-ck("gapJumpTarget: no jump on continuous ground", D.gapJumpTarget(__HRP, humJP, Vector3.new(1,0,0), 0)==nil)
-__PLATFORMS = { { x=-1.75, z=0, topY=0, hx=2.25, hz=4, part=mkPart("Foot") },     -- x[-4,0.5]
-                { x=6,     z=0, topY=0, hx=2,    hz=4, part=mkPart("Landing") } } -- x[4,8]
-local lj = D.gapJumpTarget(__HRP, humJP, Vector3.new(1,0,0), 0)
-ck("gapJumpTarget: jumps a reachable gap to the landing", lj ~= nil and lj.X >= 4 and lj.X <= 8)
-__PLATFORMS = { { x=-1.75, z=0, topY=0, hx=2.25, hz=4, part=mkPart("Foot") },
-                { x=14,    z=0, topY=0, hx=2,    hz=4, part=mkPart("FarLanding") } }  -- too far
-ck("gapJumpTarget: no jump when gap too wide", D.gapJumpTarget(__HRP, humJP, Vector3.new(1,0,0), 0)==nil)
 
 -- lifecycle
 local onToggle = __DEF.onToggle
