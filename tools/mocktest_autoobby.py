@@ -92,7 +92,7 @@ function __HUM:ChangeState() end
 __MOUSE = { Target=nil, Hit={ Position=Vector3.new(20,0,0) }, TargetFilter=nil }
 
 local Players = { LocalPlayer={ Character=__CHAR, GetMouse=function() return __MOUSE end,
-  FindFirstChild=function() return nil end } }   -- no PlayerScripts -> controls unavailable (pcall'd)
+  FindFirstChild=function() return nil end, WaitForChild=function() return nil end } }   -- no PlayerScripts
 local RunService = { Heartbeat={ Wait=function() return 1/60 end, Connect=function() return {Disconnect=function() end} end },
                      RenderStepped=newSignal() }
 local UIS = { InputBegan=newSignal(), GetMouseLocation=function() return Vector3.new(0,0,0) end }
