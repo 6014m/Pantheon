@@ -41,6 +41,8 @@ BUILD_ORDER = [
     "modules/friendlies",
     "modules/system",
     "modules/aesthetic",
+    "modules/misc/autoobby",
+    "modules/misc/init",
     "games/jjs",
     "games/evilplate",
     "init",
