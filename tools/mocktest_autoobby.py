@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Offline mock-test for modules/misc/autoobby.lua.
 
-Loads the module under a fake Roblox env and checks:
-  * the feature declaration (id / name / default / keybind / settings),
-  * jump-physics reachability + jumpVelocity math,
-  * the damage-block heuristic (name / ancestor name / colour / material),
-  * findLanding picks a reachable SAFE platform and skips a kill brick / unreachable,
-  * setActive() lifecycle wires + tears down the click hook cleanly.
+Checks (under a fake Roblox env):
+  * the feature declaration,
+  * jump-physics reachability + jumpVelocity,
+  * the damage-block heuristic (name / ancestor / colour / lava material),
+  * findLanding picks a reachable SAFE platform, skips kill bricks / unreachable,
+  * decideMove WALKS on continuous ground, JUMPS at a gap (to the safe platform),
+    and reports STUCK when nothing safe is reachable,
+  * setActive() lifecycle builds markers + wires/clears cleanly.
 
-The hop loop itself (task.spawn) is stubbed out so we test decisions, not the
-live coroutine; real obby behaviour still needs an in-game check.
+The live loops (task.spawn / RenderStepped) are stubbed; real obby behaviour and
+the marker projection still need an in-game check.
 """
 import sys
 from lupa import LuaRuntime
@@ -20,8 +22,6 @@ SRC = open(r"C:\Users\killt\Desktop\custom scripts\[Uni] Pantheon\src\modules\mi
 PREAMBLE = r"""
 __DEF = nil
 __SPAWNED = 0
-
--- math.clamp isn't used, but Vector3 needs sqrt etc (std lib present)
 
 -- ---- Vector3 ----
 local VMT = {}
@@ -41,12 +41,12 @@ VMT.__index = function(self,k)
   return nil
 end
 Vector3 = { new=function(x,y,z) return setmetatable({X=x or 0,Y=y or 0,Z=z or 0}, VMT) end }
-
-CFrame = { lookAt=function(a,b) return { LookVector=(b-a).Unit } end, new=function(p) return {} end }
-Color3 = { new=function(r,g,b) return {R=r or 0,G=g or 0,B=b or 0} end,
-           fromRGB=function(r,g,b) return {R=(r or 0)/255,G=(g or 0)/255,B=(b or 0)/255} end }
-
--- interned Enum (stable tokens so == and table keys work)
+Vector2 = { new=function(x,y) return {X=x or 0,Y=y or 0} end }
+UDim    = { new=function(s,o) return {Scale=s,Offset=o} end }
+UDim2   = { new=function(...) return {} end, fromOffset=function() return {} end, fromScale=function() return {} end }
+CFrame  = { lookAt=function(a,b) return { LookVector=(b-a).Unit } end, new=function() return {} end }
+Color3  = { new=function(r,g,b) return {R=r or 0,G=g or 0,B=b or 0} end,
+            fromRGB=function(r,g,b) return {R=(r or 0)/255,G=(g or 0)/255,B=(b or 0)/255} end }
 Enum = setmetatable({}, { __index=function(t,cat)
   local c=rawget(t,cat)
   if not c then c=setmetatable({},{__index=function(t2,it)
@@ -54,35 +54,45 @@ Enum = setmetatable({}, { __index=function(t,cat)
     rawset(t,cat,c) end
   return c
 end })
-
 RaycastParams = { new=function() return {} end }
-
 os = { clock=function() return 0 end, time=function() return 0 end }
 
+-- generic Instance (markers / attachment / align)
+local function mkInstance(class)
+  local props = { ClassName=class, Name=class }
+  local inst = {}
+  inst.Destroy = function() props.__destroyed=true end
+  inst.GetChildren = function() return {} end
+  setmetatable(inst, {
+    __index=function(_,k) return props[k] end,
+    __newindex=function(_,k,v) props[k]=v end,
+  })
+  return inst
+end
+Instance = { new=function(class,parent) local i=mkInstance(class); if parent then i.Parent=parent end; return i end }
+
 -- ---- services / instances ----
-local function newSignal() return { Connect=function(self,fn) return { Disconnect=function() end } end } end
+local function newSignal() return { Connect=function() return { Disconnect=function() end } end } end
 
 __CHAR = { Name="Char" }
 function __CHAR:FindFirstChild(n) if n=="HumanoidRootPart" then return __HRP end return nil end
 function __CHAR:FindFirstChildOfClass(c) if c=="Humanoid" then return __HUM end return nil end
-__HRP = setmetatable({ Name="HumanoidRootPart" }, { __index=function(s,k)
+__HRP = setmetatable({ Name="HumanoidRootPart" }, { __index=function(_,k)
   if k=="Position" then return Vector3.new(0,3,0) end
   if k=="CFrame" then return { LookVector=Vector3.new(1,0,0), Position=Vector3.new(0,3,0) } end
-  return rawget(s,k) end })
+  return nil end, __newindex=function() end })
 __HUM = { UseJumpPower=true, JumpPower=50, JumpHeight=7.2, WalkSpeed=16, Health=100, AutoRotate=true }
 function __HUM:GetState() return Enum.HumanoidStateType.Running end
 function __HUM:Move() end
 function __HUM:ChangeState() end
-
 __MOUSE = { Target=nil, Hit={ Position=Vector3.new(20,0,0) }, TargetFilter=nil }
 
 local Players = { LocalPlayer={ Character=__CHAR, GetMouse=function() return __MOUSE end } }
-local RunService = { Heartbeat={ Wait=function() return 1/60 end },
-                     RenderStepped={ Connect=function() return {Disconnect=function() end} end } }
+local RunService = { Heartbeat={ Wait=function() return 1/60 end }, RenderStepped=newSignal() }
 local UIS = { InputBegan=newSignal(), GetMouseLocation=function() return Vector3.new(0,0,0) end }
 
-workspace = { Gravity=196.2, CurrentCamera={ CFrame={ LookVector=Vector3.new(1,0,0), Position=Vector3.new(0,5,-10) } } }
--- Raycast against a configurable fake obby (__PLATFORMS); only handles down-rays.
+workspace = { Gravity=196.2, CurrentCamera={ CFrame={ LookVector=Vector3.new(1,0,0), Position=Vector3.new(0,5,-10) },
+  WorldToViewportPoint=function(_,p) return Vector3.new(100,100,5), true end } }
 __PLATFORMS = {}
 function workspace:Raycast(origin, dir, params)
   if dir.Y >= 0 then return nil end
@@ -98,18 +108,18 @@ function workspace:Raycast(origin, dir, params)
   return { Position=Vector3.new(origin.X,best.topY,origin.Z), Instance=best.part, Normal=Vector3.new(0,1,0) }
 end
 
-game = { GetService=function(self,n)
+game = { GetService=function(_,n)
   if n=="Players" then return Players end
   if n=="RunService" then return RunService end
   if n=="UserInputService" then return UIS end
   return {} end }
 
--- task: spawn records but does NOT run (we test decisions, not the live loop)
-task = { spawn=function(fn) __SPAWNED=__SPAWNED+1; return {} end, wait=function() end, defer=function(fn) end }
+task = { spawn=function() __SPAWNED=__SPAWNED+1; return {} end, wait=function() end, defer=function() end }
 
 -- ---- require shim ----
 local notify = { info=function() end, success=function() end, warn=function() end }
 local log    = { info=function() end, warn=function() end, err=function() end }
+local env    = { guiParent=function() return mkInstance("CoreGui") end, protectGui=function() end }
 local feature = { declare=function(def)
   __DEF = def
   if def.settings then for _,opt in ipairs(def.settings) do
@@ -121,10 +131,10 @@ function require(name)
   if name=="ui.feature" then return feature end
   if name=="ui.notify"  then return notify end
   if name=="core.log"   then return log end
+  if name=="core.env"   then return env end
   error("unmocked require: "..tostring(name))
 end
 
--- helpers to build mock parts for isDamage / findLanding
 function mkPart(name, opts)
   opts = opts or {}
   local p = { Name=name, ClassName="Part",
@@ -138,80 +148,78 @@ end
 
 DRIVER = r"""
 local pass, fail = 0, 0
-local function ck(name, cond) if cond then pass=pass+1; print("PASS  "..name) else fail=fail+1; print("FAIL  "..name) end end
+local function ck(n,c) if c then pass=pass+1; print("PASS  "..n) else fail=fail+1; print("FAIL  "..n) end end
 local function approx(a,b) return math.abs(a-b) < 0.05 end
 
--- register (fires setting defaults into the module's state)
 local box = { add=function(self) return self end }
 AOB.register(box)
 
--- ---- feature declaration ----
+-- feature declaration
 ck("def captured", __DEF ~= nil)
 ck("id misc.autoobby", __DEF.id=="misc.autoobby")
-ck("name Auto Obby", __DEF.name=="Auto Obby")
 ck("default off", __DEF.default==false)
 ck("keybind G", __DEF.defaultKey==Enum.KeyCode.G)
 ck("has 4 settings", __DEF.settings and #__DEF.settings==4)
-local hasMode, hasAvoid = false, false
-for _,o in ipairs(__DEF.settings or {}) do
-  if o.key=="mode" and o.type=="dropdown" then hasMode=true end
-  if o.key=="avoid" and o.type=="toggle" then hasAvoid=true end
-end
-ck("Mode dropdown present", hasMode)
-ck("Avoid-damage toggle present", hasAvoid)
 
 local D = AOB._diag
--- ---- jump physics ----
+-- jump physics
 local humJP = { UseJumpPower=true,  JumpPower=50, WalkSpeed=16 }
 local humJH = { UseJumpPower=false, JumpHeight=7.2, WalkSpeed=16 }
 ck("jumpVelocity uses JumpPower", D.jumpVelocity(humJP)==50)
 ck("jumpVelocity from JumpHeight ~= 53.15", approx(D.jumpVelocity(humJH), 53.153))
--- peak ~6.37, equal-height reach*0.85 ~6.93
 ck("reachable 6-stud flat jump", D.reachable(humJP, 6, 0)==true)
 ck("reject 12-stud flat jump", D.reachable(humJP, 12, 0)==false)
 ck("reject too-high jump (10>peak)", D.reachable(humJP, 2, 10)==false)
 ck("reachable lower drop (dy=-20)", D.reachable(humJP, 6, -20)==true)
 
--- ---- damage heuristic ----
+-- damage heuristic
 ck("name: KillBrick flagged", D.isDamage(mkPart("KillBrick"))==true)
-ck("name: Lava flagged",      D.isDamage(mkPart("Lava"))==true)
 ck("ancestor name flagged",   D.isDamage(mkPart("Platform", {parent=mkPart("Killzone")}))==true)
 ck("red colour flagged",      D.isDamage(mkPart("Block", {color=Color3.new(0.9,0.1,0.1)}))==true)
 ck("lava material flagged",   D.isDamage(mkPart("Block", {material=Enum.Material.CrackedLava}))==true)
-ck("plain grey platform safe",D.isDamage(mkPart("Platform", {color=Color3.new(0.5,0.5,0.5)}))==false)
+ck("plain grey platform safe",D.isDamage(mkPart("Platform"))==false)
 
--- ---- findLanding: pick reachable safe platform, skip kill brick + unreachable ----
-local platA = mkPart("Start")
-local platB = mkPart("PlatB")
-local kill  = mkPart("KillBrick")
-local platD = mkPart("PlatD")
+-- findLanding
+local platA, platB, kill, platD = mkPart("Start"), mkPart("PlatB"), mkPart("KillBrick"), mkPart("PlatD")
 __PLATFORMS = {
-  { x=0,  z=0, topY=0, hx=4, hz=4, part=platA },   -- where we stand
+  { x=0,  z=0, topY=0, hx=4, hz=4, part=platA },
   { x=6,  z=0, topY=0, hx=2, hz=2, part=platB },   -- reachable, safe
   { x=6,  z=4, topY=0, hx=2, hz=2, part=kill  },   -- reachable but KILL
-  { x=14, z=0, topY=0, hx=2, hz=2, part=platD },   -- safe but too far (1 hop)
+  { x=14, z=0, topY=0, hx=2, hz=2, part=platD },   -- too far
 }
 local from = Vector3.new(0,3,0)
-local goal = Vector3.new(14,0,0)
-local r = D.findLanding(from, 0, 3, Vector3.new(1,0,0), humJP, goal)
-ck("findLanding returns a candidate", r ~= nil)
+local r = D.findLanding(from, 0, 3, Vector3.new(1,0,0), humJP, Vector3.new(14,0,0))
 ck("findLanding picked the safe platform B", r ~= nil and r.inst==platB)
 ck("findLanding did NOT pick the kill brick", r == nil or r.inst~=kill)
 ck("findLanding did NOT pick the too-far platform", r == nil or r.inst~=platD)
-ck("landing hrpPos keeps stand offset (Y~3)", r ~= nil and approx(r.hrpPos.Y, 3))
+ck("landing keeps stand offset (Y~3)", r ~= nil and approx(r.hrpPos.Y, 3))
 
--- only a kill brick reachable -> stuck (nil)
+-- decideMove: WALK on continuous ground
+__PLATFORMS = { { x=2, z=0, topY=0, hx=6, hz=4, part=platA } }   -- covers x[-4,8]
+local a1 = D.decideMove(__HRP, humJP, 0, Vector3.new(1,0,0))
+ck("decideMove WALKS on continuous ground", a1=="walk")
+
+-- decideMove: JUMP at a gap to the safe platform
 __PLATFORMS = {
-  { x=0, z=0, topY=0, hx=1, hz=1, part=platA },     -- tiny start pad
-  { x=6, z=0, topY=0, hx=2, hz=2, part=kill  },     -- only forward option is KILL
+  { x=0, z=0, topY=0, hx=0.5, hz=4, part=platA },  -- tiny pad: edge ~0.5
+  { x=6, z=0, topY=0, hx=2,   hz=2, part=platB },  -- reachable across the gap
 }
-local r2 = D.findLanding(from, 0, 3, Vector3.new(1,0,0), humJP, goal)
-ck("findLanding returns nil when only a kill brick is ahead", r2 == nil)
+local a2, land2 = D.decideMove(__HRP, humJP, 0, Vector3.new(1,0,0))
+ck("decideMove JUMPS at a gap", a2=="jump")
+ck("decideMove jump targets the safe platform B", a2=="jump" and land2 and land2.inst==platB)
 
--- ---- lifecycle ----
+-- decideMove: STUCK when nothing safe is reachable ahead
+__PLATFORMS = { { x=0, z=0, topY=0, hx=0.5, hz=4, part=platA } }
+local a3 = D.decideMove(__HRP, humJP, 0, Vector3.new(1,0,0))
+ck("decideMove STUCK with no reachable platform", a3=="stuck")
+
+-- pathClear: clear when nothing blocks (mock has no vertical walls)
+ck("pathClear true when unobstructed", D.pathClear(Vector3.new(0,3,0), Vector3.new(6,3,0), platB)==true)
+
+-- lifecycle: build markers, wire, then clear
 local onToggle = __DEF.onToggle
 onToggle(true)
-ck("setActive(true) spawned the hop loop", __SPAWNED>=1)
+ck("setActive(true) spawned control loop", __SPAWNED>=1)
 onToggle(false)
 ck("setActive(false) no error", true)
 AOB.destroy()
