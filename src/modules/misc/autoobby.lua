@@ -34,6 +34,7 @@ local s = {
     active      = false,
     mode        = "Legit",
     avoidDamage = true,
+    reachPct    = 0.85,   -- jump-reach safety margin (don't attempt marginal jumps)
     speedMult   = 1.0,    -- WalkSpeed multiplier for the drive (1 = exact walk speed)
     goal        = nil,
     targetPoint = nil,    -- the world point the mover steers toward (a waypoint / goal)
@@ -98,6 +99,10 @@ local function rig()
     return c, c:FindFirstChild("HumanoidRootPart"), c:FindFirstChildOfClass("Humanoid")
 end
 local function flat(v) return Vector3.new(v.X, 0, v.Z) end
+local function rotateY(v, rad)
+    local c, sn = math.cos(rad), math.sin(rad)
+    return Vector3.new(v.X * c - v.Z * sn, 0, v.X * sn + v.Z * c)
+end
 local function jumpVelocity(hum)
     local g = Workspace.Gravity
     if hum.UseJumpPower then return hum.JumpPower end
@@ -107,6 +112,19 @@ local function jumpHeight(hum)
     local g = Workspace.Gravity
     if hum.UseJumpPower then return (hum.JumpPower * hum.JumpPower) / (2 * g) end
     return hum.JumpHeight
+end
+-- Can a jump clear horizontal `dx` to a landing `dy` above (dy<0 = below)? Flat case
+-- is the community max-reach formula d = 2*JumpPower*WalkSpeed/Gravity; elevated case
+-- solves the full projectile. `reachPct` is the safety margin.
+local function reachable(hum, dx, dy)
+    local g = Workspace.Gravity
+    local v = jumpVelocity(hum)
+    local peak = (v * v) / (2 * g)
+    if dy > peak then return false end
+    local disc = v * v - 2 * g * dy
+    if disc < 0 then return false end
+    local tLand = (v + math.sqrt(disc)) / g
+    return dx <= hum.WalkSpeed * tLand * s.reachPct
 end
 
 -- ---- raycast that ignores non-collidable parts -------------------------------
@@ -275,20 +293,36 @@ local function computePath(fromPos, goalPos, hum)
     return nil
 end
 
--- fallback when there's no path: head straight at the goal, jump if a gap is right
--- ahead (collidable-ground check via rayCollide)
-local function autoJumpGap(hrp, hum, now)
-    if not GROUNDED[hum:GetState()] or now - s.lastJump < JUMP_CD then return end
-    local dir = flat(s.goal - hrp.Position)
-    if dir.Magnitude < 0.5 then return end
-    dir = dir.Unit
-    local gr = groundUnder(hrp.Position, 14)
-    local footY = gr and gr.Position.Y or hrp.Position.Y
-    local p = hrp.Position + dir * 2.5
-    local g = rayCollide(Vector3.new(p.X, footY + STEP_HEIGHT + 0.5, p.Z),
-                         Vector3.new(0, -(2 * STEP_HEIGHT + 0.5), 0))
-    local ok = g and g.Normal.Y > 0.6 and g.Instance.CanCollide ~= false and not isDamage(g.Instance)
-    if not ok then hum.Jump = true; s.lastJump = now end
+-- Accurate jump decision. Returns the landing GROUND position if a jump should fire
+-- RIGHT NOW: ground ends within EDGE studs ahead in the travel direction AND a
+-- reachable, SAFE surface is across the gap (scans a fan so it can take a sideways
+-- landing). Edge-timed so it never jumps early; reachability uses the real distance.
+local EDGE = 2.0
+local GAP_ANGLES = { 0, 18, -18, 36, -36, 55, -55 }
+local function gapJumpTarget(hrp, hum, moveDir, footY)
+    local a  = hrp.Position + moveDir * EDGE
+    local ag = rayCollide(Vector3.new(a.X, footY + STEP_HEIGHT, a.Z), Vector3.new(0, -(STEP_HEIGHT + 5), 0))
+    if ag and ag.Normal.Y > 0.6 and ag.Instance.CanCollide ~= false and not isDamage(ag.Instance) then
+        return nil   -- ground continues right ahead -> just walk
+    end
+    local jh   = jumpHeight(hum)
+    local maxD = (2 * jumpVelocity(hum) * hum.WalkSpeed / Workspace.Gravity) * s.reachPct
+    local best, bestD
+    for _, deg in ipairs(GAP_ANGLES) do
+        local dir = rotateY(moveDir, math.rad(deg)).Unit
+        local d = 4
+        while d <= maxD do
+            local p  = hrp.Position + dir * d
+            local lp = rayCollide(Vector3.new(p.X, footY + jh + 4, p.Z), Vector3.new(0, -(jh + 4 + 50), 0))
+            if lp and lp.Normal.Y > 0.6 and lp.Instance.CanCollide ~= false and not isDamage(lp.Instance)
+               and reachable(hum, d, lp.Position.Y - footY) then
+                if not bestD or d < bestD then best, bestD = lp.Position, d end
+                break
+            end
+            d = d + 2
+        end
+    end
+    return best   -- nearest reachable safe landing across the gap, or nil (too wide)
 end
 
 -- one navigation step (run from the control loop; may yield in ComputeAsync/tween)
@@ -308,42 +342,45 @@ local function stepNav()
     end
     setControls(false)
     if s.busy then return end
+    if not GROUNDED[hum:GetState()] then return end   -- airborne: keep steering at the landing
 
     local now = os.clock()
+    -- routing: PathfindingService for walls/corners; recompute periodically. Obbies
+    -- often have NO nav path (it avoids jumps) -- then we just head at the goal; the
+    -- edge-timed jump below is what actually clears the gaps.
     if not s.waypoints or s.wpIndex > #s.waypoints or (now - s.pathStamp) > RECOMPUTE then
         local wps = computePath(hrp.Position, s.goal, hum)
         s.pathStamp = now
-        if wps and #wps >= 2 then s.waypoints, s.wpIndex = wps, 2
-        else s.waypoints = nil end
+        if wps and #wps >= 2 then s.waypoints, s.wpIndex = wps, 2 else s.waypoints = nil end
     end
-
     if s.waypoints then
         local wp = s.waypoints[s.wpIndex]
         while wp and flat(wp.Position - hrp.Position).Magnitude < WP_REACH do
-            s.wpIndex = s.wpIndex + 1
-            wp = s.waypoints[s.wpIndex]
+            s.wpIndex = s.wpIndex + 1; wp = s.waypoints[s.wpIndex]
         end
-        if wp then
-            s.targetPoint = wp.Position
-            if wp.Action == Enum.PathWaypointAction.Jump and GROUNDED[hum:GetState()]
-               and now - s.lastJump > JUMP_CD then
+        s.targetPoint = wp and wp.Position or s.goal
+    else
+        s.targetPoint = s.goal
+        if now - s.lastStuck > 5 then
+            s.lastStuck = now
+            notify.warn("Auto Obby: no nav path -- heading at the goal, jumping gaps")
+        end
+    end
+
+    -- accurate, edge-timed jump (replaces pathfinding's early / misjudged jumps)
+    if now - s.lastJump > JUMP_CD then
+        local gr = groundUnder(hrp.Position, 14)
+        local md = gr and flat(s.targetPoint - hrp.Position) or nil
+        if gr and md.Magnitude > 0.5 then
+            local landing = gapJumpTarget(hrp, hum, md.Unit, gr.Position.Y)
+            if landing then
+                s.targetPoint = landing   -- air-control toward the landing (may be sideways)
                 if s.mode == "Tween" then
-                    local nxt = s.waypoints[s.wpIndex + 1]
-                    tweenJumpTo(hum, hrp, nxt and nxt.Position or wp.Position)
+                    tweenJumpTo(hum, hrp, landing + Vector3.new(0, hrp.Position.Y - gr.Position.Y, 0))
                 else
                     hum.Jump = true; s.lastJump = now
                 end
             end
-        else
-            s.targetPoint = nil   -- exhausted; recompute next tick
-        end
-    else
-        -- no path: drive straight at the goal and auto-jump gaps
-        s.targetPoint = s.goal
-        autoJumpGap(hrp, hum, now)
-        if now - s.lastStuck > 4 then
-            s.lastStuck = now
-            notify.warn("Auto Obby: no path found -- heading straight; pick a closer goal if it stalls")
         end
     end
 end
@@ -490,6 +527,7 @@ end
 
 -- pure-ish helpers for the offline mock test
 AutoObby._diag = { isDamage = isDamage, jumpVelocity = jumpVelocity, jumpHeight = jumpHeight,
-                   computePath = computePath, rayCollide = rayCollide }
+                   computePath = computePath, rayCollide = rayCollide,
+                   reachable = reachable, gapJumpTarget = gapJumpTarget }
 
 return AutoObby
