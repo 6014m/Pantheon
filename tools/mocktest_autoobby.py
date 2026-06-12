@@ -32,6 +32,10 @@ function VMT.__mul(a,b)
   if type(b)=="number" then return Vector3.new(a.X*b,a.Y*b,a.Z*b) end
   return Vector3.new(a.X*b.X,a.Y*b.Y,a.Z*b.Z)
 end
+function VMT.__div(a,b)
+  if type(b)=="number" then return Vector3.new(a.X/b,a.Y/b,a.Z/b) end
+  return Vector3.new(a.X/b.X,a.Y/b.Y,a.Z/b.Z)
+end
 VMT.__index = function(self,k)
   if k=="Magnitude" then return math.sqrt(self.X*self.X+self.Y*self.Y+self.Z*self.Z) end
   if k=="Unit" then local m=math.sqrt(self.X*self.X+self.Y*self.Y+self.Z*self.Z)
