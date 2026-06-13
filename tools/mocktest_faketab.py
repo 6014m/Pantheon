@@ -28,8 +28,6 @@ local function newEvent(name)
 end
 local EVENT_NAMES={ChildAdded=true,ChildRemoved=true,Heartbeat=true,CharacterAdded=true}
 
--- Vector3.zero only (the module reads no other Vector3 member); a unique sentinel
--- so the test can assert velocity was set to exactly it.
 local ZEROV = real.setmetatable({_v3zero=true}, {__tostring=function() return "V3.zero" end})
 local Vector3 = { zero = ZEROV }
 
@@ -63,14 +61,16 @@ InstanceMT={
 }
 
 local Workspace=newInstance("Workspace")
-local function mkChar(name, cf)
+-- R6-ish rig: Head (the part we anchor) + HumanoidRootPart + Humanoid
+local function mkChar(name)
   local m=newInstance("Model"); m.Name=name; setParent(m,Workspace)
-  local hrp=newInstance("Part"); hrp.Name="HumanoidRootPart"; hrp.CFrame=cf; setParent(hrp,m)
+  local head=newInstance("Part"); head.Name="Head"; setParent(head,m)
+  local hrp=newInstance("Part"); hrp.Name="HumanoidRootPart"; setParent(hrp,m)
   local hum=newInstance("Humanoid"); hum.Health=100; setParent(hum,m)
-  return m, hrp
+  return m, head, hum
 end
 local LocalPlayer=newInstance("Player"); LocalPlayer.Name="Tester"
-local char0, hrp0 = mkChar("TesterChar", "CF_START")
+local char0, head0, hum0 = mkChar("TesterChar")
 LocalPlayer.Character=char0
 local Players=newInstance("Players"); Players.LocalPlayer=LocalPlayer
 
@@ -78,7 +78,6 @@ local SERVICES={ Players=Players, RunService=newInstance("RunService") }
 local game=newInstance("DataModel"); game.PlaceId=1; game.GameId=2
 function game:GetService(n) SERVICES[n]=SERVICES[n] or newInstance(n); return SERVICES[n] end
 
--- module stubs
 local capturedDef=nil
 local function stub(name)
   if name=="ui.feature" then return { declare=function(def) capturedDef=def; return {root=newInstance("Frame")} end } end
@@ -114,31 +113,29 @@ out.register_ok=okR; if not okR then out.register_err=real.tostring(errR) end
 out.box_added = box.added
 out.feature_id = capturedDef and capturedDef.id or "nil"
 
--- ---- freeze phase ----
-hrp0.CFrame="CF_START"
+-- ---- enable: the HEAD (not the root) must be anchored ----
 real.pcall(function() capturedDef.onToggle(true) end)
--- simulate physics shoving us after we froze
-hrp0.CFrame="CF_MOVED"; hrp0.AssemblyLinearVelocity="SOME_VEL"
-SERVICES.RunService.Heartbeat:Fire(0.016)
-out.frozen_cf      = hrp0.CFrame                              -- expect CF_START (re-pinned)
-out.frozen_pinned  = (hrp0.CFrame=="CF_START")
-out.vel_zeroed     = (hrp0.AssemblyLinearVelocity==ZEROV)
-out.hum_moved      = (char0:FindFirstChildOfClass("Humanoid")._moved==true)
+out.head_anchored_on_enable = (head0.Anchored==true)
+out.root_NOT_anchored       = (char0:FindFirstChild("HumanoidRootPart").Anchored~=true)
 
--- ---- respawn phase (still enabled): new body must freeze at ITS spawn, not teleport ----
-local char1, hrp1 = mkChar("TesterChar2", "CF_RESPAWN")
+-- heartbeat maintains it + zeroes the humanoid move (no moonwalk)
+SERVICES.RunService.Heartbeat:Fire(0.016)
+out.head_still_anchored = (head0.Anchored==true)
+out.hum_move_zeroed     = (hum0._moved==true)
+
+-- ---- respawn while enabled: new head anchored, OLD head released ----
+local char1, head1, hum1 = mkChar("TesterChar2")
 LocalPlayer.Character=char1
-LocalPlayer.CharacterAdded:Fire(char1)
 SERVICES.RunService.Heartbeat:Fire(0.016)
-out.respawn_cf = hrp1.CFrame                                  -- expect CF_RESPAWN (not CF_START)
-out.respawn_ok = (hrp1.CFrame=="CF_RESPAWN")
+out.new_head_anchored   = (head1.Anchored==true)
+out.old_head_released   = (head0.Anchored==false)
 
--- ---- thaw phase: after disable, physics moves must NOT be re-pinned ----
+-- ---- disable: head un-anchored, heartbeat goes inert ----
 real.pcall(function() capturedDef.onToggle(false) end)
-hrp1.CFrame="CF_AFTER"
+out.head_released_on_disable = (head1.Anchored==false)
+head1.Anchored=false
 SERVICES.RunService.Heartbeat:Fire(0.016)
-out.thawed_cf   = hrp1.CFrame                                 -- expect CF_AFTER (hold disconnected)
-out.thaw_inert  = (hrp1.CFrame=="CF_AFTER")
+out.thaw_inert = (head1.Anchored==false)   -- disabled tick must NOT re-anchor
 
 local okD,errD=real.pcall(function() mod.destroy() end)
 out.destroy_ok=okD; if not okD then out.destroy_err=real.tostring(errD) end
