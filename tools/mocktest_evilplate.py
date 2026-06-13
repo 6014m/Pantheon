@@ -17,7 +17,7 @@ local real = { math=math, string=string, table=table, os=os, pcall=pcall, error=
   type=type, select=select, next=next, setmetatable=setmetatable, rawget=rawget,
   rawset=rawset, print=print, load=load }
 
-local ERRORS, NOTIFY, FTI = {}, {}, {}
+local ERRORS, NOTIFY, FTI, FIRED = {}, {}, {}, {}
 
 local function typeof(x)
   if real.type(x)=="table" then if x._isEnumItem then return "EnumItem" end if x._isInstance then return "Instance" end end
@@ -33,7 +33,7 @@ local function newEvent(name)
   function ev:Fire(...) for _,fn in real.ipairs(h) do local ok,e=real.pcall(fn,...); if not ok then ERRORS[#ERRORS+1]=name..": "..real.tostring(e) end end end
   return ev
 end
-local EVENT_NAMES={ChildAdded=true,ChildRemoved=true,Heartbeat=true,CharacterAdded=true,InputBegan=true}
+local EVENT_NAMES={ChildAdded=true,ChildRemoved=true,DescendantAdded=true,Heartbeat=true,CharacterAdded=true,InputBegan=true}
 
 local VMT={}
 local function V(x,y,z) return real.setmetatable({_vector=true,X=x or 0,Y=y or 0,Z=z or 0},VMT) end
@@ -107,14 +107,17 @@ function task.wait(t) return t or 0 end
 local function firetouchinterest(a,b,toggle)
   FTI[#FTI+1]={ src=(a and a.Name) or "?", dst=(b and b.Name) or "?", dstParent=(b and b._props and b._props.Parent and b._props.Parent.Name) or "?", toggle=toggle }
 end
+local function fireproximityprompt(p) FIRED[#FIRED+1]="prompt:"..((p and p.Name) or "?") end
+local function fireclickdetector(c)   FIRED[#FIRED+1]="click:"..((c and c.Name) or "?") end
 
-local capturedDef=nil
+local capturedDefs={}
+local function defById(id) for _,d in real.ipairs(capturedDefs) do if d.id==id then return d end end return nil end
 local cache={}
 local function stub(name)
   if name=="games.registry" then return { register=function() end, current=function() return nil end, all=function() return {} end } end
   if name=="ui.window" then return { parent=function() return newInstance("Folder") end } end
   if name=="ui.container" then return { new=function() local t={}; function t:add() end; return t end } end
-  if name=="ui.feature" then return { declare=function(def) capturedDef=def; return {root=newInstance("Frame")} end } end
+  if name=="ui.feature" then return { declare=function(def) capturedDefs[#capturedDefs+1]=def; return {root=newInstance("Frame")} end } end
   if name=="core.log" then return { info=function() end, warn=function() end, error=function() end, err=function() end, debug=function() end } end
   if name=="ui.notify" then return {
     info=function(m) NOTIFY[#NOTIFY+1]="info:"..real.tostring(m) end,
@@ -126,6 +129,7 @@ local function myrequire(name) if cache[name]~=nil then return cache[name] end l
 
 local ENV=real.setmetatable({ Instance=Instance, Enum=Enum, game=game, workspace=Workspace,
   typeof=typeof, task=task, require=myrequire, os=fakeos, firetouchinterest=firetouchinterest,
+  fireproximityprompt=fireproximityprompt, fireclickdetector=fireclickdetector,
   print=real.print, warn=function() end, math=real.math, string=real.string, table=real.table,
   pcall=real.pcall, ipairs=real.ipairs, pairs=real.pairs, tostring=real.tostring, tonumber=real.tonumber,
   type=real.type, select=real.select, next=real.next, setmetatable=real.setmetatable, error=real.error, assert=real.assert,
@@ -140,10 +144,14 @@ out.loaded = (mod~=nil) and (mod.register~=nil) and (mod.destroy~=nil)
 
 local okR,errR = real.pcall(function() mod.register() end)
 out.register_ok=okR; if not okR then out.register_err=real.tostring(errR) end
-out.captured_def = capturedDef and capturedDef.id or "nil"
+local potatoDef = defById("evilplate.hotpotato_return")
+local crateDef  = defById("evilplate.auto_crate")
+out.feature_count = #capturedDefs
+out.has_potato = potatoDef ~= nil
+out.has_crate  = crateDef ~= nil
 
--- toggle the feature on
-if capturedDef and capturedDef.onToggle then real.pcall(function() capturedDef.onToggle(true) end) end
+-- toggle Hot Potato Auto-Return on (crate stays OFF so it can't perturb the bomb test)
+if potatoDef and potatoDef.onToggle then real.pcall(function() potatoDef.onToggle(true) end) end
 
 -- receive the bomb into the backpack (fires ChildAdded -> onReceive)
 CLOCK.t=100
@@ -161,6 +169,18 @@ local tgt=""
 for _,c in real.ipairs(FTI) do tgt=tgt..("[%s->%s@%s t=%s]"):format(c.src,c.dst,c.dstParent,real.tostring(c.toggle)) end
 out.fti=tgt
 out.notifies=real.table.concat(NOTIFY," | ")
+
+-- ---- Auto Crate phase: a near crate fires, a far one (outside clickRange) is ignored ----
+local airdrop=newInstance("Model"); airdrop.Name="Airdrop"; setParent(airdrop, Workspace)
+local cratePart=newInstance("Part"); cratePart.Name="CrateBox"; cratePart.Position=V(5,0,0); setParent(cratePart, airdrop)
+local nearPrompt=newInstance("ProximityPrompt"); nearPrompt.Name="OpenPrompt"; nearPrompt.HoldDuration=0.5; setParent(nearPrompt, cratePart)
+local far=newInstance("Model"); far.Name="SupplyCrate"; setParent(far, Workspace)
+local farPart=newInstance("Part"); farPart.Name="FarBox"; farPart.Position=V(500,0,0); setParent(farPart, far)
+local farPrompt=newInstance("ProximityPrompt"); farPrompt.Name="FarPrompt"; farPrompt.HoldDuration=0.5; setParent(farPrompt, farPart)
+
+if crateDef and crateDef.onToggle then real.pcall(function() crateDef.onToggle(true) end) end
+SERVICES.RunService.Heartbeat:Fire(0.016)
+out.crate_fired = (#FIRED>0) and real.table.concat(FIRED,",") or "none"
 
 local okD,errD=real.pcall(function() mod.destroy() end)
 out.destroy_ok=okD; if not okD then out.destroy_err=real.tostring(errD) end

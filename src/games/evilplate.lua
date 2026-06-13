@@ -15,6 +15,13 @@
 -- will surface it). Detection is name-scoped to "HotPotatoBomb", so the module
 -- stays idle in Evil Plate's other modes (the Tool only exists during the hot-
 -- potato round) -- no separate round gating needed.
+--
+-- Feature: Auto Crate -- in Evil Plate's loot rounds, airdrop / supply crates
+-- spawn carrying a ProximityPrompt (or ClickDetector) you normally hold E on.
+-- This fires that prompt for you the instant a crate appears (workspace
+-- DescendantAdded) and on a Heartbeat sweep, for anything in workspace (or
+-- workspace.ActiveEvents) whose name contains airdrop / crate / supply and is
+-- within click distance. Ported from the [Spec]evil_plate_crate standalone.
 
 local registry  = require("games.registry")
 local window    = require("ui.window")
@@ -38,7 +45,13 @@ local CFG = {
     toolName    = "hotpotatobomb",  -- lowercased substring of the Tool name to match
     returnDelay = 0.7,              -- s before passing back (immunity buffer + not-instant)
 }
-local enabled = false
+-- Auto Crate config -- clickRange gates how far a crate prompt may be (studs)
+-- before we fire it, so we don't pop crates other players are already on.
+local CRATE = {
+    clickRange = 60,
+}
+local enabled      = false   -- Hot Potato Auto-Return gate
+local crateEnabled = false   -- Auto Crate gate
 local pending = nil   -- { tool=, giver=, at= }
 local conns   = {}    -- live connections; torn down in destroy()
 
@@ -203,9 +216,70 @@ local function bindCharacter(char)
     task.defer(scan, char)
 end
 
+-- ---- Auto Crate (airdrop / supply / loot-crate opener) ----
+
+local CRATE_WORDS = { "airdrop", "crate", "supply" }
+local function crateNameHit(s)
+    s = s:lower()
+    for _, w in ipairs(CRATE_WORDS) do if s:find(w, 1, true) then return true end end
+    return false
+end
+
+-- true if `inst` sits under a workspace child named like a crate (used by the
+-- reactive DescendantAdded path, where we only have the new prompt itself)
+local function isCrateDescendant(inst)
+    local cur = inst.Parent
+    while cur and cur ~= workspace do
+        if crateNameHit(cur.Name) then return true end
+        cur = cur.Parent
+    end
+    return false
+end
+
+-- fire one ProximityPrompt / ClickDetector, range-gated to CRATE.clickRange
+local function fireCratePrompt(inst)
+    if not crateEnabled then return end
+    local root = myRoot()
+    if not root then return end
+    local adornee = inst.Parent
+    local inRange = true
+    if adornee and adornee:IsA("BasePart") then
+        inRange = (adornee.Position - root.Position).Magnitude <= CRATE.clickRange
+    end
+    if not inRange then return end
+    if inst:IsA("ProximityPrompt") and type(fireproximityprompt) == "function" then
+        pcall(fireproximityprompt, inst, inst.HoldDuration + 0.1)
+        pcall(fireproximityprompt, inst, 0)
+    elseif inst:IsA("ClickDetector") and type(fireclickdetector) == "function" then
+        pcall(fireclickdetector, inst)
+    end
+end
+
+-- sweep workspace (+ ActiveEvents) for crate containers and fire their prompts
+local function crateScan()
+    if not crateEnabled then return end
+    if not myRoot() then return end
+    local containers = { workspace }
+    local ae = workspace:FindFirstChild("ActiveEvents")
+    if ae then containers[#containers + 1] = ae end
+    for _, c in ipairs(containers) do
+        for _, child in ipairs(c:GetChildren()) do
+            if crateNameHit(child.Name) then
+                for _, desc in ipairs(child:GetDescendants()) do
+                    if desc:IsA("ProximityPrompt") or desc:IsA("ClickDetector") then
+                        fireCratePrompt(desc)
+                    end
+                end
+            end
+        end
+    end
+end
+
 -- drain pending returns from Heartbeat -- NEVER task.wait inside the receive
 -- signal callback on Wave (coroutine may not resume); queue + drain here instead.
+-- The same Heartbeat also drives the Auto Crate sweep (gated on crateEnabled).
 local function onHeartbeat()
+    if crateEnabled then crateScan() end
     if not pending then return end
     if (os.clock() - pending.at) < CFG.returnDelay then return end
     local job = pending; pending = nil
@@ -239,6 +313,15 @@ function EVILPLATE.register()
     track(LP.CharacterAdded:Connect(bindCharacter))
     track(RunService.Heartbeat:Connect(onHeartbeat))
 
+    -- instant crate reaction: fire any prompt/detector that spawns inside a crate
+    -- (the Heartbeat sweep is the fallback for ones present before we connected)
+    track(workspace.DescendantAdded:Connect(function(desc)
+        if not crateEnabled then return end
+        if (desc:IsA("ProximityPrompt") or desc:IsA("ClickDetector")) and isCrateDescendant(desc) then
+            task.defer(fireCratePrompt, desc)
+        end
+    end))
+
     local box = container.new(window.parent(), "Evil Plate")
     box:add(feature.declare({
         id          = "evilplate.hotpotato_return",
@@ -262,7 +345,20 @@ function EVILPLATE.register()
         },
     }).root)
 
-    log.info("[evilplate] module registered -- Hot Potato Auto-Return")
+    box:add(feature.declare({
+        id          = "evilplate.auto_crate",
+        name        = "Auto Crate",
+        description = "Auto-opens airdrop / supply crates. Instantly fires the ProximityPrompt (or ClickDetector) on anything in workspace -- or workspace.ActiveEvents -- whose name contains \"airdrop\", \"crate\" or \"supply\", the moment it spawns and on a continuous sweep. Only fires prompts within the click distance below, so crates other players are already opening across the map are left alone.",
+        default     = false,
+        onToggle    = function(v) crateEnabled = v and true or false end,
+        settings    = {
+            { type = "slider", name = "Click distance (studs)", key = "click_range",
+              min = 5, max = 100, step = 1, default = CRATE.clickRange,
+              onChange = function(v) CRATE.clickRange = v end },
+        },
+    }).root)
+
+    log.info("[evilplate] module registered -- Hot Potato Auto-Return + Auto Crate")
 end
 
 -- Called by init.lua shutdown (Auto Re-Execute / re-execute). register() reruns on
@@ -270,7 +366,8 @@ end
 -- teleports (see feedback_pantheon_reexec_leaks). The feature row + its keybind are
 -- torn down by window/keybinds.destroy; the connections + module state are ours.
 function EVILPLATE.destroy()
-    enabled = false
+    enabled      = false
+    crateEnabled = false
     pending = nil
     teardownConns()
 end
