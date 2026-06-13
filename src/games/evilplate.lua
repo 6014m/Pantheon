@@ -43,7 +43,10 @@ local EVILPLATE = {}
 
 local CFG = {
     toolName    = "hotpotatobomb",  -- lowercased substring of the Tool name to match
-    returnDelay = 0.7,              -- s before passing back (immunity buffer + not-instant)
+    returnDelay = 0.7,              -- s before passing back / between retries (immunity buffer + not-instant)
+    lobbyTeam   = "lobby",          -- lowercased substring of the team name meaning "out of the round";
+                                    -- if the giver is on it (or just joined it) we stop retrying and hold
+    touchTries  = 2,                -- firetouchinterest attempts before escalating to the teleport method
 }
 -- Auto Crate config -- clickRange gates how far a crate prompt may be (studs)
 -- before we fire it, so we don't pop crates other players are already on.
@@ -52,13 +55,19 @@ local CRATE = {
 }
 local enabled      = false   -- Hot Potato Auto-Return gate
 local crateEnabled = false   -- Auto Crate gate
-local pending = nil   -- { tool=, giver=, at= }
+local pending = nil   -- { tool=, giver=, at=, lobby=, teamConn= }
 local conns   = {}    -- live connections; torn down in destroy()
 
 local function track(c) conns[#conns + 1] = c; return c end
 local function teardownConns()
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     conns = {}
+end
+
+-- clear the in-flight return job, disconnecting its per-bomb giver-team watcher
+local function clearPending()
+    if pending and pending.teamConn then pcall(function() pending.teamConn:Disconnect() end) end
+    pending = nil
 end
 
 -- ---- helpers (ported from the [Spec] standalone prototype) ----
@@ -178,10 +187,40 @@ local function attemptReturn(tool, giver)
     return fired
 end
 
+-- escalation when firetouchinterest keeps leaving us holding the bomb: locally
+-- teleport the giver's character onto the bomb's Handle so a REAL (not faked) Touch
+-- fires. It's a client-side CFrame write -- the server snaps the giver back on its
+-- next replication -- so it's only as reliable as the game trusting client touches;
+-- we fire firetouchinterest in the same frame too, to cover both paths. (NOTE: live-
+-- unverified -- if this still doesn't pass it, the game's pass is a RemoteEvent.)
+local function attemptTeleportReturn(tool, giver)
+    local handle    = getHandle(tool)
+    local theirRoot = rootOf(giver.Character)
+    if not (handle and theirRoot) then return false end
+    pcall(function() theirRoot.CFrame = handle.CFrame end)
+    if type(firetouchinterest) == "function" then
+        pcall(function()
+            firetouchinterest(handle, theirRoot, 0)
+            firetouchinterest(handle, theirRoot, 1)
+        end)
+    end
+    return true
+end
+
+-- the giver being on the Lobby team means they're dead / spectating ("just joined
+-- that team" once they die at 0) -- there's no point bouncing the bomb back to them,
+-- so we stop retrying and hold it. Substring + lower() match (team names can vary).
+local function inLobby(plr)
+    local t = plr and plr.Team
+    return t ~= nil and type(t.Name) == "string"
+        and t.Name:lower():find(CFG.lobbyTeam, 1, true) ~= nil
+end
+
 -- the instant a HotPotatoBomb appears on us
 local function onReceive(tool)
     if not enabled then return end
     if pending and pending.tool == tool then return end
+    if pending then clearPending() end   -- a new bomb supersedes any in-flight return job
     dumpTool(tool)
 
     local giver = giverFromTool(tool)
@@ -191,7 +230,17 @@ local function onReceive(tool)
     -- mark pending BEFORE equipping: equip reparents the Tool (Backpack->Character),
     -- which fires Character.ChildAdded and re-enters onReceive; the pending guard at
     -- the top dedupes that re-entry so we don't process the same bomb twice.
-    pending = { tool = tool, giver = giver, at = os.clock() }
+    pending = { tool = tool, giver = giver, at = os.clock(), lobby = false, attempts = 0, method = "touch" }
+    -- watch the giver's team: if they join Lobby ("just joined that team") mid-return,
+    -- latch it sticky so we stop even if they later bounce back out of the lobby.
+    if giver then
+        pending.lobby = inLobby(giver)
+        pending.teamConn = giver:GetPropertyChangedSignal("Team"):Connect(function()
+            if pending and pending.giver == giver and inLobby(giver) then
+                pending.lobby = true
+            end
+        end)
+    end
     equip(tool)  -- Handle must be in workspace for the Touched to register
     notify.info(("HotPotatoBomb received -> returning to %s"):format(giver and giver.Name or "?"), 4)
 end
@@ -281,23 +330,59 @@ end
 local function onHeartbeat()
     if crateEnabled then crateScan() end
     if not pending then return end
-    if (os.clock() - pending.at) < CFG.returnDelay then return end
-    local job = pending; pending = nil
-    if not enabled then return end
+    if not enabled then clearPending(); return end
 
+    local job  = pending
     local char = LP.Character
     local bp   = LP:FindFirstChildOfClass("Backpack")
-    local have = job.tool and (job.tool.Parent == char or job.tool.Parent == bp)
-    if not have then log.info("[evilplate] no longer holding bomb (already passed?)"); return end
-    if not (job.giver and job.giver.Character) then log.info("[evilplate] giver gone, cannot return"); return end
 
-    if attemptReturn(job.tool, job.giver) then
-        notify.success(("Returned bomb to %s"):format(job.giver.Name), 4)
-        log.info("[evilplate] returned to " .. job.giver.Name .. " (if it didn't move, pass = RemoteEvent)")
-    else
-        notify.warn("Bomb return failed (see console)")
-        log.warn("[evilplate] return failed")
+    -- success / done: keep retrying ONLY until the bomb actually leaves our inventory
+    local have = job.tool and (job.tool.Parent == char or job.tool.Parent == bp)
+    if not have then
+        notify.success("Bomb passed -- left your inventory", 3)
+        log.info("[evilplate] bomb left inventory -- done")
+        clearPending(); return
     end
+
+    -- giver left the game entirely: nothing to return to, stop and hold
+    if not job.giver or job.giver.Parent == nil then
+        log.info("[evilplate] giver left game -- stop retrying, holding bomb")
+        clearPending(); return
+    end
+
+    -- giver is on (or just joined) the Lobby team -> stop retrying and hold the bomb
+    if job.lobby or inLobby(job.giver) then
+        notify.warn(("Giver %s in Lobby -- holding bomb"):format(job.giver.Name))
+        log.info("[evilplate] giver on Lobby team -- stop retrying, holding bomb")
+        clearPending(); return
+    end
+
+    -- throttle retries to returnDelay (beats receive-immunity; no per-frame spam)
+    if (os.clock() - job.at) < CFG.returnDelay then return end
+    -- giver mid-respawn (no character right now): wait, don't give up
+    if not job.giver.Character then job.at = os.clock(); return end
+
+    -- escalate: firetouchinterest tried touchTries times and we STILL hold the bomb ->
+    -- switch to teleporting the giver onto the Handle to force a real touch
+    if job.method == "touch" and job.attempts >= CFG.touchTries then
+        job.method = "teleport"
+        notify.info(("Firetouch didn't pass it -> teleporting %s onto the bomb"):format(job.giver.Name), 4)
+        log.info("[evilplate] escalating to teleport-onto-handle for " .. job.giver.Name)
+    end
+
+    local ok
+    if job.method == "teleport" then
+        ok = attemptTeleportReturn(job.tool, job.giver)
+    else
+        ok = attemptReturn(job.tool, job.giver)
+    end
+    job.attempts = job.attempts + 1
+    if ok then
+        log.info(("[evilplate] %s attempt -> %s (if bomb stays, pass = RemoteEvent)"):format(job.method, job.giver.Name))
+    else
+        log.warn("[evilplate] " .. job.method .. " attempt failed (giver root missing?)")
+    end
+    job.at = os.clock()  -- schedule next retry; loop continues until the bomb leaves inventory
 end
 
 function EVILPLATE.register()
@@ -326,7 +411,7 @@ function EVILPLATE.register()
     box:add(feature.declare({
         id          = "evilplate.hotpotato_return",
         name        = "Hot Potato Auto-Return",
-        description = "When you're passed the HotPotatoBomb, automatically passes it back to whoever gave it to you. Picks the giver from a reference on the bomb if one exists, else the nearest player at the instant you received it (whoever touched you). Equips the bomb and fakes its Touched back at them after a short delay (to clear receive-immunity). If the bomb doesn't actually leave you, the game passes via a RemoteEvent instead -- say so and it gets switched.",
+        description = "When you're passed the HotPotatoBomb, automatically passes it back to whoever gave it to you. Picks the giver from a reference on the bomb if one exists, else the nearest player at the instant you received it (whoever touched you). Equips the bomb and fakes its Touched back at them, retrying every \"Return delay\" seconds until the bomb actually leaves your inventory. If firetouchinterest doesn't pass it after a couple tries, it escalates to teleporting the giver onto the bomb's Handle to force a real touch. Stops (and just holds the bomb) if the giver moves to the Lobby team -- i.e. they died / left the round -- or leaves the game. If the bomb never leaves you even after the teleport method, the game passes via a RemoteEvent instead -- say so and it gets switched.",
         default     = false,
         onToggle    = function(v)
             enabled = v and true or false
@@ -368,7 +453,7 @@ end
 function EVILPLATE.destroy()
     enabled      = false
     crateEnabled = false
-    pending = nil
+    clearPending()
     teardownConns()
 end
 

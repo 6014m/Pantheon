@@ -133,25 +133,29 @@ local function applyBodyHold()
         root.CFrame = CFrame.new(root.Position) * CFrame.Angles(0, yAngle, 0)
     end
 end
-local function renderHold() applyCamHold(); applyBodyHold() end
-
--- Releases cam/body override flags. If `snap` is true (explicit Return / bounded
--- During->Wait / keyhold release / shutdown), also snaps cam+body back to where
--- the tech started. Default false: rotation PERSISTS until the next move/input
--- naturally turns you, which is the desired behavior when a tech rotates and
--- never adds a Return -- otherwise a 180 instantly snaps back at one-shot end.
-local function releaseHold(snap)
-    local didRotate = bodyARDisabled   -- a Rotate step actually turned the body
-    -- The old "snap camera to body yaw under shiftlock so rotation persists"
-    -- path is removed -- the camera flip at one-shot end was disorienting.
-    -- Trade-off: without the snap, the rotation does NOT persist under
-    -- shiftlock past tech end (the game's shiftlock snaps body back to face
-    -- camera on its next pass). For techs that rotate just to align a quick
-    -- cast (e.g. Rotate 180 + Use PB) this is exactly right -- rotation
-    -- holds DURING the actions and naturally releases at the end. For
-    -- "rotate-and-stay-rotated" use a keyhold-event tech instead.
-    held.cam, held.body = nil, nil
+-- Releases the cam/body override flags. If `snap` is true (explicit Return /
+-- bounded During->Wait / keyhold release / shutdown / timed-hold expiry), also
+-- snaps that axis back to where the tech started. Default false: rotation PERSISTS
+-- until the next move/input naturally turns you, the desired behavior when a tech
+-- rotates and never adds a Return -- otherwise a 180 instantly snaps back at one-
+-- shot end. Split per-axis so a timed Look (cam) and a timed Rotate (body) can
+-- expire independently (renderHold releases whichever's `expire` has passed).
+local function releaseCam(snap)
+    held.cam = nil
     state.techCamOverride = false
+    if snap and not (state.lockon_enabled and state.target) then
+        local cam = Workspace.CurrentCamera
+        if cam and startCamLook then cam.CFrame = CFrame.new(cam.CFrame.Position, cam.CFrame.Position + startCamLook) end
+    end
+end
+local function releaseBody(snap)
+    local didRotate = bodyARDisabled   -- a Rotate step actually turned the body
+    -- The old "snap camera to body yaw under shiftlock so rotation persists" path
+    -- is removed -- the camera flip at one-shot end was disorienting. Trade-off:
+    -- without it the rotation does NOT persist under shiftlock past tech end (the
+    -- game's shiftlock snaps body back to face camera on its next pass). For
+    -- "rotate-and-stay-rotated" use a keyhold-event tech instead.
+    held.body = nil
     state.techBodyOverride = false
     if bodyARDisabled then
         local ch = myChar()
@@ -160,17 +164,24 @@ local function releaseHold(snap)
         bodyARDisabled = false
     end
     if techAlign then techAlign.Enabled = false end
-    if snap and not (state.lockon_enabled and state.target) then
-        local cam = Workspace.CurrentCamera
-        if cam and startCamLook then cam.CFrame = CFrame.new(cam.CFrame.Position, cam.CFrame.Position + startCamLook) end
-        if didRotate and startBodyLook then
-            local root = myRoot()
-            local flat = Vector3.new(startBodyLook.X, 0, startBodyLook.Z)
-            if root and flat.Magnitude > 1e-3 then
-                root.CFrame = CFrame.lookAt(root.Position, root.Position + flat.Unit)
-            end
+    if snap and not (state.lockon_enabled and state.target) and didRotate and startBodyLook then
+        local root = myRoot()
+        local flat = Vector3.new(startBodyLook.X, 0, startBodyLook.Z)
+        if root and flat.Magnitude > 1e-3 then
+            root.CFrame = CFrame.lookAt(root.Position, root.Position + flat.Unit)
         end
     end
+end
+local function releaseHold(snap) releaseCam(snap); releaseBody(snap) end
+
+-- renderHold runs every RenderStep (bound in init). Before re-applying the held
+-- facings it expires any timed Look/Rotate ("keep for N seconds"), snapping that
+-- axis back the instant its hold elapses -- independent of the tech coroutine.
+local function renderHold()
+    local now = os.clock()
+    if held.cam  and held.cam.expire  and now >= held.cam.expire  then releaseCam(true)  end
+    if held.body and held.body.expire and now >= held.body.expire then releaseBody(true) end
+    applyCamHold(); applyBodyHold()
 end
 
 -- ===== actions =====
@@ -179,8 +190,19 @@ local ACTIONS = {}
 -- re-apply each frame), so a single-step Rotate/Look with no Wait after still
 -- visibly turns the body/camera -- runner had time to finish the action and
 -- restoreAll BEFORE the next render frame ever fired renderhold.
-ACTIONS.look   = function(a) held.cam  = { yaw = a.x or 0, pitch = a.y or 0 }; state.techCamOverride  = true; applyCamHold()  end
-ACTIONS.rotate = function(a) held.body = { yaw = a.x or 0, pitch = a.y or 0 }; state.techBodyOverride = true; applyBodyHold() end
+-- a.hold (seconds) = "keep this look/rotation for N seconds" then auto-snap back
+-- (0/nil = hold until a Return / During->Wait / tech end, the prior behavior).
+-- Non-blocking: later steps run while it's held; renderHold expires it on schedule.
+ACTIONS.look = function(a)
+    held.cam = { yaw = a.x or 0, pitch = a.y or 0 }
+    local d = tonumber(a.hold); if d and d > 0 then held.cam.expire = os.clock() + d end
+    state.techCamOverride = true; applyCamHold()
+end
+ACTIONS.rotate = function(a)
+    held.body = { yaw = a.x or 0, pitch = a.y or 0 }
+    local d = tonumber(a.hold); if d and d > 0 then held.body.expire = os.clock() + d end
+    state.techBodyOverride = true; applyBodyHold()
+end
 ACTIONS.wait   = function(a) task.wait(a.seconds or a.x or 0.5) end
 ACTIONS["return"] = function() releaseHold(true) end
 ACTIONS.feature = function(a)
@@ -646,7 +668,19 @@ local function runTech(tech, hold, triggerIndex)
             -- land. ~0.6s = long enough to see + for a JJS cast handshake to
             -- commit; short enough not to feel stuck.
             if not hold then
-                if bodyARDisabled then task.wait(0.6) end
+                -- keep the run alive while any timed Look/Rotate hold is still
+                -- counting down (renderHold snaps that axis back when its `expire`
+                -- passes); otherwise fall back to the legacy ~0.6s post-rotate
+                -- visibility / cast-landing hold.
+                local now = os.clock()
+                local waitUntil = now
+                if held.cam  and held.cam.expire  then waitUntil = math.max(waitUntil, held.cam.expire)  end
+                if held.body and held.body.expire then waitUntil = math.max(waitUntil, held.body.expire) end
+                if waitUntil > now then
+                    task.wait(math.min(waitUntil - now, 30))   -- cap so a stray value can't wedge the runner
+                elseif bodyARDisabled then
+                    task.wait(0.6)
+                end
                 ctx.restoreAll(false)
             else
                 for kc in pairs(heldKeys) do pcall(function() VIM:SendKeyEvent(false, kc, false, game) end) end

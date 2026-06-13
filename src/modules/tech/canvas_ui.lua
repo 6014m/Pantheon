@@ -159,9 +159,31 @@ do
     renderParams = function(blk)
         local t, p = blk.type, blk.params
         if t == "look" or t == "rotate" then
-            valBtn(blk, tostring(p.x or 0) .. "\u{00B0}", function()
-                p.x = nextYaw(p.x or 0)
-                blk.canvas:_refreshBlockText(blk)
+            -- left: yaw cycle button. right: a "hold (s)" textbox = how long to
+            -- keep this look/rotation before it snaps back (blank/0 = until a
+            -- Return / During->Wait / tech end, the old behavior).
+            local v = valArea(blk)
+            local yawB = Instance.new("TextButton")
+            yawB.Size = UDim2.new(0.5, -3, 1, 0); yawB.Position = UDim2.new(0, 0, 0, 0)
+            yawB.BackgroundTransparency = 1; yawB.AutoButtonColor = false
+            yawB.Text = tostring(p.x or 0) .. "\u{00B0}"
+            yawB.TextColor3 = theme.fg; yawB.Font = theme.font; yawB.TextSize = 12; yawB.Parent = v
+            guardedClick(yawB, function()
+                p.x = nextYaw(p.x or 0); yawB.Text = tostring(p.x or 0) .. "\u{00B0}"
+            end)
+            local function holdText() return (p.hold and p.hold > 0) and (tostring(p.hold) .. "s") or "" end
+            local holdB = Instance.new("TextBox")
+            holdB.Size = UDim2.new(0.5, -3, 1, 0); holdB.Position = UDim2.new(0.5, 3, 0, 0)
+            holdB.BackgroundColor3 = theme.bgAlt; holdB.BorderSizePixel = 0
+            holdB.Text = holdText(); holdB.PlaceholderText = "hold s"
+            holdB.PlaceholderColor3 = theme.fgDim
+            holdB.TextColor3 = theme.fg; holdB.Font = theme.font; holdB.TextSize = 11
+            holdB.ClearTextOnFocus = false; holdB.Parent = v
+            corner(holdB, 4)
+            holdB.FocusLost:Connect(function()
+                local n = tonumber((tostring(holdB.Text):gsub("[^%d%.]", "")))
+                if n and n > 0 then p.hold = math.clamp(n, 0, 30) else p.hold = nil end
+                holdB.Text = holdText()
             end)
         elseif t == "wait" then
             valTextbox(blk, tostring(p.seconds or 0.5), function(s, isRead)
