@@ -63,7 +63,7 @@ local files = {
     { "modules.tech.init",         "modules/tech/init.lua" },
     { "modules.system",            "modules/system.lua" },
     { "modules.aesthetic",         "modules/aesthetic.lua" },
-    { "modules.misc.autoobby",     "modules/misc/autoobby.lua" },
+    { "modules.misc.faketab",      "modules/misc/faketab.lua" },
     { "modules.misc.init",         "modules/misc/init.lua" },
     { "games.jjs",                 "games/jjs.lua" },
     { "games.evilplate",           "games/evilplate.lua" },

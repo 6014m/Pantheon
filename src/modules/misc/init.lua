@@ -8,11 +8,11 @@ local container = require("ui.container")
 local window    = require("ui.window")
 local log       = require("core.log")
 
-local autoobby  = require("modules.misc.autoobby")
+local faketab   = require("modules.misc.faketab")
 
 local Misc = {}
 
-local scripts = { autoobby }
+local scripts = { faketab }
 
 function Misc.register()
     local box = container.new(window.parent(), "Miscellaneous")
