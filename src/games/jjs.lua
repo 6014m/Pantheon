@@ -233,6 +233,23 @@ local function fireGui(btn)
     pcall(function() VIM:SendMouseButtonEvent(x, y, 0, true, game, 0); task.wait(); VIM:SendMouseButtonEvent(x, y, 0, false, game, 0) end)
 end
 
+-- Buy Cola: the Soda purchase button in the shop. Resolved fresh each click so it
+-- survives the shop UI rebuilding. Path: PlayerGui.Menus.Group.Shop.Items.Shop.Shop.Soda.Purchase.Cash
+local COLA_PATH = { "Menus", "Group", "Shop", "Items", "Shop", "Shop", "Soda", "Purchase", "Cash" }
+local function findCola()
+    local node = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    for _, n in ipairs(COLA_PATH) do
+        if not node then return nil end
+        node = node:FindFirstChild(n)
+    end
+    return node
+end
+local function buyCola()
+    local b = findCola()
+    if b then fireGui(b); pcall(notify.info, "Bought cola", 2)
+    else pcall(notify.warn, "Soda purchase button not found -- open the shop once?") end
+end
+
 -- re-resolve a slot's Clickable at fire time (survives the menu rebuilding)
 local function findClickable(page, slot)
     local pg = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
@@ -333,6 +350,9 @@ function JJS.register()
         onToggle    = function(v) enabled = v and true or false end,
         onKey       = function() ratioPointPerfect() end,
     }).root)
+
+    -- Buy Cola: one click buys a soda from the shop (fires its Cash purchase button)
+    box:add(components.Button(box.features, { text = "Buy Cola", onClick = buyCola }))
 
     -- Emote Keybinds: bind a key to each emote (fires its Clickable without opening the menu)
     do
