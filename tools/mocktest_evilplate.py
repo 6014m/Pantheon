@@ -60,6 +60,7 @@ function METHODS:FindFirstChildWhichIsA(cl) for _,c in real.ipairs(self._childre
 function METHODS:IsA(cl) return self.ClassName==cl or cl=="Instance" or (cl=="BasePart" and BASEPARTS[self.ClassName]==true) end
 function METHODS:GetAttributes() local t={} for k,v in real.pairs(self._attrs) do t[k]=v end return t end
 function METHODS:GetFullName() local n=self.Name local p=self._props.Parent while p do n=p.Name.."."..n; p=p._props.Parent end return n end
+function METHODS:GetPropertyChangedSignal(prop) self._propSignals=self._propSignals or {}; self._propSignals[prop]=self._propSignals[prop] or newEvent("Prop:"..prop); return self._propSignals[prop] end
 function METHODS:EquipTool(tool) setParent(tool, self._props.Parent) end
 function METHODS:Destroy() setParent(self,nil); self._destroyed=true end
 InstanceMT={
@@ -88,6 +89,10 @@ local function mkPlayer(name,uid,pos) local p=newInstance("Player"); p.Name=name
 local Players=newInstance("Players"); Players.LocalPlayer=LocalPlayer
 local pAlice=mkPlayer("Alice",11, V(10,0,0))
 local pBob=mkPlayer("Bob",22, V(40,0,0))
+-- parent players to the Players service so Player.Parent ~= nil (real in-game
+-- players are parented; nil only after they leave -- which the engine treats as
+-- "giver left game"). Without this the giver-left guard trips in the test.
+setParent(LocalPlayer,Players); setParent(pAlice,Players); setParent(pBob,Players)
 local roster={ LocalPlayer, pAlice, pBob }
 function Players:GetPlayers() local t={} for i,p in real.ipairs(roster) do t[i]=p end return t end
 function Players:GetPlayerFromCharacter(ch) for _,p in real.ipairs(roster) do if p.Character==ch then return p end end return nil end
@@ -181,6 +186,20 @@ local farPrompt=newInstance("ProximityPrompt"); farPrompt.Name="FarPrompt"; farP
 if crateDef and crateDef.onToggle then real.pcall(function() crateDef.onToggle(true) end) end
 SERVICES.RunService.Heartbeat:Fire(0.016)
 out.crate_fired = (#FIRED>0) and real.table.concat(FIRED,",") or "none"
+
+-- ---- regression: "started the round with the potato" -- nobody within giverRadius
+-- at receipt, so NO giver is fabricated and the bomb is NOT auto-passed (this was
+-- the "potato teleports to random/old-round people" bug). ----
+pAlice.Character:FindFirstChild("HumanoidRootPart").Position = V(80,0,0)
+pBob.Character:FindFirstChild("HumanoidRootPart").Position   = V(90,0,0)
+local ftiBefore=#FTI
+local bomb2=newInstance("Tool"); bomb2.Name="HotPotatoBomb"
+local h2=newInstance("Part"); h2.Name="Handle"; setParent(h2,bomb2)
+CLOCK.t=110
+setParent(bomb2, backpack)   -- fires onReceive; nearest player >10 studs -> should bail
+CLOCK.t=112
+SERVICES.RunService.Heartbeat:Fire(0.016)
+out.no_giver_fti = #FTI - ftiBefore        -- expect 0 (no auto-pass when we started with it)
 
 local okD,errD=real.pcall(function() mod.destroy() end)
 out.destroy_ok=okD; if not okD then out.destroy_err=real.tostring(errD) end

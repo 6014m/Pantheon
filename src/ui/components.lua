@@ -122,6 +122,7 @@ function components.Toggle(parent, opts)
         end
     end
     function api:Get() return state end
+    api.frame = f   -- expose the row so callers (e.g. addon menus) can set LayoutOrder
     return api
 end
 
