@@ -76,6 +76,7 @@ local SLIP = {
     pushBack   = 30,         -- inward "soft wall" strength (studs/s per stud past the edge)
     backstop   = 0.5,        -- hard-clamp if shoved this far past the edge (guarantees no walk-off)
     rayDown    = 10,         -- downward raycast length to find the plate under you
+    immoveable = false,      -- "Immoveable Object": ignore push forces too (wind / forces don't release you)
 }
 local enabled      = false   -- Hot Potato Auto-Return gate
 local crateEnabled = false   -- Auto Crate gate
@@ -472,8 +473,9 @@ local function antiSlipStep()
     if ok and AIRBORNE[st] then heldPlate = nil; return end
     -- an outside force is acting on you (wind event etc.) -> release so it carries you.
     -- Detect a force INSTANCE on you OR an active GlobalWind. A player bump is a plain
-    -- collision (neither), so we keep resisting AFK shovers.
-    if externalForce(char) or windActive() then heldPlate = nil; return end
+    -- collision (neither), so we keep resisting AFK shovers. "Immoveable Object" skips
+    -- this so pushes/wind can't move you off either (you only leave by jumping).
+    if not SLIP.immoveable and (externalForce(char) or windActive()) then heldPlate = nil; return end
     -- holding jump -> don't resist, so you can hop off the edge
     if UIS:IsKeyDown(Enum.KeyCode.Space) then return end
     -- the plate under us; keep the last one if the down-ray grazes off at the edge
@@ -653,6 +655,8 @@ function EVILPLATE.register()
             { type = "slider", name = "Push strength", key = "push_strength",
               min = 1, max = 80, step = 1, default = SLIP.pushBack,
               onChange = function(v) SLIP.pushBack = v end },
+            { type = "toggle", name = "Immoveable Object", key = "immoveable", default = false,
+              onChange = function(v) SLIP.immoveable = v and true or false end },
         },
     }).root)
 
