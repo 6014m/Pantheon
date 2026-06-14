@@ -32,6 +32,7 @@ local notify    = require("ui.notify")
 
 local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local UIS        = game:GetService("UserInputService")
 local LP         = Players.LocalPlayer
 
 -- GameId first (covers every place / VIP server), then the root PlaceId. Resolved
@@ -72,7 +73,8 @@ local SLIP = {
     platesName = "Plates",   -- workspace.<this> = the folder holding the plates
     edgeMargin = 0.1,        -- studs kept from the plate edge (0.1 = right at the edge). Raise to keep
                              -- more of you on the plate.
-    flingSpeed = 45,         -- horizontal speed above which we STOP clamping (a wind fling carries you off)
+    pushBack   = 30,         -- inward "soft wall" strength (studs/s per stud past the edge)
+    backstop   = 0.5,        -- hard-clamp if shoved this far past the edge (guarantees no walk-off)
     rayDown    = 10,         -- downward raycast length to find the plate under you
 }
 local enabled      = false   -- Hot Potato Auto-Return gate
@@ -408,9 +410,13 @@ local function crateScan()
 end
 
 -- ---- Anti Plate Slip ----
--- Keep the player from walking/sliding off the plate they're standing on. Clamps
--- X/Z to the plate's top surface ONLY while grounded on a workspace.Plates child and
--- not moving fast -- so jumping plate-to-plate and being flung (wind event) are free.
+-- Keep the player from walking/sliding off the plate they're standing on. While
+-- grounded on a workspace.Plates child, a soft velocity "wall" at the edge cancels
+-- outward movement + gently pushes you back in (so it's not a hard teleport). It
+-- releases when you're airborne (jump/fall), while you HOLD jump, or when an outside
+-- FORCE INSTANCE (e.g. the wind event) is acting on you -- but NOT for player bumps
+-- (those are physics collisions with no force instance), so AFK-shovers can't push
+-- you off. A tiny hard backstop guarantees you can never actually walk off.
 
 -- the plate (a workspace.Plates child) directly under the player, or nil
 local function currentPlate()
@@ -430,29 +436,67 @@ local AIRBORNE = {
     [Enum.HumanoidStateType.Flying] = true, [Enum.HumanoidStateType.FallingDown] = true,
     [Enum.HumanoidStateType.Ragdoll] = true, [Enum.HumanoidStateType.PlatformStanding] = true,
 }
+-- force-applying instances an event (wind etc.) attaches to push you. A player
+-- ramming you is just a collision -- no such instance -- so we keep resisting them.
+local FORCE_CLASS = {
+    BodyVelocity = true, BodyForce = true, BodyThrust = true, BodyPosition = true,
+    BodyAngularVelocity = true, BodyGyro = true, RocketPropulsion = true,
+    VectorForce = true, LinearVelocity = true, AngularVelocity = true, Torque = true, AlignPosition = true,
+}
+local function externalForce(char)
+    for _, p in ipairs(char:GetChildren()) do
+        if p:IsA("BasePart") then
+            for _, d in ipairs(p:GetChildren()) do
+                if FORCE_CLASS[d.ClassName] then return true end
+            end
+        end
+    end
+    return false
+end
+
 local heldPlate = nil   -- the plate we're currently locking to (kept across edge ray-misses)
 local function antiSlipStep()
-    local hrp = myRoot(); if not hrp then heldPlate = nil; return end
-    local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+    local char = LP.Character
+    local hrp  = char and rootOf(char)
+    if not hrp then heldPlate = nil; return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then heldPlate = nil; return end
-    -- airborne (jumped / falling / flung) -> release, so you can leave the plate
+    -- airborne (jumped / falling) -> release
     local ok, st = pcall(function() return hum:GetState() end)
     if ok and AIRBORNE[st] then heldPlate = nil; return end
-    -- moving fast (e.g. a wind fling) -> let it carry you off
-    local vel = hrp.AssemblyLinearVelocity or hrp.Velocity
-    if vel and (vel.X * vel.X + vel.Z * vel.Z) > (SLIP.flingSpeed * SLIP.flingSpeed) then heldPlate = nil; return end
-    -- the plate under us; if the down-ray just misses (we're parked right at the edge),
-    -- keep the last plate so the lock doesn't flicker off.
+    -- an outside force is acting on you (wind event etc.) -> release so it carries you
+    if externalForce(char) then heldPlate = nil; return end
+    -- holding jump -> don't resist, so you can hop off the edge
+    if UIS:IsKeyDown(Enum.KeyCode.Space) then return end
+    -- the plate under us; keep the last one if the down-ray grazes off at the edge
     local plate = currentPlate() or heldPlate
     if not plate or not plate.Parent then heldPlate = nil; return end
     heldPlate = plate
-    -- clamp in the plate's LOCAL space so rotated plates still work
-    local lp = plate.CFrame:PointToObjectSpace(hrp.Position)
-    local hx = math.max(0, plate.Size.X / 2 - SLIP.edgeMargin)
-    local hz = math.max(0, plate.Size.Z / 2 - SLIP.edgeMargin)
-    local clx, clz = math.clamp(lp.X, -hx, hx), math.clamp(lp.Z, -hz, hz)
+
+    local cf = plate.CFrame
+    local lp = cf:PointToObjectSpace(hrp.Position)
+    local v  = hrp.AssemblyLinearVelocity or hrp.Velocity or Vector3.new()
+    local lv = cf:VectorToObjectSpace(v)
+    local hx = math.max(0.1, plate.Size.X / 2 - SLIP.edgeMargin)
+    local hz = math.max(0.1, plate.Size.Z / 2 - SLIP.edgeMargin)
+    -- per-axis soft wall: past the edge -> inward spring; at the edge moving out -> stop
+    local function axis(p, half, vel)
+        if p > half then return -SLIP.pushBack * (p - half)
+        elseif p < -half then return SLIP.pushBack * (-half - p)
+        elseif p >= half - 0.05 and vel > 0 then return 0
+        elseif p <= -half + 0.05 and vel < 0 then return 0
+        end
+        return vel
+    end
+    local nx, nz = axis(lp.X, hx, lv.X), axis(lp.Z, hz, lv.Z)
+    if nx ~= lv.X or nz ~= lv.Z then
+        hrp.AssemblyLinearVelocity = cf:VectorToWorldSpace(Vector3.new(nx, lv.Y, nz))
+    end
+    -- hard backstop: never let you end up more than `backstop` past the edge
+    local clx = math.clamp(lp.X, -hx - SLIP.backstop, hx + SLIP.backstop)
+    local clz = math.clamp(lp.Z, -hz - SLIP.backstop, hz + SLIP.backstop)
     if clx ~= lp.X or clz ~= lp.Z then
-        local world = plate.CFrame:PointToWorldSpace(Vector3.new(clx, lp.Y, clz))
+        local world = cf:PointToWorldSpace(Vector3.new(clx, lp.Y, clz))
         hrp.CFrame = CFrame.new(world) * (hrp.CFrame - hrp.CFrame.Position)
     end
 end
@@ -591,16 +635,16 @@ function EVILPLATE.register()
     box:add(feature.declare({
         id          = "evilplate.anti_plate_slip",
         name        = "Anti Plate Slip",
-        description = "Locks you onto whatever plate (workspace.Plates child) you're standing on so you can't accidentally walk or slide off the edge -- it clamps you to the plate's surface. The only ways off are JUMPING (you go airborne so the clamp releases -- jump freely plate to plate) or being FLUNG by an outside force like the wind event (high speed also releases the clamp). Does nothing while you're off the plates.",
+        description = "Holds you onto whatever plate (workspace.Plates child) you're standing on so you can't accidentally walk or slide off the edge -- a soft velocity 'wall' at the edge cancels your outward movement and gently pushes you back (not a hard teleport). It RELEASES when you go airborne (jump/fall), while you HOLD jump (so you can hop plate to plate), or when an outside FORCE is acting on you (e.g. the wind event) -- but NOT when another player just bumps you, so AFK shovers can't push you off. It re-enables itself the instant you land back on a plate. A tiny backstop guarantees you can never fully walk off.",
         default     = false,
         onToggle    = function(v) slipEnabled = v and true or false end,
         settings    = {
             { type = "slider", name = "Edge margin (studs)", key = "edge_margin",
               min = 0.1, max = 6, step = 0.1, default = SLIP.edgeMargin,
               onChange = function(v) SLIP.edgeMargin = v end },
-            { type = "slider", name = "Fling release speed", key = "fling_speed",
-              min = 20, max = 100, step = 1, default = SLIP.flingSpeed,
-              onChange = function(v) SLIP.flingSpeed = v end },
+            { type = "slider", name = "Push strength", key = "push_strength",
+              min = 5, max = 80, step = 1, default = SLIP.pushBack,
+              onChange = function(v) SLIP.pushBack = v end },
         },
     }).root)
 
