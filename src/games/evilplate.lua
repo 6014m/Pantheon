@@ -70,7 +70,8 @@ local CRATE = {
 -- Anti Plate Slip config
 local SLIP = {
     platesName = "Plates",   -- workspace.<this> = the folder holding the plates
-    edgeMargin = 2,          -- studs kept from the plate edge (≈ player half-width)
+    edgeMargin = 0,          -- studs kept from the plate edge (0 = stand at the very edge; HRP center can
+                             -- reach the edge). Raise it to keep more of you on the plate.
     flingSpeed = 45,         -- horizontal speed above which we STOP clamping (a wind fling carries you off)
     rayDown    = 10,         -- downward raycast length to find the plate under you
 }
@@ -429,17 +430,22 @@ local AIRBORNE = {
     [Enum.HumanoidStateType.Flying] = true, [Enum.HumanoidStateType.FallingDown] = true,
     [Enum.HumanoidStateType.Ragdoll] = true, [Enum.HumanoidStateType.PlatformStanding] = true,
 }
+local heldPlate = nil   -- the plate we're currently locking to (kept across edge ray-misses)
 local function antiSlipStep()
-    local hrp = myRoot(); if not hrp then return end
+    local hrp = myRoot(); if not hrp then heldPlate = nil; return end
     local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
-    if not hum then return end
-    -- airborne (jumped / falling / flung) -> NO clamp, so you can leave the plate
+    if not hum then heldPlate = nil; return end
+    -- airborne (jumped / falling / flung) -> release, so you can leave the plate
     local ok, st = pcall(function() return hum:GetState() end)
-    if ok and AIRBORNE[st] then return end
+    if ok and AIRBORNE[st] then heldPlate = nil; return end
     -- moving fast (e.g. a wind fling) -> let it carry you off
     local vel = hrp.AssemblyLinearVelocity or hrp.Velocity
-    if vel and (vel.X * vel.X + vel.Z * vel.Z) > (SLIP.flingSpeed * SLIP.flingSpeed) then return end
-    local plate = currentPlate(); if not plate then return end   -- not on a plate -> nothing to hold
+    if vel and (vel.X * vel.X + vel.Z * vel.Z) > (SLIP.flingSpeed * SLIP.flingSpeed) then heldPlate = nil; return end
+    -- the plate under us; if the down-ray just misses (we're parked right at the edge),
+    -- keep the last plate so the lock doesn't flicker off.
+    local plate = currentPlate() or heldPlate
+    if not plate or not plate.Parent then heldPlate = nil; return end
+    heldPlate = plate
     -- clamp in the plate's LOCAL space so rotated plates still work
     local lp = plate.CFrame:PointToObjectSpace(hrp.Position)
     local hx = math.max(0, plate.Size.X / 2 - SLIP.edgeMargin)
