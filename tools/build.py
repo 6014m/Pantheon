@@ -43,6 +43,8 @@ BUILD_ORDER = [
     "modules/aesthetic",
     "modules/misc/faketab",
     "modules/misc/init",
+    "modules/addons/api",
+    "modules/addons/init",
     "games/jjs",
     "games/evilplate",
     "init",

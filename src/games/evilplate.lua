@@ -47,9 +47,13 @@ local CFG = {
     lobbyTeam   = "lobby",          -- lowercased substring of the team name meaning "out of the round";
                                     -- if the giver is on it (or just joined it) we stop retrying and hold
     touchTries  = 2,                -- firetouchinterest attempts before escalating to the teleport method
-    giverRadius = 10,               -- a "pass" means someone TOUCHED us, so the giver must be within this
-                                    -- many studs at receipt. No one that close = we STARTED the round
-                                    -- holding it -> no giver, don't auto-pass (don't fling a bystander).
+    giverMemory = 1.5,              -- s: how recently someone must have TOUCHED us to count as the giver.
+                                    -- A pass IS a touch (captured at touch time), so a giver who instantly
+                                    -- sprints off is still identified -- distance-at-receipt would miss them
+                                    -- (they clear many studs before the Tool's ChildAdded even fires).
+    teleportMaxDist = 18,           -- only ESCALATE to the teleport-onto-handle method if the giver is within
+                                    -- this many studs -- yanking a far player onto your hand reads as lag.
+                                    -- Beyond it we keep using the subtler firetouchinterest.
     maxHold     = 4,                -- s: give up retrying after this long. Stops a never-leaves-inventory
                                     -- pass (RemoteEvent game) from teleporting a now-STALE giver round
                                     -- after round -- the "potato teleports to people from old rounds" bug.
@@ -100,21 +104,28 @@ local function nameMatches(name)
     return type(name) == "string" and name:lower():find(CFG.toolName, 1, true) ~= nil
 end
 
--- nearest living other players (closest = most likely just touched us to pass it)
-local function rankByDistance()
-    local mr, list = myRoot(), {}
-    if not mr then return list end
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LP and p.Character then
-            local r   = rootOf(p.Character)
-            local hum = p.Character:FindFirstChildOfClass("Humanoid")
-            if r and (not hum or hum.Health > 0) then
-                list[#list + 1] = { player = p, dist = (r.Position - mr.Position).Magnitude }
-            end
-        end
+-- Who last physically TOUCHED our character, captured at touch time. A pass is a
+-- touch, so this identifies the giver reliably even when they immediately sprint
+-- away -- unlike "nearest player at receipt", which misses them (they're already
+-- far by the time the Tool's ChildAdded fires). Set by hookTouch, read by onReceive.
+local recentToucher = nil   -- { player =, at = }
+
+local function playerFromPart(part)
+    local cur = part
+    while cur do
+        local p = Players:GetPlayerFromCharacter(cur)
+        if p then return p end
+        cur = cur.Parent
     end
-    table.sort(list, function(a, b) return a.dist < b.dist end)
-    return list
+    return nil
+end
+
+-- our distance to a player's root (for the cosmetic teleport gate); huge if unknown
+local function distTo(plr)
+    local mr = myRoot()
+    local tr = plr and plr.Character and rootOf(plr.Character)
+    if not (mr and tr) then return math.huge end
+    return (tr.Position - mr.Position).Magnitude
 end
 
 -- explicit giver reference stored on the bomb (attribute or value object), if any
@@ -229,19 +240,19 @@ local function onReceive(tool)
     if pending then clearPending() end   -- a new bomb supersedes any in-flight return job
     dumpTool(tool)
 
-    -- Identify the giver: an explicit ref on the bomb wins; else the nearest player
-    -- BUT ONLY if they're touch-close (they had to touch us to pass it). If nobody
-    -- is within giverRadius, we most likely STARTED the round holding it -> bail out
-    -- so we don't fling whoever happens to be nearest (the "started with it" case).
+    -- Giver = an explicit ref on the bomb, else whoever just TOUCHED us (the pass).
+    -- We do NOT guess by who's nearest at receipt: the giver sprints off the instant
+    -- they pass, so they're usually already far by the time the Tool appears -- a
+    -- distance guess would miss real passes AND, if forced, fling the bomb at someone
+    -- now far (looks like lag). No recent toucher = we STARTED the round holding it
+    -- -> don't auto-pass.
     local giver = giverFromTool(tool)
-    if not giver then
-        local ranking = rankByDistance()
-        if ranking[1] and ranking[1].dist <= CFG.giverRadius then
-            giver = ranking[1].player
-        end
+    if not giver and recentToucher and (os.clock() - recentToucher.at) <= CFG.giverMemory then
+        local p = recentToucher.player
+        if p and p.Parent and p ~= LP then giver = p end
     end
     if not giver then
-        log.info("[evilplate] bomb received with no nearby giver -- started the round with it? not auto-passing")
+        log.info("[evilplate] no recent toucher -- started the round with the bomb? not auto-passing")
         notify.info("HotPotatoBomb received (no giver to return to)", 3)
         return
     end
@@ -281,9 +292,21 @@ local function bindContainer(c)
     end))
 end
 
+-- record the last OTHER player whose body touched ours, captured at touch time so
+-- onReceive can pick the real giver (see recentToucher). Re-hooked per character.
+local function hookTouch(char)
+    local hrp = rootOf(char)
+    if not hrp then return end
+    track(hrp.Touched:Connect(function(hit)
+        local p = playerFromPart(hit)
+        if p and p ~= LP then recentToucher = { player = p, at = os.clock() } end
+    end))
+end
+
 local function bindCharacter(char)
     if not char then return end
     bindContainer(char)
+    hookTouch(char)
     task.defer(scan, char)
 end
 
@@ -394,24 +417,26 @@ local function onHeartbeat()
     if not job.giver.Character then job.at = os.clock(); return end
 
     -- escalate: firetouchinterest tried touchTries times and we STILL hold the bomb ->
-    -- switch to teleporting the giver onto the Handle to force a real touch
+    -- mark for the teleport-onto-handle method to force a real touch
     if job.method == "touch" and job.attempts >= CFG.touchTries then
         job.method = "teleport"
-        notify.info(("Firetouch didn't pass it -> teleporting %s onto the bomb"):format(job.giver.Name), 4)
         log.info("[evilplate] escalating to teleport-onto-handle for " .. job.giver.Name)
     end
 
-    local ok
-    if job.method == "teleport" then
-        ok = attemptTeleportReturn(job.tool, job.giver)
+    -- Only actually teleport when the giver is close enough that pulling them onto
+    -- the handle reads as a normal contact pass. If they've fled, stay on the subtle
+    -- firetouch -- a long-range yank would look like lag.
+    local ok, used
+    if job.method == "teleport" and distTo(job.giver) <= CFG.teleportMaxDist then
+        used = "teleport"; ok = attemptTeleportReturn(job.tool, job.giver)
     else
-        ok = attemptReturn(job.tool, job.giver)
+        used = "touch";    ok = attemptReturn(job.tool, job.giver)
     end
     job.attempts = job.attempts + 1
     if ok then
-        log.info(("[evilplate] %s attempt -> %s (if bomb stays, pass = RemoteEvent)"):format(job.method, job.giver.Name))
+        log.info(("[evilplate] %s attempt -> %s (if bomb stays, pass = RemoteEvent)"):format(used, job.giver.Name))
     else
-        log.warn("[evilplate] " .. job.method .. " attempt failed (giver root missing?)")
+        log.warn("[evilplate] " .. used .. " attempt failed (giver root missing?)")
     end
     job.at = os.clock()  -- schedule next retry; loop continues until the bomb leaves inventory
 end

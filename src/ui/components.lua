@@ -205,6 +205,7 @@ function components.Slider(parent, opts)
         label.Text = string.format("%s: %s", opts.text or "Slider", tostring(v))
         if opts.onChange then opts.onChange(v) end
     end
+    api.frame = f   -- expose the row so callers (e.g. addon menus) can set LayoutOrder
     return api
 end
 
@@ -298,6 +299,7 @@ function components.KeybindSetter(parent, opts)
     end)
 
     return {
+        frame = f,   -- expose the row so callers (e.g. addon menus) can set LayoutOrder
         get = function() return current end,
         set = function(k)
             current = k
@@ -372,6 +374,7 @@ function components.Dropdown(parent, opts)
         if onChange then onChange(value) end
     end
     function api:AddOption(o) addOption(o) end   -- append a new option (e.g. a saved custom preset)
+    api.frame = root   -- expose the row so callers (e.g. addon menus) can set LayoutOrder
     return api
 end
 
@@ -404,6 +407,7 @@ function components.TextBox(parent, opts)
     local api = {}
     function api:Get() return box.Text end
     function api:Set(v) box.Text = v or "" end
+    api.frame = f   -- expose the row so callers (e.g. addon menus) can set LayoutOrder
     return api
 end
 

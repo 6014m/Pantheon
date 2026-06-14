@@ -67,6 +67,7 @@ local HEADER_H     = 36                                  -- accent-colored band 
 
 function Container.new(parent, name)
     local self = setmetatable({}, Container)
+    self._dragConns = {}   -- this container's global-UIS drag handlers (also see Container:destroy)
 
     local idx = nextIndex
     nextIndex = nextIndex + 1
@@ -220,7 +221,7 @@ function Container.new(parent, name)
                 startPos  = container.Position
             end
         end)
-        dragConns[#dragConns + 1] = UIS.InputChanged:Connect(function(input)
+        local moveConn = UIS.InputChanged:Connect(function(input)
             if not dragging then return end
             if input.UserInputType == Enum.UserInputType.MouseMovement
                or input.UserInputType == Enum.UserInputType.Touch then
@@ -236,7 +237,7 @@ function Container.new(parent, name)
                 container.Position = UDim2.new(startPos.X.Scale, nx, startPos.Y.Scale, ny)
             end
         end)
-        dragConns[#dragConns + 1] = UIS.InputEnded:Connect(function(input)
+        local endConn = UIS.InputEnded:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1
                or input.UserInputType == Enum.UserInputType.Touch then
                 if dragging then
@@ -253,6 +254,13 @@ function Container.new(parent, name)
                 end
             end
         end)
+        -- Track on both the global list (Container.cleanup disconnects all at
+        -- re-execute) and this container (Container:destroy disconnects just its
+        -- own when a single addon menu is torn down).
+        dragConns[#dragConns + 1] = moveConn
+        dragConns[#dragConns + 1] = endConn
+        self._dragConns[#self._dragConns + 1] = moveConn
+        self._dragConns[#self._dragConns + 1] = endConn
     end
 
     self.root     = container
@@ -315,6 +323,29 @@ function Container.list()
     return instances
 end
 
+-- Tear down a SINGLE container (used when an addon menu is toggled off / the
+-- addon is disabled or reloaded). Disconnects this container's own global drag
+-- handlers, drops it from the instances list (so a navigator refresh won't relist
+-- it), frees its auto-slot, and destroys the GUI. Container.cleanup() remains the
+-- nuke-everything path used at re-execute.
+function Container:destroy()
+    if self._dragConns then
+        for _, c in ipairs(self._dragConns) do pcall(function() c:Disconnect() end) end
+        self._dragConns = {}
+    end
+    self:_freeSlot()
+    for i, c in ipairs(instances) do if c == self then table.remove(instances, i); break end end
+    if self.root then pcall(function() self.root:Destroy() end); self.root = nil end
+    self.visible = false
+end
+
+-- Re-run the navigator's row build (it clears + rebuilds), so containers created
+-- or destroyed AFTER the initial nav.populate() (e.g. addons installed/toggled at
+-- runtime) appear/disappear in the menu list.
+function Container.refreshNavigator()
+    if navRef and navRef.populate then navRef.populate() end
+end
+
 function Container:add(featureRoot)
     self._count = self._count + 1
     featureRoot.LayoutOrder = self._count
@@ -331,6 +362,12 @@ function Container.buildNavigator(parent, title)
     navRef = nav
 
     function nav.populate()
+        -- Clear existing rows first so this doubles as a refresh (addons created
+        -- or removed after boot re-run it via Container.refreshNavigator).
+        for _, ch in ipairs(nav.features:GetChildren()) do
+            if not ch:IsA("UIListLayout") then ch:Destroy() end
+        end
+        nav._count = 0
         for _, c in ipairs(instances) do
             if c ~= nav and not c.isNav then
                 local row = Instance.new("TextButton")

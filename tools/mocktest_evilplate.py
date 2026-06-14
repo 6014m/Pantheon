@@ -33,7 +33,7 @@ local function newEvent(name)
   function ev:Fire(...) for _,fn in real.ipairs(h) do local ok,e=real.pcall(fn,...); if not ok then ERRORS[#ERRORS+1]=name..": "..real.tostring(e) end end end
   return ev
 end
-local EVENT_NAMES={ChildAdded=true,ChildRemoved=true,DescendantAdded=true,Heartbeat=true,CharacterAdded=true,InputBegan=true}
+local EVENT_NAMES={ChildAdded=true,ChildRemoved=true,DescendantAdded=true,Heartbeat=true,CharacterAdded=true,InputBegan=true,Touched=true}
 
 local VMT={}
 local function V(x,y,z) return real.setmetatable({_vector=true,X=x or 0,Y=y or 0,Z=z or 0},VMT) end
@@ -158,8 +158,14 @@ out.has_crate  = crateDef ~= nil
 -- toggle Hot Potato Auto-Return on (crate stays OFF so it can't perturb the bomb test)
 if potatoDef and potatoDef.onToggle then real.pcall(function() potatoDef.onToggle(true) end) end
 
--- receive the bomb into the backpack (fires ChildAdded -> onReceive)
+-- Alice TOUCHES us (the pass) so recentToucher is set, THEN the bomb arrives.
+-- Giver is now identified by who touched us, not by distance-at-receipt.
 CLOCK.t=100
+local lpHrp    = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+local aliceHrp = pAlice.Character:FindFirstChild("HumanoidRootPart")
+lpHrp.Touched:Fire(aliceHrp)
+
+-- receive the bomb into the backpack (fires ChildAdded -> onReceive)
 local bomb=newInstance("Tool"); bomb.Name="HotPotatoBomb"
 local handle=newInstance("Part"); handle.Name="Handle"; setParent(handle,bomb)
 setParent(bomb, backpack)
@@ -187,16 +193,14 @@ if crateDef and crateDef.onToggle then real.pcall(function() crateDef.onToggle(t
 SERVICES.RunService.Heartbeat:Fire(0.016)
 out.crate_fired = (#FIRED>0) and real.table.concat(FIRED,",") or "none"
 
--- ---- regression: "started the round with the potato" -- nobody within giverRadius
--- at receipt, so NO giver is fabricated and the bomb is NOT auto-passed (this was
--- the "potato teleports to random/old-round people" bug). ----
-pAlice.Character:FindFirstChild("HumanoidRootPart").Position = V(80,0,0)
-pBob.Character:FindFirstChild("HumanoidRootPart").Position   = V(90,0,0)
+-- ---- regression: "started the round with the potato" -- the last touch is now
+-- older than giverMemory, so NO giver is identified and the bomb is NOT auto-passed
+-- (this was the "potato flies to someone from a previous round" bug). ----
 local ftiBefore=#FTI
 local bomb2=newInstance("Tool"); bomb2.Name="HotPotatoBomb"
 local h2=newInstance("Part"); h2.Name="Handle"; setParent(h2,bomb2)
-CLOCK.t=110
-setParent(bomb2, backpack)   -- fires onReceive; nearest player >10 studs -> should bail
+CLOCK.t=110                   -- 10s after the only touch (t=100) -> stale, beyond giverMemory
+setParent(bomb2, backpack)    -- fires onReceive; no RECENT toucher -> should bail
 CLOCK.t=112
 SERVICES.RunService.Heartbeat:Fire(0.016)
 out.no_giver_fti = #FTI - ftiBefore        -- expect 0 (no auto-pass when we started with it)

@@ -72,6 +72,14 @@ else
     log.info("no game module for PlaceId " .. tostring(game.PlaceId))
 end
 
+-- Addons: user/community drop-in scripts (Pantheon/addons/*.lua) that register
+-- their own menus via the Pantheon API. Registered LAST so the "Addons" manager
+-- and any addon-created menus list after the built-in + per-game menus, and
+-- BEFORE nav.populate() so those menus get navigator rows.
+local addons = require("modules.addons.init")
+local ok_addons, err_addons = pcall(addons.register)
+if not ok_addons then log.err("addons register failed: " .. tostring(err_addons)) end
+
 -- Every module (and any per-game one) has now created its containers; fill the
 -- navigator with a toggle row per menu. They start closed -- click a row to open.
 nav.populate()
@@ -86,6 +94,9 @@ local function shutdown()
     -- Without this the game module's register() re-ran on every teleport (Auto
     -- Re-Execute) with no matching teardown.
     pcall(function() if gameMod and gameMod.destroy then gameMod.destroy() end end)
+    -- Addons before the UI teardown so each addon's tracked connections + keybinds
+    -- are dropped while the systems they touch are still alive.
+    pcall(function() if addons.destroy then addons.destroy() end end)
     pcall(function() if aim.destroy      then aim.destroy()      end end)
     pcall(function() if friendlies.destroy then friendlies.destroy() end end)
     pcall(function() if tech.destroy     then tech.destroy()     end end)

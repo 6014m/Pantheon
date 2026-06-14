@@ -65,6 +65,8 @@ local files = {
     { "modules.aesthetic",         "modules/aesthetic.lua" },
     { "modules.misc.faketab",      "modules/misc/faketab.lua" },
     { "modules.misc.init",         "modules/misc/init.lua" },
+    { "modules.addons.api",        "modules/addons/api.lua" },
+    { "modules.addons.init",       "modules/addons/init.lua" },
     { "games.jjs",                 "games/jjs.lua" },
     { "games.evilplate",           "games/evilplate.lua" },
     { "init",                      "init.lua" },
