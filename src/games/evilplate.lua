@@ -385,6 +385,8 @@ local function bindCharacter(char)
     bindContainer(char)
     hookTouch(char)
     task.defer(scan, char)
+    -- respawn -> bomb status likely changed; refresh the Friendlies "Hand Potato" buttons
+    task.defer(function() pcall(function() if friendlies.refresh then friendlies.refresh() end end) end)
 end
 
 -- ---- Auto Crate (airdrop / supply / loot-crate opener) ----
