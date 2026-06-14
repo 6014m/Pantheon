@@ -52,10 +52,18 @@ function Keybinds.init()
     if hooked then return end
     hooked = true
 
+    -- Resolve the lookup key: keyboard events carry a KeyCode; mouse-button
+    -- events have KeyCode == Unknown, so fall back to the UserInputType (only
+    -- MouseButton3 is ever bound, so L/R click resolve to keys nobody bound).
+    local function lookupKey(input)
+        local k = input.KeyCode
+        if k == Enum.KeyCode.Unknown then return input.UserInputType end
+        return k
+    end
+
     inputBeganConn = UserInputService.InputBegan:Connect(function(input, gpe)
         if gpe then return end
-        if input.KeyCode == Enum.KeyCode.Unknown then return end
-        local ids = keyToIds[input.KeyCode]
+        local ids = keyToIds[lookupKey(input)]
         if not ids then return end
         for _, id in ipairs(ids) do
             local b = bindings[id]
@@ -66,8 +74,7 @@ function Keybinds.init()
     end)
 
     inputEndedConn = UserInputService.InputEnded:Connect(function(input)
-        if input.KeyCode == Enum.KeyCode.Unknown then return end
-        local ids = keyToIds[input.KeyCode]
+        local ids = keyToIds[lookupKey(input)]
         if not ids then return end
         for _, id in ipairs(ids) do
             local b = bindings[id]

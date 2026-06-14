@@ -167,12 +167,20 @@ end
 function persist.keyToString(k)
     if not k then return nil end
     if k == Enum.KeyCode.Unknown then return "" end
-    return (tostring(k):gsub("Enum.KeyCode.", ""))
+    local s = tostring(k)
+    -- Mouse-button binds (UserInputType) are tagged so rehydration knows to
+    -- look them up in Enum.UserInputType rather than Enum.KeyCode.
+    if s:find("Enum.UserInputType.") then
+        return "UIT:" .. (s:gsub("Enum.UserInputType.", ""))
+    end
+    return (s:gsub("Enum.KeyCode.", ""))
 end
 
 function persist.stringToKey(s)
     if s == nil then return nil end
     if s == "" then return Enum.KeyCode.Unknown end
+    local uit = s:match("^UIT:(.+)$")
+    if uit then return Enum.UserInputType[uit] or Enum.KeyCode.Unknown end
     return Enum.KeyCode[s] or Enum.KeyCode.Unknown
 end
 

@@ -211,7 +211,13 @@ end
 
 local function keyDisplayName(k)
     if not k or k == Enum.KeyCode.Unknown then return "<none>" end
-    return (tostring(k):gsub("Enum.KeyCode.", ""))
+    local s = tostring(k)
+    if s:find("Enum.UserInputType.") then
+        local n = (s:gsub("Enum.UserInputType.", ""))
+        if n == "MouseButton3" then return "Mouse3" end
+        return n
+    end
+    return (s:gsub("Enum.KeyCode.", ""))
 end
 
 function components.KeybindSetter(parent, opts)
@@ -264,17 +270,22 @@ function components.KeybindSetter(parent, opts)
 
         local conn
         conn = trackConn(UIS.InputBegan:Connect(function(input)
-            if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
-            if input.KeyCode == Enum.KeyCode.Unknown then return end
-            local k = input.KeyCode
-            if k == Enum.KeyCode.Escape then
+            -- Accept keyboard keys OR the middle mouse button. Left/right click
+            -- are excluded (so you can still click the UI), and the scroll
+            -- wheel fires InputChanged not InputBegan, so it's never bindable.
+            local uit = input.UserInputType
+            local isKeyboard = uit == Enum.UserInputType.Keyboard
+            local isMidMouse = uit == Enum.UserInputType.MouseButton3
+            if not (isKeyboard or isMidMouse) then return end
+            if isKeyboard and input.KeyCode == Enum.KeyCode.Unknown then return end
+            if isKeyboard and input.KeyCode == Enum.KeyCode.Escape then
                 listening = false
                 btn.Text = keyDisplayName(current)
                 btn.BackgroundColor3 = theme.bgDark
                 conn:Disconnect(); untrackConn(conn)
                 return
             end
-            if k == Enum.KeyCode.Backspace then
+            if isKeyboard and input.KeyCode == Enum.KeyCode.Backspace then
                 current = Enum.KeyCode.Unknown
                 listening = false
                 btn.Text = keyDisplayName(current)
@@ -283,7 +294,7 @@ function components.KeybindSetter(parent, opts)
                 conn:Disconnect(); untrackConn(conn)
                 return
             end
-            current = k
+            current = isMidMouse and Enum.UserInputType.MouseButton3 or input.KeyCode
             listening = false
             btn.Text = keyDisplayName(current)
             btn.BackgroundColor3 = theme.bgDark
