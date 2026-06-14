@@ -67,8 +67,16 @@ local CFG = {
 local CRATE = {
     clickRange = 60,
 }
+-- Anti Plate Slip config
+local SLIP = {
+    platesName = "Plates",   -- workspace.<this> = the folder holding the plates
+    edgeMargin = 2,          -- studs kept from the plate edge (≈ player half-width)
+    flingSpeed = 45,         -- horizontal speed above which we STOP clamping (a wind fling carries you off)
+    rayDown    = 10,         -- downward raycast length to find the plate under you
+}
 local enabled      = false   -- Hot Potato Auto-Return gate
 local crateEnabled = false   -- Auto Crate gate
+local slipEnabled  = false   -- Anti Plate Slip gate
 local pending = nil   -- { tool=, giver=, at=, lobby=, teamConn= }
 local conns   = {}    -- live connections; torn down in destroy()
 
@@ -398,11 +406,57 @@ local function crateScan()
     end
 end
 
+-- ---- Anti Plate Slip ----
+-- Keep the player from walking/sliding off the plate they're standing on. Clamps
+-- X/Z to the plate's top surface ONLY while grounded on a workspace.Plates child and
+-- not moving fast -- so jumping plate-to-plate and being flung (wind event) are free.
+
+-- the plate (a workspace.Plates child) directly under the player, or nil
+local function currentPlate()
+    local hrp = myRoot(); if not hrp then return nil end
+    local plates = workspace:FindFirstChild(SLIP.platesName); if not plates then return nil end
+    local ok, res = pcall(function()
+        local rp = RaycastParams.new()
+        rp.FilterType = Enum.RaycastFilterType.Include
+        rp.FilterDescendantsInstances = { plates }
+        return workspace:Raycast(hrp.Position, Vector3.new(0, -SLIP.rayDown, 0), rp)
+    end)
+    return (ok and res and res.Instance) or nil
+end
+
+local AIRBORNE = {
+    [Enum.HumanoidStateType.Jumping] = true, [Enum.HumanoidStateType.Freefall] = true,
+    [Enum.HumanoidStateType.Flying] = true, [Enum.HumanoidStateType.FallingDown] = true,
+    [Enum.HumanoidStateType.Ragdoll] = true, [Enum.HumanoidStateType.PlatformStanding] = true,
+}
+local function antiSlipStep()
+    local hrp = myRoot(); if not hrp then return end
+    local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    -- airborne (jumped / falling / flung) -> NO clamp, so you can leave the plate
+    local ok, st = pcall(function() return hum:GetState() end)
+    if ok and AIRBORNE[st] then return end
+    -- moving fast (e.g. a wind fling) -> let it carry you off
+    local vel = hrp.AssemblyLinearVelocity or hrp.Velocity
+    if vel and (vel.X * vel.X + vel.Z * vel.Z) > (SLIP.flingSpeed * SLIP.flingSpeed) then return end
+    local plate = currentPlate(); if not plate then return end   -- not on a plate -> nothing to hold
+    -- clamp in the plate's LOCAL space so rotated plates still work
+    local lp = plate.CFrame:PointToObjectSpace(hrp.Position)
+    local hx = math.max(0, plate.Size.X / 2 - SLIP.edgeMargin)
+    local hz = math.max(0, plate.Size.Z / 2 - SLIP.edgeMargin)
+    local clx, clz = math.clamp(lp.X, -hx, hx), math.clamp(lp.Z, -hz, hz)
+    if clx ~= lp.X or clz ~= lp.Z then
+        local world = plate.CFrame:PointToWorldSpace(Vector3.new(clx, lp.Y, clz))
+        hrp.CFrame = CFrame.new(world) * (hrp.CFrame - hrp.CFrame.Position)
+    end
+end
+
 -- drain pending returns from Heartbeat -- NEVER task.wait inside the receive
 -- signal callback on Wave (coroutine may not resume); queue + drain here instead.
--- The same Heartbeat also drives the Auto Crate sweep (gated on crateEnabled).
+-- The same Heartbeat also drives the Auto Crate sweep + Anti Plate Slip.
 local function onHeartbeat()
     if crateEnabled then crateScan() end
+    if slipEnabled then antiSlipStep() end
     if not pending then return end
     if not enabled then clearPending(); return end
 
@@ -528,7 +582,23 @@ function EVILPLATE.register()
         },
     }).root)
 
-    log.info("[evilplate] module registered -- Hot Potato Auto-Return + Auto Crate")
+    box:add(feature.declare({
+        id          = "evilplate.anti_plate_slip",
+        name        = "Anti Plate Slip",
+        description = "Locks you onto whatever plate (workspace.Plates child) you're standing on so you can't accidentally walk or slide off the edge -- it clamps you to the plate's surface. The only ways off are JUMPING (you go airborne so the clamp releases -- jump freely plate to plate) or being FLUNG by an outside force like the wind event (high speed also releases the clamp). Does nothing while you're off the plates.",
+        default     = false,
+        onToggle    = function(v) slipEnabled = v and true or false end,
+        settings    = {
+            { type = "slider", name = "Edge margin (studs)", key = "edge_margin",
+              min = 0, max = 6, step = 0.5, default = SLIP.edgeMargin,
+              onChange = function(v) SLIP.edgeMargin = v end },
+            { type = "slider", name = "Fling release speed", key = "fling_speed",
+              min = 20, max = 100, step = 1, default = SLIP.flingSpeed,
+              onChange = function(v) SLIP.flingSpeed = v end },
+        },
+    }).root)
+
+    log.info("[evilplate] module registered -- Hot Potato Auto-Return + Auto Crate + Anti Plate Slip")
 end
 
 -- Called by init.lua shutdown (Auto Re-Execute / re-execute). register() reruns on
@@ -538,6 +608,7 @@ end
 function EVILPLATE.destroy()
     enabled      = false
     crateEnabled = false
+    slipEnabled  = false
     clearPending()
     teardownConns()
 end
