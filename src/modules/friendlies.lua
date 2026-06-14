@@ -221,6 +221,12 @@ function Friendlies.addPlayerAction(def)
     if listFrame then scheduleRebuild() end
 end
 
+-- Ask the list to rebuild (e.g. a game module's action predicate changed -- like
+-- Evil Plate's "Hand Potato" only showing while you hold the bomb).
+function Friendlies.refresh()
+    if listFrame then scheduleRebuild() end
+end
+
 function Friendlies.register()
     local box = container.new(window.parent(), "Friendlies")
 

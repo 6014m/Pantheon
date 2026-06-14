@@ -121,6 +121,15 @@ local function nameMatches(name)
     return type(name) == "string" and name:lower():find(CFG.toolName, 1, true) ~= nil
 end
 
+-- do we currently hold the HotPotatoBomb (Character or Backpack)?
+local function iHaveBomb()
+    local char = LP.Character
+    if char then for _, c in ipairs(char:GetChildren()) do if c:IsA("Tool") and nameMatches(c.Name) then return true end end end
+    local bp = LP:FindFirstChildOfClass("Backpack")
+    if bp then for _, c in ipairs(bp:GetChildren()) do if c:IsA("Tool") and nameMatches(c.Name) then return true end end end
+    return false
+end
+
 -- Who last physically TOUCHED our character, captured at touch time. A pass is a
 -- touch, so this identifies the giver reliably even when they immediately sprint
 -- away -- unlike "nearest player at receipt", which misses them (they're already
@@ -348,7 +357,15 @@ end
 local function bindContainer(c)
     if not c then return end
     track(c.ChildAdded:Connect(function(d)
-        if d:IsA("Tool") and nameMatches(d.Name) then onReceive(d) end
+        if d:IsA("Tool") and nameMatches(d.Name) then
+            onReceive(d)
+            pcall(function() if friendlies.refresh then friendlies.refresh() end end)  -- bomb gained -> show Hand Potato
+        end
+    end))
+    track(c.ChildRemoved:Connect(function(d)
+        if d:IsA("Tool") and nameMatches(d.Name) then
+            pcall(function() if friendlies.refresh then friendlies.refresh() end end)  -- bomb lost -> hide it
+        end
     end))
 end
 
@@ -685,7 +702,7 @@ function EVILPLATE.register()
             friendlies.addPlayerAction({
                 scope     = EVILPLATE_IDS,
                 label     = "Hand Potato",
-                predicate = function(p) return not inLobby(p) end,
+                predicate = function(p) return iHaveBomb() and not inLobby(p) end,
                 onClick   = function(p) handPotato(p) end,
             })
         end
