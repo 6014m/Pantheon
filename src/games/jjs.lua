@@ -44,6 +44,7 @@ local CFG = {
 local enabled = false
 local emoteList            -- the ScrollingFrame the emote keybind rows live in
 local emoteKeyIds = {}     -- bound keybind ids for the emotes (cleared on rescan / destroy)
+local emoteConns = {}      -- watchers that auto-rescan when the emote GUI loads/changes
 
 local function rootOf(c) return c and c:FindFirstChild("HumanoidRootPart") end
 
@@ -256,31 +257,47 @@ local function findClickable(page, slot)
     local emote = pg and pg:FindFirstChild("Emotes")
     emote = emote and emote:FindFirstChild("Emote")
     local p = emote and emote:FindFirstChild(page)
-    local s = p and p:FindFirstChild(slot)
-    return s and s:FindFirstChild("Clickable")
+    if not p then return nil end
+    local s = p:FindFirstChild(slot)
+    if s then local c = s:FindFirstChild("Clickable"); if c then return c end end
+    -- fallback: any Clickable under the page whose parent matches the slot name
+    for _, d in ipairs(p:GetDescendants()) do
+        if d.Name == "Clickable" and d.Parent and d.Parent.Name == slot then return d end
+    end
+    return nil
 end
 
--- list { name, page, slot } for every emote slot that has a Clickable + a name
+-- list { name, page, slot } for every emote slot that has a Clickable. Lenient:
+-- any descendant named "Clickable" counts as a slot; the name is read from a
+-- sibling EmoteName.Txt if present, else falls back to page+slot. Returns a diag
+-- table too so we can surface WHERE detection fails.
 local function scanEmotes()
     local pg = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
-    local emote = pg and pg:FindFirstChild("Emotes")
-    emote = emote and emote:FindFirstChild("Emote")
-    local out = {}
-    if not emote then return out end
+    local emotes = pg and pg:FindFirstChild("Emotes")
+    local emote = emotes and emotes:FindFirstChild("Emote")
+    local out, diag = {}, { emotes = emotes ~= nil, emote = emote ~= nil, pages = 0, slots = 0 }
+    if not emote then return out, diag end
+    -- find every "Clickable" under a Page* and treat its parent as the slot
     for _, page in ipairs(emote:GetChildren()) do
         if page.Name:sub(1, 4) == "Page" then
-            for _, slot in ipairs(page:GetChildren()) do
-                local clickable = slot:FindFirstChild("Clickable")
-                local en = slot:FindFirstChild("EmoteName")
-                local txt = en and en:FindFirstChild("Txt")
-                local nm = txt and txt:IsA("TextLabel") and txt.Text
-                if clickable and nm and nm ~= "" then
-                    out[#out + 1] = { name = nm, page = page.Name, slot = slot.Name }
+            diag.pages = diag.pages + 1
+            for _, desc in ipairs(page:GetDescendants()) do
+                if desc.Name == "Clickable" then
+                    local slot = desc.Parent
+                    diag.slots = diag.slots + 1
+                    local nm
+                    local en  = slot and slot:FindFirstChild("EmoteName")
+                    local txt = en and (en:FindFirstChild("Txt") or en)
+                    if txt then local ok, t = pcall(function() return txt.Text end); if ok and type(t) == "string" and t ~= "" then nm = t end end
+                    out[#out + 1] = {
+                        name = nm or (page.Name .. " " .. (slot and slot.Name or "?")),
+                        page = page.Name, slot = slot and slot.Name or "?",
+                    }
                 end
             end
         end
     end
-    return out
+    return out, diag
 end
 
 local function rebuildEmotes()
@@ -289,9 +306,15 @@ local function rebuildEmotes()
     emoteKeyIds = {}
     for _, c in ipairs(emoteList:GetChildren()) do if not c:IsA("UIListLayout") then c:Destroy() end end
 
-    local emotes = scanEmotes()
+    local emotes, diag = scanEmotes()
     if #emotes == 0 then
-        local empty = components.Label(emoteList, "No emotes found - open the emote menu once, then Rescan.")
+        local msg
+        if not diag.emotes then msg = "PlayerGui.Emotes missing"
+        elseif not diag.emote then msg = "Emotes.Emote missing"
+        elseif diag.pages == 0 then msg = "no Page* (open the emote menu?)"
+        elseif diag.slots == 0 then msg = "pages found, 0 Clickables"
+        else msg = "none" end
+        local empty = components.Label(emoteList, "Emotes: " .. msg .. "  -> Rescan")
         empty.LayoutOrder = 1
         return
     end
@@ -372,9 +395,24 @@ function JJS.register()
         end)
         box:add(holder)
         rebuildEmotes()
+        -- auto-rescan when the emote GUI loads/changes (it may not exist until the
+        -- emote menu is opened the first time), debounced.
+        local pg = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        if pg then
+            local pending = false
+            emoteConns[#emoteConns + 1] = pg.DescendantAdded:Connect(function(d)
+                local n = d.Name
+                if n == "Clickable" or n == "Emote" or n == "Emotes" then
+                    if not pending then pending = true; task.delay(0.4, function() pending = false; rebuildEmotes() end) end
+                end
+            end)
+        end
+        -- a couple of deferred passes too, for emotes that populate shortly after join
+        task.delay(2, function() pcall(rebuildEmotes) end)
+        task.delay(5, function() pcall(rebuildEmotes) end)
     end
 
-    log.info("JJS module registered -- Nanami Perfect Special + Emote Keybinds")
+    log.info("JJS module registered -- Nanami Perfect Special + Buy Cola + Emote Keybinds")
 end
 
 -- Called by init.lua's shutdown (Auto Re-Execute / re-execute). register() runs
@@ -388,6 +426,8 @@ function JJS.destroy()
     -- clear emote keybinds (their ids are ours; the rows/keybind UI die with the window)
     for _, id in ipairs(emoteKeyIds) do pcall(function() keybinds.clear(id) end) end
     emoteKeyIds = {}
+    for _, c in ipairs(emoteConns) do pcall(function() c:Disconnect() end) end
+    emoteConns = {}
     emoteList = nil
     -- register() force-enabled shiftlock PAIR (mirror) mode for JJS; undo it so a
     -- re-execute or a hop to a non-JJS place doesn't leave Pantheon mirroring a
