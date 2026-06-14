@@ -651,7 +651,7 @@ function EVILPLATE.register()
               min = 0.1, max = 6, step = 0.1, default = SLIP.edgeMargin,
               onChange = function(v) SLIP.edgeMargin = v end },
             { type = "slider", name = "Push strength", key = "push_strength",
-              min = 5, max = 80, step = 1, default = SLIP.pushBack,
+              min = 1, max = 80, step = 1, default = SLIP.pushBack,
               onChange = function(v) SLIP.pushBack = v end },
         },
     }).root)
