@@ -26,6 +26,19 @@ local conns = {}            -- PlayerAdded/Removing + the scroll fit-height sign
 local listFrame             -- ScrollingFrame the player rows live in
 local repaintAll            -- repaints the "All" button (set in register)
 local rebuildPending = false
+local playerActions = {}    -- per-game extra row buttons (Friendlies.addPlayerAction)
+local teamConns = {}        -- per-player Team-change listeners (only wired if actions exist)
+
+-- scope gate for a player action: nil/"universal" always; a PlaceId/GameId number or
+-- a list of them matches this game.
+local function scopeMatches(scope)
+    if scope == nil or scope == "universal" then return true end
+    if scope == game.PlaceId or scope == game.GameId then return true end
+    if type(scope) == "table" then
+        for _, s in ipairs(scope) do if s == game.PlaceId or s == game.GameId then return true end end
+    end
+    return false
+end
 
 local function isFriendly(plr) return state.friendlies[plr.UserId] == true end
 local function setFriendly(plr, v)
@@ -121,11 +134,42 @@ local function buildRow(plr)
         if repaintAll then repaintAll() end
     end)
 
+    -- per-game extra actions (e.g. Evil Plate "Hand Potato"), placed left of Target.
+    -- Each is gated by scope + an optional predicate (e.g. not on the Lobby team).
+    local applicable = {}
+    for _, a in ipairs(playerActions) do
+        if scopeMatches(a.scope) then
+            local okPred = true
+            if a.predicate then local ok, r = pcall(a.predicate, plr); okPred = (ok and r) and true or false end
+            if okPred then applicable[#applicable + 1] = a end
+        end
+    end
+    if #applicable > 0 then
+        name.Size = UDim2.new(1, -148 - 56 * #applicable, 1, 0)
+        for i, a in ipairs(applicable) do
+            local ab = Instance.new("TextButton")
+            ab.Size = UDim2.fromOffset(52, 20)
+            ab.Position = UDim2.new(1, -(110 + 56 * i), 0.5, -10)
+            ab.AutoButtonColor = true
+            ab.BackgroundColor3 = a.color or theme.accent
+            ab.TextColor3 = theme.fg
+            ab.Font = theme.fontBold
+            ab.TextSize = 10
+            ab.BorderSizePixel = 0
+            ab.Text = a.label
+            ab.Parent = row
+            ab.MouseButton1Click:Connect(function() pcall(a.onClick, plr) end)
+        end
+    end
+
     return row
 end
 
+local scheduleRebuild   -- forward decl (rebuild wires Team listeners to it)
 local function rebuild()
     rebuildPending = false
+    for _, c in ipairs(teamConns) do pcall(function() c:Disconnect() end) end
+    teamConns = {}
     if not listFrame then return end
     for _, c in ipairs(listFrame:GetChildren()) do
         if not c:IsA("UIListLayout") then c:Destroy() end
@@ -150,13 +194,31 @@ local function rebuild()
         local empty = components.Label(listFrame, "No other players in server.")
         empty.LayoutOrder = 1
     end
+    -- if any per-game action uses a team predicate, refresh when players change team
+    -- (e.g. they die -> Lobby -> "Hand Potato" should vanish for them)
+    if #playerActions > 0 then
+        for _, plr in ipairs(players) do
+            if plr ~= me then
+                local ok, conn = pcall(function() return plr:GetPropertyChangedSignal("Team"):Connect(scheduleRebuild) end)
+                if ok and conn then teamConns[#teamConns + 1] = conn end
+            end
+        end
+    end
     if repaintAll then repaintAll() end
 end
 
-local function scheduleRebuild()
+scheduleRebuild = function()
     if rebuildPending then return end
     rebuildPending = true
     task.delay(0.3, rebuild)   -- debounce so a mass join/leave rebuilds once
+end
+
+-- Register a per-player row button (called by per-game modules in their register()).
+-- def = { scope, label, onClick(plr), predicate(plr)->bool (optional), color (optional) }
+function Friendlies.addPlayerAction(def)
+    if not (def and def.label and type(def.onClick) == "function") then return end
+    playerActions[#playerActions + 1] = def
+    if listFrame then scheduleRebuild() end
 end
 
 function Friendlies.register()
@@ -244,7 +306,9 @@ end
 
 function Friendlies.destroy()
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
-    conns = {}
+    for _, c in ipairs(teamConns) do pcall(function() c:Disconnect() end) end
+    conns, teamConns = {}, {}
+    playerActions = {}   -- cleared so per-game modules re-add on the next boot (no dupes)
     listFrame, repaintAll = nil, nil
 end
 

@@ -23,12 +23,13 @@
 -- workspace.ActiveEvents) whose name contains airdrop / crate / supply and is
 -- within click distance. Ported from the [Spec]evil_plate_crate standalone.
 
-local registry  = require("games.registry")
-local window    = require("ui.window")
-local container = require("ui.container")
-local feature   = require("ui.feature")
-local log       = require("core.log")
-local notify    = require("ui.notify")
+local registry   = require("games.registry")
+local window     = require("ui.window")
+local container  = require("ui.container")
+local feature    = require("ui.feature")
+local log        = require("core.log")
+local notify     = require("ui.notify")
+local friendlies = require("modules.friendlies")   -- to add the per-row "Hand Potato" button
 
 local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -264,6 +265,24 @@ local function inLobby(plr)
     local t = plr and plr.Team
     return t ~= nil and type(t.Name) == "string"
         and t.Name:lower():find(CFG.lobbyTeam, 1, true) ~= nil
+end
+
+-- Manually hand the HotPotatoBomb you're holding to a chosen player (Friendlies row
+-- "Hand Potato" button). Finds the bomb in your Character/Backpack, equips it, and
+-- fakes its Touched at the target (same mechanism as the auto-return).
+local function handPotato(plr)
+    if not (plr and plr.Parent and plr.Character) then pcall(notify.warn, "Target unavailable"); return end
+    if not rootOf(plr.Character) then pcall(notify.warn, "Target has no character"); return end
+    local char = LP.Character
+    local bp   = LP:FindFirstChildOfClass("Backpack")
+    local tool
+    if char then for _, c in ipairs(char:GetChildren()) do if c:IsA("Tool") and nameMatches(c.Name) then tool = c; break end end end
+    if not tool and bp then for _, c in ipairs(bp:GetChildren()) do if c:IsA("Tool") and nameMatches(c.Name) then tool = c; break end end end
+    if not tool then pcall(notify.warn, "You're not holding the HotPotatoBomb"); return end
+    equip(tool)
+    local fired = attemptReturn(tool, plr)
+    if not fired then attemptTeleportReturn(tool, plr) end
+    pcall(notify.info, ("Handed potato to %s"):format(plr.Name), 3)
 end
 
 -- the instant a HotPotatoBomb appears on us
@@ -660,7 +679,19 @@ function EVILPLATE.register()
         },
     }).root)
 
-    log.info("[evilplate] module registered -- Hot Potato Auto-Return + Auto Crate + Anti Plate Slip")
+    -- Friendlies menu: a "Hand Potato" button next to each player NOT on the Lobby team.
+    pcall(function()
+        if friendlies.addPlayerAction then
+            friendlies.addPlayerAction({
+                scope     = EVILPLATE_IDS,
+                label     = "Hand Potato",
+                predicate = function(p) return not inLobby(p) end,
+                onClick   = function(p) handPotato(p) end,
+            })
+        end
+    end)
+
+    log.info("[evilplate] module registered -- Hot Potato Auto-Return + Auto Crate + Anti Plate Slip + Hand Potato")
 end
 
 -- Called by init.lua shutdown (Auto Re-Execute / re-execute). register() reruns on
