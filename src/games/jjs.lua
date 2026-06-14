@@ -374,8 +374,18 @@ function JJS.register()
         onKey       = function() ratioPointPerfect() end,
     }).root)
 
-    -- Buy Cola: one click buys a soda from the shop (fires its Cash purchase button)
-    box:add(components.Button(box.features, { text = "Buy Cola", onClick = buyCola }))
+    -- Buy Cola: feature row so it gets the cog (set a keybind there). The bound key
+    -- buys; clicking the toggle also buys once then flips itself back off (momentary).
+    local colaFeat
+    colaFeat = feature.declare({
+        id          = "jjs.buy_cola",
+        name        = "Buy Cola",
+        description = "Buys a soda from the shop (fires its Cash purchase button). Set a key in the cog to buy on press, or click the toggle to buy once.",
+        default     = false,
+        onKey       = function() buyCola() end,
+        onToggle    = function(v) if v then buyCola(); task.defer(function() if colaFeat then colaFeat.setEnabled(false) end end) end end,
+    })
+    box:add(colaFeat.root)
 
     -- Emote Keybinds: bind a key to each emote (fires its Clickable without opening the menu)
     do
