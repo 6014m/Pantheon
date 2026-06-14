@@ -84,7 +84,7 @@ local function buildRow(plr)
 
     local name = Instance.new("TextLabel")
     name.Position = UDim2.fromOffset(34, 0)
-    name.Size = UDim2.new(1, -148, 1, 0)
+    name.Size = UDim2.new(1, -148, 0, 34)   -- top band only (rows grow taller when actions are added below)
     name.BackgroundTransparency = 1
     name.Text = (plr.DisplayName and plr.DisplayName ~= "" and plr.DisplayName) or plr.Name
     name.TextColor3 = theme.fg
@@ -98,7 +98,7 @@ local function buildRow(plr)
     -- the pick actually takes effect; Lock-On / Highlight act on it if they're on).
     local tgt = Instance.new("TextButton")
     tgt.Size = UDim2.fromOffset(48, 20)
-    tgt.Position = UDim2.new(1, -110, 0.5, -10)
+    tgt.Position = UDim2.new(1, -110, 0, 7)   -- top-band (matches center for a 34px row)
     tgt.AutoButtonColor = true
     tgt.BackgroundColor3 = theme.accent
     tgt.TextColor3 = theme.fg
@@ -114,7 +114,7 @@ local function buildRow(plr)
 
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.fromOffset(54, 20)
-    btn.Position = UDim2.new(1, -58, 0.5, -10)
+    btn.Position = UDim2.new(1, -58, 0, 7)
     btn.AutoButtonColor = false
     btn.Font = theme.fontBold
     btn.TextSize = 10
@@ -145,11 +145,13 @@ local function buildRow(plr)
         end
     end
     if #applicable > 0 then
-        name.Size = UDim2.new(1, -148 - 56 * #applicable, 1, 0)
+        row.Size = UDim2.new(1, 0, 0, 34 + 24)   -- grow a second line for the action button(s)
+        local n  = #applicable
+        local bw = math.min(110, math.floor((208 - 12 - (n - 1) * 4) / n))
         for i, a in ipairs(applicable) do
             local ab = Instance.new("TextButton")
-            ab.Size = UDim2.fromOffset(52, 20)
-            ab.Position = UDim2.new(1, -(110 + 56 * i), 0.5, -10)
+            ab.Size = UDim2.fromOffset(bw, 18)
+            ab.Position = UDim2.fromOffset(6 + (i - 1) * (bw + 4), 36)
             ab.AutoButtonColor = true
             ab.BackgroundColor3 = a.color or theme.accent
             ab.TextColor3 = theme.fg
