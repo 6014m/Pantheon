@@ -70,8 +70,8 @@ local CRATE = {
 -- Anti Plate Slip config
 local SLIP = {
     platesName = "Plates",   -- workspace.<this> = the folder holding the plates
-    edgeMargin = 0,          -- studs kept from the plate edge (0 = stand at the very edge; HRP center can
-                             -- reach the edge). Raise it to keep more of you on the plate.
+    edgeMargin = 0.1,        -- studs kept from the plate edge (0.1 = right at the edge). Raise to keep
+                             -- more of you on the plate.
     flingSpeed = 45,         -- horizontal speed above which we STOP clamping (a wind fling carries you off)
     rayDown    = 10,         -- downward raycast length to find the plate under you
 }
@@ -596,7 +596,7 @@ function EVILPLATE.register()
         onToggle    = function(v) slipEnabled = v and true or false end,
         settings    = {
             { type = "slider", name = "Edge margin (studs)", key = "edge_margin",
-              min = 0, max = 6, step = 0.5, default = SLIP.edgeMargin,
+              min = 0.1, max = 6, step = 0.1, default = SLIP.edgeMargin,
               onChange = function(v) SLIP.edgeMargin = v end },
             { type = "slider", name = "Fling release speed", key = "fling_speed",
               min = 20, max = 100, step = 1, default = SLIP.flingSpeed,
