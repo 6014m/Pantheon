@@ -49,8 +49,12 @@ local CFG = {
     touchTries  = 2,                -- firetouchinterest attempts before escalating to the teleport method
     giverMemory = 1.5,              -- s: how recently someone must have TOUCHED us to count as the giver.
                                     -- A pass IS a touch (captured at touch time), so a giver who instantly
-                                    -- sprints off is still identified -- distance-at-receipt would miss them
-                                    -- (they clear many studs before the Tool's ChildAdded even fires).
+                                    -- sprints off is still identified -- distance-at-receipt would miss them.
+    giverRadius = 30,               -- FALLBACK when no recent touch was seen (touch didn't fire / raced after
+                                    -- the bomb appeared): accept the nearest player within this many studs as
+                                    -- the giver. Generous (a just-passed giver may have already fled a bit).
+                                    -- The teleport stays gated by teleportMaxDist, so a far fallback giver
+                                    -- only gets the subtle firetouch, never an obvious yank.
     teleportMaxDist = 18,           -- only ESCALATE to the teleport-onto-handle method if the giver is within
                                     -- this many studs -- yanking a far player onto your hand reads as lag.
                                     -- Beyond it we keep using the subtler firetouchinterest.
@@ -126,6 +130,23 @@ local function distTo(plr)
     local tr = plr and plr.Character and rootOf(plr.Character)
     if not (mr and tr) then return math.huge end
     return (tr.Position - mr.Position).Magnitude
+end
+
+-- nearest living other player + distance (fallback giver when no touch was seen)
+local function nearestPlayer()
+    local best, bestD, mr = nil, math.huge, myRoot()
+    if not mr then return nil, math.huge end
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP and p.Character then
+            local r   = rootOf(p.Character)
+            local hum = p.Character:FindFirstChildOfClass("Humanoid")
+            if r and (not hum or hum.Health > 0) then
+                local d = (r.Position - mr.Position).Magnitude
+                if d < bestD then best, bestD = p, d end
+            end
+        end
+    end
+    return best, bestD
 end
 
 -- explicit giver reference stored on the bomb (attribute or value object), if any
@@ -247,12 +268,20 @@ local function onReceive(tool)
     -- now far (looks like lag). No recent toucher = we STARTED the round holding it
     -- -> don't auto-pass.
     local giver = giverFromTool(tool)
+    -- preferred: whoever just TOUCHED us (the pass), captured at touch time
     if not giver and recentToucher and (os.clock() - recentToucher.at) <= CFG.giverMemory then
         local p = recentToucher.player
         if p and p.Parent and p ~= LP then giver = p end
     end
+    -- fallback: no touch seen (touch didn't fire / raced after the bomb appeared, or
+    -- the pass is a RemoteEvent) -> nearest player within giverRadius. The teleport is
+    -- still distance-gated, so a far fallback giver only gets the subtle firetouch.
     if not giver then
-        log.info("[evilplate] no recent toucher -- started the round with the bomb? not auto-passing")
+        local p, d = nearestPlayer()
+        if p and d <= CFG.giverRadius then giver = p end
+    end
+    if not giver then
+        log.info("[evilplate] no toucher and nobody within giverRadius -- started with it? not auto-passing")
         notify.info("HotPotatoBomb received (no giver to return to)", 3)
         return
     end

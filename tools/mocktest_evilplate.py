@@ -193,14 +193,15 @@ if crateDef and crateDef.onToggle then real.pcall(function() crateDef.onToggle(t
 SERVICES.RunService.Heartbeat:Fire(0.016)
 out.crate_fired = (#FIRED>0) and real.table.concat(FIRED,",") or "none"
 
--- ---- regression: "started the round with the potato" -- the last touch is now
--- older than giverMemory, so NO giver is identified and the bomb is NOT auto-passed
--- (this was the "potato flies to someone from a previous round" bug). ----
+-- ---- regression: "started with the potato" -- stale touch AND nobody within
+-- giverRadius (everyone scattered far), so no giver is identified -> no auto-pass. ----
+pAlice.Character:FindFirstChild("HumanoidRootPart").Position = V(80,0,0)   -- > giverRadius (30)
+pBob.Character:FindFirstChild("HumanoidRootPart").Position   = V(90,0,0)
 local ftiBefore=#FTI
 local bomb2=newInstance("Tool"); bomb2.Name="HotPotatoBomb"
 local h2=newInstance("Part"); h2.Name="Handle"; setParent(h2,bomb2)
 CLOCK.t=110                   -- 10s after the only touch (t=100) -> stale, beyond giverMemory
-setParent(bomb2, backpack)    -- fires onReceive; no RECENT toucher -> should bail
+setParent(bomb2, backpack)    -- fires onReceive; no toucher + nearest >30 -> should bail
 CLOCK.t=112
 SERVICES.RunService.Heartbeat:Fire(0.016)
 out.no_giver_fti = #FTI - ftiBefore        -- expect 0 (no auto-pass when we started with it)
