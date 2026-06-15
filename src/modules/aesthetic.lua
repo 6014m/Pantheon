@@ -11,6 +11,8 @@ local log       = require("core.log")
 
 local Lighting   = game:GetService("Lighting")
 local RunService = game:GetService("RunService")
+local Players    = game:GetService("Players")
+local LP         = Players.LocalPlayer
 
 local Aesthetic = {}
 
@@ -24,8 +26,34 @@ local orig = {
     FieldOfView    = (workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView) or 70,
 }
 
-local st = { fullbright = false, nofog = false, fovOn = false, fov = 90, timeOn = false, clock = 12 }
+local st = { fullbright = false, nofog = false, fovOn = false, fov = 90, timeOn = false, clock = 12,
+             speedFovOn = false, speedFovMax = 110, speedFovRef = 60, speedFovCur = nil }
 local enforceConn
+
+-- Speed FOV: a mode of Custom FOV. When both Custom FOV and this are on, the FOV
+-- you set is the FLOOR and the lens widens toward speedFovMax as your HORIZONTAL
+-- speed climbs to speedFovRef studs/s (vertical fall/jump speed is ignored, so
+-- only real movement opens it up). Eased so a noisy velocity doesn't jitter it.
+local SPEEDFOV_K = 9   -- exponential smoothing rate (higher = snappier)
+local function speedFovTarget()
+    local base   = st.fov
+    local maxEff = math.max(st.speedFovMax, base)   -- base is ALWAYS the floor
+    local char = LP and LP.Character
+    local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+    local sp = 0
+    if hrp then
+        local ok, v = pcall(function() return hrp.AssemblyLinearVelocity end)
+        if not ok or not v then v = hrp.Velocity end
+        if v then sp = Vector3.new(v.X, 0, v.Z).Magnitude end
+    end
+    local ref = (st.speedFovRef and st.speedFovRef > 0) and st.speedFovRef or 1
+    local t = math.clamp(sp / ref, 0, 1)
+    return base + t * (maxEff - base)
+end
+local function smoothFov(cur, target, dt)
+    if not cur or not dt or dt <= 0 then return target end   -- snap on direct (non-loop) calls
+    return cur + (target - cur) * (1 - math.exp(-dt * SPEEDFOV_K))
+end
 
 -- Color constants hoisted out of the per-frame enforcers (apply / applyGrade run
 -- on RenderStepped while active). Building these with Color3.fromRGB every frame
@@ -34,14 +62,24 @@ local FB_GREY  = Color3.fromRGB(178, 178, 178)   -- fullbright ambient
 local CC2_TINT = Color3.fromRGB(255, 247, 239)   -- color-grade pass 2 tint
 local CC3_TINT = Color3.fromRGB(255, 255, 255)   -- color-grade pass 3 tint
 
-local function apply()
+local function apply(dt)
     if st.fullbright then
         Lighting.Brightness = 2; Lighting.Ambient = FB_GREY
         Lighting.OutdoorAmbient = FB_GREY; Lighting.GlobalShadows = false
     end
     if st.nofog then Lighting.FogEnd = 1e9 end
     if st.timeOn then Lighting.ClockTime = st.clock end
-    if st.fovOn then local cam = workspace.CurrentCamera; if cam then cam.FieldOfView = st.fov end end
+    if st.fovOn then
+        local cam = workspace.CurrentCamera
+        if cam then
+            if st.speedFovOn then
+                st.speedFovCur = smoothFov(st.speedFovCur, speedFovTarget(), dt)
+                cam.FieldOfView = st.speedFovCur
+            else
+                cam.FieldOfView = st.fov
+            end
+        end
+    end
 end
 local function ensureLoop()
     local need = st.fullbright or st.nofog or st.timeOn or st.fovOn
@@ -260,10 +298,19 @@ function Aesthetic.register()
 
     box:add(feature.declare({
         id = "aesthetic.fov", name = "Custom FOV",
-        description = "Forces the camera field of view. Set the value with the cog slider.",
-        default = false, onToggle = function(v) st.fovOn = v; if not v then revertFov() end; apply(); ensureLoop() end,
-        settings = { { type = "slider", name = "FOV", key = "value", min = 40, max = 120, step = 1, default = 90,
-            onChange = function(x) st.fov = x; if st.fovOn then apply() end end } },
+        description = "Forces the camera field of view to the value you set with the FOV slider. Turn on \"Speed FOV\" to make that value the FLOOR instead: the lens widens toward Max FOV the faster you move (horizontal speed only -- falling and jumping don't count) and eases back to your set FOV as you slow down. \"Speed for max FOV\" is how fast in studs/sec you have to be moving to hit Max FOV. Reverts the FOV when off.",
+        default = false, onToggle = function(v) st.fovOn = v; st.speedFovCur = nil; if not v then revertFov() end; apply(); ensureLoop() end,
+        settings = {
+            { type = "slider", name = "FOV", key = "value", min = 40, max = 120, step = 1, default = 90,
+              onChange = function(x) st.fov = x; if st.fovOn then apply() end end },
+            { type = "section", name = "Speed FOV" },
+            { type = "toggle", name = "Ramp FOV with speed", key = "speed", default = false,
+              onChange = function(v) st.speedFovOn = v; st.speedFovCur = nil; if st.fovOn then apply() end end },
+            { type = "slider", name = "Max FOV", key = "maxfov", min = 40, max = 140, step = 1, default = 110,
+              onChange = function(x) st.speedFovMax = x; if st.fovOn and st.speedFovOn then apply() end end },
+            { type = "slider", name = "Speed for max FOV", key = "refspeed", min = 10, max = 200, step = 1, default = 60,
+              onChange = function(x) st.speedFovRef = x; if st.fovOn and st.speedFovOn then apply() end end },
+        },
     }).root)
 
     box:add(feature.declare({
