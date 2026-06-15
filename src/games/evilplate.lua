@@ -74,10 +74,13 @@ local SLIP = {
     platesName = "Plates",   -- workspace.<this> = the folder holding the plates
     edgeMargin = 0.1,        -- studs kept from the plate edge (0.1 = right at the edge). Raise to keep
                              -- more of you on the plate.
-    pushBack   = 30,         -- inward "soft wall" strength (studs/s per stud past the edge)
+    pushBack   = 30,         -- inward "soft wall" strength (studs/s per stud past the edge); ALSO the
+                             -- strength of the Jump Boost shove below ("same level of push")
     backstop   = 0.5,        -- hard-clamp if shoved this far past the edge (guarantees no walk-off)
     rayDown    = 10,         -- downward raycast length to find the plate under you
     immoveable = false,      -- "Immoveable Object": ignore push forces too (wind / forces don't release you)
+    jumpBoost  = false,      -- Jump Boost: on jump while moving, add a pushBack-strength shove in your
+                             -- input direction so you carry across to the next plate
 }
 local enabled      = false   -- Hot Potato Auto-Return gate
 local crateEnabled = false   -- Auto Crate gate
@@ -549,12 +552,39 @@ local function antiSlipStep()
     end
 end
 
+-- ---- Jump Boost (plate-hop assist, companion to Anti Plate Slip) ----
+-- The instant you jump WHILE moving, add a shove in your input (move) direction so
+-- you carry across to the next plate instead of dropping. The shove is the same
+-- strength as the anti-slip wall (SLIP.pushBack -- "same level of push") and is
+-- ADDED on top of your current velocity (never slows you), one shot per jump (fires
+-- on the rising edge into the Jumping state). Skipped when you're standing still.
+-- Only the horizontal is boosted -- the jump's upward velocity is preserved.
+local wasJumping = false
+local function jumpBoostStep()
+    local char = LP.Character
+    local hrp  = char and rootOf(char)
+    local hum  = char and char:FindFirstChildOfClass("Humanoid")
+    if not (hrp and hum) then wasJumping = false; return end
+    local ok, stt = pcall(function() return hum:GetState() end)
+    local jumping = ok and (stt == Enum.HumanoidStateType.Jumping)
+    if jumping and not wasJumping then          -- rising edge: the jump just started
+        local dir = hum.MoveDirection
+        if dir.Magnitude > 0.1 then             -- only when you're actually moving
+            local v    = hrp.AssemblyLinearVelocity or hrp.Velocity or Vector3.new()
+            local push = dir.Unit * SLIP.pushBack
+            hrp.AssemblyLinearVelocity = Vector3.new(v.X + push.X, v.Y, v.Z + push.Z)
+        end
+    end
+    wasJumping = jumping
+end
+
 -- drain pending returns from Heartbeat -- NEVER task.wait inside the receive
 -- signal callback on Wave (coroutine may not resume); queue + drain here instead.
 -- The same Heartbeat also drives the Auto Crate sweep + Anti Plate Slip.
 local function onHeartbeat()
     if crateEnabled then crateScan() end
     if slipEnabled then antiSlipStep() end
+    if slipEnabled and SLIP.jumpBoost then jumpBoostStep() end
     if not pending then return end
     if not enabled then clearPending(); return end
 
@@ -683,7 +713,7 @@ function EVILPLATE.register()
     box:add(feature.declare({
         id          = "evilplate.anti_plate_slip",
         name        = "Anti Plate Slip",
-        description = "Holds you onto whatever plate (workspace.Plates child) you're standing on so you can't accidentally walk or slide off the edge -- a soft velocity 'wall' at the edge cancels your outward movement and gently pushes you back (not a hard teleport). It RELEASES when you go airborne (jump/fall), while you HOLD jump (so you can hop plate to plate), or when an outside FORCE is acting on you (e.g. the wind event) -- but NOT when another player just bumps you, so AFK shovers can't push you off. It re-enables itself the instant you land back on a plate. A tiny backstop guarantees you can never fully walk off.",
+        description = "Holds you onto whatever plate (workspace.Plates child) you're standing on so you can't accidentally walk or slide off the edge -- a soft velocity 'wall' at the edge cancels your outward movement and gently pushes you back (not a hard teleport). It RELEASES when you go airborne (jump/fall), while you HOLD jump (so you can hop plate to plate), or when an outside FORCE is acting on you (e.g. the wind event) -- but NOT when another player just bumps you, so AFK shovers can't push you off. It re-enables itself the instant you land back on a plate. A tiny backstop guarantees you can never fully walk off. Turn on \"Jump boost\" to also get a shove in your movement direction each time you jump while moving (same strength as the edge push) -- handy for clearing the gap to the next plate.",
         default     = false,
         onToggle    = function(v) slipEnabled = v and true or false end,
         settings    = {
@@ -693,6 +723,8 @@ function EVILPLATE.register()
             { type = "slider", name = "Push strength", key = "push_strength",
               min = 1, max = 80, step = 1, default = SLIP.pushBack,
               onChange = function(v) SLIP.pushBack = v end },
+            { type = "toggle", name = "Jump boost (push toward movement)", key = "jump_boost", default = false,
+              onChange = function(v) SLIP.jumpBoost = v and true or false end },
             { type = "toggle", name = "Immoveable Object", key = "immoveable", default = false,
               onChange = function(v) SLIP.immoveable = v and true or false end },
         },
