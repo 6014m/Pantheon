@@ -78,9 +78,10 @@ local SLIP = {
     backstop   = 0.5,        -- hard-clamp if shoved this far past the edge (guarantees no walk-off)
     rayDown    = 10,         -- downward raycast length to find the plate under you
     immoveable = false,      -- "Immoveable Object": ignore push forces too (wind / forces don't release you)
-    jumpBoost  = false,      -- Jump Boost: when you jump FROM A PLATE while moving, shove you in your
+    jumpBoost  = false,      -- Jump Boost: when you jump OFF A PLATE EDGE while moving, shove you in your
                              -- input direction so you carry across to the next plate
     jumpForce  = 50,         -- ...the strength of that shove (studs/s added to your velocity)
+    edgeZone   = 4,          -- ...how close to the plate edge (studs) you must be for it to fire
 }
 local enabled      = false   -- Hot Potato Auto-Return gate
 local crateEnabled = false   -- Auto Crate gate
@@ -553,12 +554,27 @@ local function antiSlipStep()
 end
 
 -- ---- Jump Boost (plate-hop assist, companion to Anti Plate Slip) ----
--- When you jump FROM A PLATE while moving, add a shove in your input (move) direction
--- so you carry across to the next plate instead of dropping. The shove is SLIP.jumpForce
--- studs/s, ADDED on top of your current velocity (never slows you), one shot per jump
--- (fires on the rising edge into the Jumping state). GATED on a plate being under you
--- at takeoff (currentPlate ray) -- a jump anywhere else gets nothing. Skipped when
--- standing still. Only the horizontal is boosted -- the jump's upward velocity is kept.
+-- When you jump OFF THE EDGE of a plate in the direction you're moving, add a shove in
+-- that direction so you carry across to the next plate instead of dropping. The shove is
+-- SLIP.jumpForce studs/s, ADDED on top of your current velocity (never slows you), one
+-- shot per jump (rising edge into the Jumping state). It fires ONLY when you're within
+-- SLIP.edgeZone studs of a plate edge AND heading out past THAT edge -- so a jump from
+-- the middle of a plate (or jumping inward) gets nothing. Only the horizontal is boosted.
+
+-- true if hrp sits within edgeZone of a plate edge AND moveDir heads out past that edge
+local function jumpingOffEdge(plate, hrp, moveDir)
+    local cf = plate.CFrame
+    local lp = cf:PointToObjectSpace(hrp.Position)     -- our spot on the plate (local)
+    local lm = cf:VectorToObjectSpace(moveDir)         -- input direction in plate space
+    local halfX, halfZ = plate.Size.X / 2, plate.Size.Z / 2
+    local zone = SLIP.edgeZone
+    if (halfX - lp.X) <= zone and lm.X >  0.1 then return true end   -- off the +X edge
+    if (halfX + lp.X) <= zone and lm.X < -0.1 then return true end   -- off the -X edge
+    if (halfZ - lp.Z) <= zone and lm.Z >  0.1 then return true end   -- off the +Z edge
+    if (halfZ + lp.Z) <= zone and lm.Z < -0.1 then return true end   -- off the -Z edge
+    return false
+end
+
 local wasJumping = false
 local function jumpBoostStep()
     local char = LP.Character
@@ -568,13 +584,12 @@ local function jumpBoostStep()
     local ok, stt = pcall(function() return hum:GetState() end)
     local jumping = ok and (stt == Enum.HumanoidStateType.Jumping)
     if jumping and not wasJumping then          -- rising edge: the jump just started
-        if currentPlate() then                  -- ONLY when jumping off a plate
-            local dir = hum.MoveDirection
-            if dir.Magnitude > 0.1 then          -- ...and only when you're actually moving
-                local v    = hrp.AssemblyLinearVelocity or hrp.Velocity or Vector3.new()
-                local push = dir.Unit * SLIP.jumpForce
-                hrp.AssemblyLinearVelocity = Vector3.new(v.X + push.X, v.Y, v.Z + push.Z)
-            end
+        local mdir  = hum.MoveDirection
+        local plate = currentPlate()
+        if plate and mdir.Magnitude > 0.1 and jumpingOffEdge(plate, hrp, mdir) then
+            local v    = hrp.AssemblyLinearVelocity or hrp.Velocity or Vector3.new()
+            local push = mdir.Unit * SLIP.jumpForce
+            hrp.AssemblyLinearVelocity = Vector3.new(v.X + push.X, v.Y, v.Z + push.Z)
         end
     end
     wasJumping = jumping
@@ -715,7 +730,7 @@ function EVILPLATE.register()
     box:add(feature.declare({
         id          = "evilplate.anti_plate_slip",
         name        = "Anti Plate Slip",
-        description = "Holds you onto whatever plate (workspace.Plates child) you're standing on so you can't accidentally walk or slide off the edge -- a soft velocity 'wall' at the edge cancels your outward movement and gently pushes you back (not a hard teleport). It RELEASES when you go airborne (jump/fall), while you HOLD jump (so you can hop plate to plate), or when an outside FORCE is acting on you (e.g. the wind event) -- but NOT when another player just bumps you, so AFK shovers can't push you off. It re-enables itself the instant you land back on a plate. A tiny backstop guarantees you can never fully walk off. Turn on \"Jump boost\" to get a shove in your movement direction whenever you jump OFF A PLATE while moving -- set how hard with \"Jump force\" -- handy for clearing the gap to the next plate.",
+        description = "Holds you onto whatever plate (workspace.Plates child) you're standing on so you can't accidentally walk or slide off the edge -- a soft velocity 'wall' at the edge cancels your outward movement and gently pushes you back (not a hard teleport). It RELEASES when you go airborne (jump/fall), while you HOLD jump (so you can hop plate to plate), or when an outside FORCE is acting on you (e.g. the wind event) -- but NOT when another player just bumps you, so AFK shovers can't push you off. It re-enables itself the instant you land back on a plate. A tiny backstop guarantees you can never fully walk off. Turn on \"Jump boost\" to get a shove in your movement direction when you jump off the EDGE of a plate -- only near the edge and heading outward, so middle-of-plate jumps do nothing -- set how hard with \"Jump force\" and how close to the edge counts as the edge with \"Jump edge zone\". Handy for clearing the gap to the next plate.",
         default     = false,
         onToggle    = function(v) slipEnabled = v and true or false end,
         settings    = {
@@ -730,6 +745,9 @@ function EVILPLATE.register()
             { type = "slider", name = "Jump force", key = "jump_force",
               min = 0, max = 200, step = 5, default = SLIP.jumpForce,
               onChange = function(v) SLIP.jumpForce = v end },
+            { type = "slider", name = "Jump edge zone (studs)", key = "jump_edge_zone",
+              min = 1, max = 20, step = 1, default = SLIP.edgeZone,
+              onChange = function(v) SLIP.edgeZone = v end },
             { type = "toggle", name = "Immoveable Object", key = "immoveable", default = false,
               onChange = function(v) SLIP.immoveable = v and true or false end },
         },
