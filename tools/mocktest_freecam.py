@@ -68,7 +68,7 @@ local function newEvent()
 end
 
 ----------------------------------------------------------------- Instances
-local EVENTS = { RenderStepped=true, InputBegan=true, InputEnded=true }
+local EVENTS = { RenderStepped=true, InputBegan=true, InputEnded=true, CharacterAdded=true }
 local InstanceMT
 local function newInstance(cls) return real.setmetatable({ _inst=true, ClassName=cls, Name=cls, _ch={}, _props={}, _events={} }, InstanceMT) end
 local function setParent(self, parent)
@@ -109,6 +109,14 @@ local char0, hrp0, hum0 = mkChar("Char0")
 local LocalPlayer = newInstance("Player"); LocalPlayer.Character = char0
 local Players = { LocalPlayer = LocalPlayer }
 
+-- PlayerModule controls: the freecam disables these instead of anchoring
+local controlsDisabled = false
+local controlsObj = { Disable = function() controlsDisabled = true end, Enable = function() controlsDisabled = false end }
+local playerModuleTable = { GetControls = function() return controlsObj end }
+local playerScripts = newInstance("PlayerScripts"); setParent(playerScripts, LocalPlayer)
+local playerModule  = newInstance("ModuleScript"); playerModule.Name = "PlayerModule"; setParent(playerModule, playerScripts)
+local REAL_ENV = { require = function(_) return playerModuleTable end }   -- what getrenv().require returns
+
 local RunService = { RenderStepped = newEvent() }
 local UIS = { InputBegan = newEvent(), InputEnded = newEvent() }
 
@@ -132,6 +140,8 @@ local function myrequire(name) if cache[name] ~= nil then return cache[name] end
 
 local ENV = real.setmetatable({
   game=game, CFrame=CFrame, Enum=Enum, Instance=Instance, require=myrequire,
+  getrenv=function() return REAL_ENV end,
+  Vector3={ zero=v3(0,0,0), new=function(x,y,z) return v3(x,y,z) end },
   pcall=real.pcall, ipairs=real.ipairs, pairs=real.pairs, tostring=real.tostring,
   tonumber=real.tonumber, type=real.type, select=real.select, next=real.next,
   setmetatable=real.setmetatable, error=real.error, assert=real.assert, print=real.print,
@@ -162,9 +172,11 @@ real.pcall(function() capturedDef.onToggle(true) end)
 local cp = camera.CameraSubject
 out.enable_made_part   = (cp ~= nil) and (cp.ClassName == "Part") and (cp.Anchored == true) and (cp.Transparency == 1)
 out.enable_part_parented = (cp ~= nil) and (cp.Parent == Workspace)
-out.enable_subject     = (camera.CameraSubject == cp)
-out.enable_body_anchor = (hrp0.Anchored == true)
-out.enable_connected   = (#RunService.RenderStepped._h == 1) and (#UIS.InputBegan._h == 1) and (#UIS.InputEnded._h == 1)
+out.enable_subject      = (camera.CameraSubject == cp)
+out.enable_controls_off = (controlsDisabled == true)
+out.enable_not_anchored = (hrp0.Anchored ~= true)               -- body is NOT anchored
+out.enable_connected    = (#RunService.RenderStepped._h == 1) and (#UIS.InputBegan._h == 1)
+  and (#UIS.InputEnded._h == 1) and (#LocalPlayer.CharacterAdded._h == 1)
 
 -- ---- typing is ignored: a game-processed W must NOT move the part ----
 typed(Enum.KeyCode.W)
@@ -177,19 +189,22 @@ for _ = 1, 30 do tick() end
 out.fly_forward = (cp.CFrame.Position.Z < -1)
 release(Enum.KeyCode.W)
 
--- ---- respawn while active: new root anchored, old root released ----
+-- ---- respawn while active: controls re-disabled on the new character, no anchor ----
 local char1, hrp1, hum1 = mkChar("Char1")
 LocalPlayer.Character = char1
+controlsDisabled = false                       -- simulate the controller re-enabling on spawn
+LocalPlayer.CharacterAdded:Fire(char1)          -- module should re-disable the controls
 tick()
-out.respawn_new_anchored = (hrp1.Anchored == true)
-out.respawn_old_released = (hrp0.Anchored == false)
+out.respawn_recontrolled = (controlsDisabled == true)
+out.respawn_not_anchored = (hrp1.Anchored ~= true)
 
--- ---- disable: camera handed back to the humanoid, body freed, part gone ----
+-- ---- disable: camera handed back, controls re-enabled, part gone ----
 real.pcall(function() capturedDef.onToggle(false) end)
-out.disable_subject_hum = (camera.CameraSubject == hum1)
-out.disable_body_freed  = (hrp1.Anchored == false)
-out.disable_part_gone   = (cp._destroyed == true) and (cp.Parent == nil)
-out.disable_disconnected = (#RunService.RenderStepped._h == 0) and (#UIS.InputBegan._h == 0) and (#UIS.InputEnded._h == 0)
+out.disable_subject_hum  = (camera.CameraSubject == hum1)
+out.disable_controls_on  = (controlsDisabled == false)
+out.disable_part_gone    = (cp._destroyed == true) and (cp.Parent == nil)
+out.disable_disconnected = (#RunService.RenderStepped._h == 0) and (#UIS.InputBegan._h == 0)
+  and (#UIS.InputEnded._h == 0) and (#LocalPlayer.CharacterAdded._h == 0)
 
 -- ---- a stray RenderStepped after disable is inert (no error) ----
 tick()
@@ -202,9 +217,10 @@ out.notifies = real.table.concat(NOTIFY, " | ")
 out.errors   = (#ERRORS > 0) and real.table.concat(ERRORS, " ;; ") or "none"
 
 local pass = out.loaded and out.register_ok and out.has_2_sliders and out.enable_made_part
-  and out.enable_part_parented and out.enable_subject and out.enable_body_anchor and out.enable_connected
-  and out.typing_ignored and out.fly_forward and out.respawn_new_anchored and out.respawn_old_released
-  and out.disable_subject_hum and out.disable_body_freed and out.disable_part_gone and out.disable_disconnected
+  and out.enable_part_parented and out.enable_subject and out.enable_controls_off and out.enable_not_anchored
+  and out.enable_connected and out.typing_ignored and out.fly_forward
+  and out.respawn_recontrolled and out.respawn_not_anchored
+  and out.disable_subject_hum and out.disable_controls_on and out.disable_part_gone and out.disable_disconnected
   and out.destroy_ok and (out.errors == "none")
 
 local function ser(v) if real.type(v)=="table" then local s="{" for k,val in real.pairs(v) do s=s.."\n  "..real.tostring(k).." = "..ser(val) end return s.."\n}" else return real.tostring(v) end end
