@@ -42,6 +42,7 @@ BUILD_ORDER = [
     "modules/system",
     "modules/aesthetic",
     "modules/misc/faketab",
+    "modules/misc/freecam",
     "modules/misc/init",
     "modules/addons/api",
     "modules/addons/init",

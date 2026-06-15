@@ -9,10 +9,11 @@ local window    = require("ui.window")
 local log       = require("core.log")
 
 local faketab   = require("modules.misc.faketab")
+local freecam   = require("modules.misc.freecam")
 
 local Misc = {}
 
-local scripts = { faketab }
+local scripts = { faketab, freecam }
 
 function Misc.register()
     local box = container.new(window.parent(), "Miscellaneous")
