@@ -1,28 +1,20 @@
 -- Free Cam: detaches the camera from your character and flies it around freely
--- while the body stays put. A classic spectate / scout tool.
+-- while the body stays put.
 --
--- Mechanism: take the camera off the player by switching it to a Scriptable
--- CameraType, then drive its CFrame ourselves every render frame from a little
--- fly-state (position + yaw/pitch). WASD moves relative to where we're looking,
--- Space / Left-Ctrl go straight up / down (world axis, independent of pitch),
--- Left-Shift sprints. We re-assert Scriptable every frame so a game that grabs
--- the camera back (e.g. on respawn) loses the tug-of-war.
+-- Technique borrowed from the OpenGui freecam, because driving a Scriptable camera
+-- (the previous approach) didn't hold up in-game -- BindToRenderStep/Scriptable can
+-- get fought or fail in some executor/game contexts and the camera just froze.
 --
--- Look is bound to the RIGHT MOUSE BUTTON on purpose. While RMB is held we lock
--- the cursor to centre and steer from UserInputService:GetMouseDelta(); the
--- moment it's released the cursor comes back, so the Pantheon menu (and the
--- feature's own OFF / keybind) stay clickable. A full-time cursor lock would
--- trap a user who never set a toggle key -- this can't.
---
--- The body would otherwise march off, because the default control scripts read
--- WASD straight from UserInputService regardless of what we do with the camera.
--- So we park the Humanoid (WalkSpeed / Jump / AutoRotate -> 0/false) for as long
--- as we fly and restore the originals on exit. The park is re-applied from the
--- render loop, re-snapshotting whenever a respawn hands us a fresh Humanoid, so
--- it survives death without a yielding respawn handler (sidesteps the Wave
--- "task.wait in a respawn signal may not resume" quirk
--- [[feedback_executor_signal_taskwait]]). WalkSpeed=0 is a property tell -- this
--- makes no anti-cheat-safety claims ([[feedback_adonis_detection]]).
+-- This one never takes the camera off the default controller at all. It spawns an
+-- invisible ANCHORED part, points the camera's CameraSubject at THAT part, and flies
+-- the part. The game's normal camera keeps running and simply follows the part, so:
+--   * mouse-look is the game's own camera (rotate / zoom exactly as usual) -- no
+--     cursor capture, no fighting, the Pantheon menu stays clickable, and
+--   * WASD / Q-E (or Space / Ctrl) move the part, smoothed, relative to where you
+--     look (the part is re-aimed down the camera's look each frame).
+-- Your character's root is anchored so the body stays where you left it; it's
+-- un-anchored again on exit. Anchored=true replicates -- this makes no anti-cheat-
+-- safety claims ([[feedback_adonis_detection]]).
 
 local RunService       = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -36,156 +28,71 @@ local notify  = require("ui.notify")
 
 local FreeCam = {}
 
-local SENS_BASE   = 0.0006              -- radians per mouse pixel at sensitivity 1
-local PITCH_LIMIT = math.rad(89)        -- stop the view flipping over the poles
-local MAX_DT      = 0.1                 -- clamp lag spikes so a hitch can't teleport us
+local enabled    = false
+local speed      = 5       -- per-frame move magnitude (pre-smoothing)
+local smoothness = 0.2     -- 0..1 lerp factor; lower = floatier, higher = snappier
 
-local enabled = false
+local camPart  = nil       -- the invisible part the camera follows
+local moveCF   = nil       -- smoothed local-space move offset (a CFrame, lerped)
+local anchored = nil       -- the BasePart we anchored, so we restore exactly it
+local dir      = { w = false, a = false, s = false, d = false, up = false, down = false }
 
--- fly state (seeded from the live camera on enable so the view never snaps)
-local pos   = nil   -- Vector3 we fly around
-local yaw   = 0
-local pitch = 0
+local renderConn, beganConn, endedConn
 
--- tunables, driven by the settings sliders (seeded at declare time)
-local speed  = 60
-local sens   = 6
-local sprint = 3
+-- which fly flag each key drives (Space/Q rise, Ctrl/E drop)
+local KEY = {
+    [Enum.KeyCode.W] = "w", [Enum.KeyCode.A] = "a",
+    [Enum.KeyCode.S] = "s", [Enum.KeyCode.D] = "d",
+    [Enum.KeyCode.Space] = "up",   [Enum.KeyCode.Q] = "up",
+    [Enum.KeyCode.LeftControl] = "down", [Enum.KeyCode.E] = "down",
+}
 
--- host state saved on enable, restored on disable
-local savedCamType   = nil
-local savedSubject   = nil
-local savedMouseIcon = nil
-
--- humanoid park: zero movement so the default WASD controller can't walk the
--- body while we fly. Re-snapshots on a fresh humanoid so restore is exact.
-local speedSaved = nil   -- { hum, walk, jumpP, jumpH, autoRot }
-
--- mouse look (only while right mouse button held)
-local mouseLocked = false
-local justLocked  = false
-
-local renderConn   = nil
-local charConn     = nil
-local stepErrShown = false   -- surface a render-loop error once, not every frame
-
-local function currentHumanoid()
-    local char = LP.Character
-    return char and char:FindFirstChildOfClass("Humanoid")
+local function rootOf(char)
+    if not char then return nil end
+    return char.PrimaryPart
+        or char:FindFirstChild("HumanoidRootPart")
+        or char:FindFirstChild("Torso")
+        or char:FindFirstChild("UpperTorso")
+        or char:FindFirstChildWhichIsA("BasePart")
 end
 
-local function park(hum)
-    if not hum then return end
-    if not speedSaved or speedSaved.hum ~= hum then   -- first time, or a respawn
-        speedSaved = {
-            hum     = hum,
-            walk    = hum.WalkSpeed,
-            jumpP   = hum.JumpPower,
-            jumpH   = hum.JumpHeight,
-            autoRot = hum.AutoRotate,
-        }
-    end
-    if hum.WalkSpeed  ~= 0     then pcall(function() hum.WalkSpeed  = 0 end) end
-    if hum.JumpPower  ~= 0     then pcall(function() hum.JumpPower  = 0 end) end
-    if hum.JumpHeight ~= 0     then pcall(function() hum.JumpHeight = 0 end) end
-    if hum.AutoRotate ~= false then pcall(function() hum.AutoRotate = false end) end
+-- Anchor the current character's root so it stays put (re-targets the new root
+-- after a respawn so it keeps working without a yielding respawn handler).
+local function anchorBody()
+    local part = rootOf(LP.Character)
+    if not part then return end
+    if anchored and anchored ~= part then pcall(function() anchored.Anchored = false end) end
+    anchored = part
+    if not part.Anchored then pcall(function() part.Anchored = true end) end
 end
 
-local function unpark()
-    if speedSaved and speedSaved.hum then
-        local hum = speedSaved.hum
-        pcall(function() hum.WalkSpeed  = speedSaved.walk end)
-        pcall(function() hum.JumpPower  = speedSaved.jumpP end)
-        pcall(function() hum.JumpHeight = speedSaved.jumpH end)
-        pcall(function() hum.AutoRotate = speedSaved.autoRot end)
-    end
-    speedSaved = nil
+local function unanchorBody()
+    if anchored then pcall(function() anchored.Anchored = false end); anchored = nil end
 end
 
--- Lock/unlock the cursor to follow the right mouse button. Re-asserts the lock
--- each frame while looking in case the game flips MouseBehavior back.
-local function setMouseLook(looking)
-    if looking == mouseLocked then
-        if looking and UserInputService.MouseBehavior ~= Enum.MouseBehavior.LockCenter then
-            pcall(function() UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter end)
-        end
-        return
-    end
-    mouseLocked = looking
-    if looking then
-        pcall(function() UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter end)
-        pcall(function() UserInputService.MouseIconEnabled = false end)
-        justLocked = true   -- swallow the first delta so the view doesn't jump
-    else
-        pcall(function() UserInputService.MouseBehavior = Enum.MouseBehavior.Default end)
-        pcall(function() UserInputService.MouseIconEnabled = (savedMouseIcon ~= false) end)
-    end
-end
-
-local function stepInner(dt)
+local function step()
     if not enabled then return end
-    local cam = Workspace.CurrentCamera
-    if not cam then return end
-    if not pos then pos = cam.CFrame.Position end
-    dt = math.clamp(dt or 0, 0, MAX_DT)
+    local camera = Workspace.CurrentCamera
+    if not camera or not camPart then return end
 
-    -- keep ownership of the camera even if the game flips it back
-    if cam.CameraType ~= Enum.CameraType.Scriptable then
-        pcall(function() cam.CameraType = Enum.CameraType.Scriptable end)
-    end
+    anchorBody()                          -- keep the body parked (respawn-proof)
+    camera.CameraSubject = camPart        -- re-assert: the camera follows our part
 
-    -- park the body every frame (respawn-proof; no-ops once it's zeroed)
-    park(currentHumanoid())
+    -- aim the part down the camera's look so WASD is view-relative
+    camPart.CFrame = CFrame.new(camPart.CFrame.Position, (camera.CFrame * CFrame.new(0, 0, -100)).Position)
 
-    -- LOOK: only while the right mouse button is held
-    local looking = UserInputService:IsMouseButtonDown(Enum.UserInputType.MouseButton2)
-    setMouseLook(looking)
-    if looking then
-        if justLocked then
-            justLocked = false
-        else
-            local d = UserInputService:GetMouseDelta()
-            yaw   = yaw - d.X * SENS_BASE * sens
-            pitch = math.clamp(pitch - d.Y * SENS_BASE * sens, -PITCH_LIMIT, PITCH_LIMIT)
-        end
-    end
+    -- assemble the local-space move from held keys (-Z is forward)
+    local x, y, z = 0, 0, 0
+    if dir.w    then z = z - speed end
+    if dir.s    then z = z + speed end
+    if dir.a    then x = x - speed end
+    if dir.d    then x = x + speed end
+    if dir.up   then y = y + speed end
+    if dir.down then y = y - speed end
 
-    -- MOVE: WASD relative to look, Space/Ctrl world up/down, Shift sprint.
-    -- Suppressed while a text box is focused so typing a keybind or chatting
-    -- doesn't fly the camera out from under you.
-    local move = Vector3.zero
-    if not UserInputService:GetFocusedTextBox() then
-        local cf    = cam.CFrame
-        local look  = cf.LookVector
-        local right = cf.RightVector
-        if UserInputService:IsKeyDown(Enum.KeyCode.W) then move = move + look end
-        if UserInputService:IsKeyDown(Enum.KeyCode.S) then move = move - look end
-        if UserInputService:IsKeyDown(Enum.KeyCode.D) then move = move + right end
-        if UserInputService:IsKeyDown(Enum.KeyCode.A) then move = move - right end
-        if UserInputService:IsKeyDown(Enum.KeyCode.Space)       then move = move + Vector3.new(0, 1, 0) end
-        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then move = move - Vector3.new(0, 1, 0) end
-    end
-    if move.Magnitude > 0 then
-        local sp = speed * (UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) and sprint or 1)
-        pos = pos + move.Unit * (sp * dt)
-    end
-
-    -- stop the in-place walk animation while the body is parked
-    local hum = currentHumanoid()
-    if hum then pcall(function() hum:Move(Vector3.zero, false) end) end
-
-    cam.CFrame = CFrame.new(pos) * CFrame.fromEulerAnglesYXZ(pitch, yaw, 0)
-end
-
--- Surface a render-loop error ONCE instead of letting a thrown step silently
--- freeze the camera. A detached-but-undriven camera + a parked body reads to the
--- user as "the freecam won't move and I'm anchored" -- so tell them the real reason.
-local function step(dt)
-    local ok, err = pcall(stepInner, dt)
-    if not ok and not stepErrShown then
-        stepErrShown = true
-        pcall(function() notify.warn("Free Cam error: " .. tostring(err)) end)
-    end
+    -- smooth the input, then ease the part toward part * move (OpenGui's feel)
+    moveCF = moveCF:Lerp(CFrame.new(x, y, z), smoothness)
+    camPart.CFrame = camPart.CFrame:Lerp(camPart.CFrame * moveCF, smoothness)
 end
 
 local function setActive(v)
@@ -193,64 +100,54 @@ local function setActive(v)
     if enabled == v then return end
 
     if v then
-        local cam = Workspace.CurrentCamera
-        if not cam then
+        local camera = Workspace.CurrentCamera
+        if not camera then
             notify.warn("Free Cam: no camera available")
-            return   -- leave disabled; toggling again once a camera exists works
+            return
         end
-
-        -- seed fly state from where the camera is right now (no snap)
-        local cf = cam.CFrame
-        pos = cf.Position
-        local rx, ry = cf:ToEulerAnglesYXZ()
-        pitch = math.clamp(rx, -PITCH_LIMIT, PITCH_LIMIT)
-        yaw   = ry
-
-        savedCamType   = cam.CameraType
-        savedSubject   = cam.CameraSubject
-        savedMouseIcon = UserInputService.MouseIconEnabled
 
         enabled = true
-        pcall(function() cam.CameraType = Enum.CameraType.Scriptable end)
-        park(currentHumanoid())
+        moveCF  = CFrame.new()
+        dir     = { w = false, a = false, s = false, d = false, up = false, down = false }
 
-        -- re-park after a respawn (no yield -> dodges the Wave respawn/taskwait quirk)
-        if not charConn then
-            charConn = LP.CharacterAdded:Connect(function()
-                if enabled then park(currentHumanoid()) end
-            end)
-        end
+        camPart = Instance.new("Part")
+        camPart.Name         = "Camera"
+        camPart.Transparency = 1
+        camPart.Anchored     = true
+        camPart.CanCollide   = false
+        camPart.CanTouch     = false
+        camPart.CanQuery     = false
+        camPart.CFrame       = camera.CFrame
+        camPart.Parent       = Workspace
 
-        stepErrShown = false
-        if not renderConn then
-            -- RenderStepped:Connect, NOT BindToRenderStep: callable from every executor
-            -- identity and still hands us deltaTime. BindToRenderStep can throw in some
-            -- executor contexts -- when it did, the camera detached but was never driven,
-            -- so it looked frozen (and the parked body looked anchored).
-            renderConn = RunService.RenderStepped:Connect(step)
-        end
-        notify.success("Free Cam ON -- WASD to fly, hold RMB to look, Shift to sprint")
+        anchorBody()
+        camera.CameraSubject = camPart
+
+        renderConn = RunService.RenderStepped:Connect(step)
+        beganConn  = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+            if gameProcessed then return end          -- ignore typing / UI input
+            local k = KEY[input.KeyCode]
+            if k then dir[k] = true end
+        end)
+        endedConn  = UserInputService.InputEnded:Connect(function(input)
+            local k = KEY[input.KeyCode]               -- never gate release (no stuck keys)
+            if k then dir[k] = false end
+        end)
+
+        notify.success("Free Cam ON -- WASD + Space/Ctrl to fly, mouse to look")
     else
         enabled = false
         if renderConn then pcall(function() renderConn:Disconnect() end); renderConn = nil end
-        if charConn then pcall(function() charConn:Disconnect() end); charConn = nil end
+        if beganConn  then pcall(function() beganConn:Disconnect()  end); beganConn  = nil end
+        if endedConn  then pcall(function() endedConn:Disconnect()  end); endedConn  = nil end
 
-        -- hand the camera back to the player
-        local cam = Workspace.CurrentCamera
-        if cam then
-            pcall(function()
-                cam.CameraType = (savedCamType and savedCamType ~= Enum.CameraType.Scriptable)
-                    and savedCamType or Enum.CameraType.Custom
-            end)
-            local hum = currentHumanoid()
-            pcall(function() cam.CameraSubject = hum or savedSubject end)
+        unanchorBody()
+        local camera = Workspace.CurrentCamera
+        if camera then
+            local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+            pcall(function() camera.CameraSubject = hum end)   -- hand the camera back
         end
-
-        -- release the cursor + restore the body
-        mouseLocked = false
-        pcall(function() UserInputService.MouseBehavior = Enum.MouseBehavior.Default end)
-        pcall(function() UserInputService.MouseIconEnabled = (savedMouseIcon ~= false) end)
-        unpark()
+        if camPart then pcall(function() camPart:Destroy() end); camPart = nil end
 
         notify.info("Free Cam OFF -- camera returned")
     end
@@ -260,19 +157,16 @@ function FreeCam.register(box)
     box:add(feature.declare({
         id          = "misc.freecam",
         name        = "Free Cam",
-        description = "Detaches the camera from your character and lets you fly it around freely while your body stays put where you left it. WASD flies relative to where you're looking, Space / Left-Ctrl rise and drop straight up and down, and hold Left-Shift to sprint. Hold the RIGHT MOUSE BUTTON to look around -- the cursor returns the instant you let go, so you can still click this menu (or your bound key, or the OFF button here) to come back to your character. Your walk speed is parked to zero while flying so WASD doesn't also march your avatar off; it's restored when you exit. Survives respawns while it's on.",
+        description = "Detaches the camera from your character and lets you fly it around freely while your body stays put where you left it. Look around with your mouse exactly like normal (it rides the game's own camera -- no cursor lock, this menu stays clickable), and fly with WASD relative to where you're looking, Space / Q to rise and Left-Ctrl / E to drop. \"Speed\" sets how fast it flies, \"Smoothness\" how floaty (lower = driftier, higher = snappier). Your root is anchored while flying so the body stays put, and released when you exit. Survives respawns while it's on.",
         default     = false,
         onToggle    = setActive,
         settings    = {
-            { type = "slider", name = "Fly speed", key = "speed",
-              min = 5, max = 300, step = 5, default = 60,
+            { type = "slider", name = "Speed", key = "speed",
+              min = 1, max = 50, step = 1, default = 5,
               onChange = function(v) speed = v end },
-            { type = "slider", name = "Look sensitivity", key = "sens",
-              min = 1, max = 20, step = 1, default = 6,
-              onChange = function(v) sens = v end },
-            { type = "slider", name = "Sprint multiplier", key = "sprint",
-              min = 1, max = 8, step = 1, default = 3,
-              onChange = function(v) sprint = v end },
+            { type = "slider", name = "Smoothness", key = "smoothness",
+              min = 0.05, max = 1, step = 0.05, default = 0.2,
+              onChange = function(v) smoothness = v end },
         },
     }).root)
 

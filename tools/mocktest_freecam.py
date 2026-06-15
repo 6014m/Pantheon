@@ -11,150 +11,112 @@ G = rt.globals()
 G.python_read_file = read_file
 print("Lua:", rt.eval("_VERSION"))
 
+# Verifies the OpenGui-style freecam: enable spawns an invisible anchored follow-
+# part, points camera.CameraSubject at it, and anchors the body; held keys fly the
+# part (view-relative, smoothed); game-processed input (typing) is ignored; a respawn
+# re-anchors the new root; disable restores CameraSubject + un-anchors + destroys the
+# part + disconnects. CFrame is mocked functionally enough to prove the part MOVES.
 LUA = r'''
 local real = { math=math, string=string, table=table, pcall=pcall, error=error,
   assert=assert, ipairs=ipairs, pairs=pairs, tostring=tostring, tonumber=tonumber,
   type=type, select=select, next=next, setmetatable=setmetatable, print=print, load=load }
-local sqrt, sin, cos = real.math.sqrt, real.math.sin, real.math.cos
 local ERRORS, NOTIFY = {}, {}
 
--- math + math.clamp (lupa's 5.1 math has no clamp; Roblox does)
-local mathx = real.setmetatable({
-  clamp = function(x, lo, hi) if x < lo then return lo elseif x > hi then return hi else return x end end,
-}, { __index = real.math })
+----------------------------------------------------------------- Vector3
+local VMT = {}
+local function v3(x, y, z) return real.setmetatable({ _v3=true, X=x or 0, Y=y or 0, Z=z or 0 }, VMT) end
+VMT.__sub = function(a, b) return v3(a.X-b.X, a.Y-b.Y, a.Z-b.Z) end
+VMT.__add = function(a, b) return v3(a.X+b.X, a.Y+b.Y, a.Z+b.Z) end
 
-------------------------------------------------------------------- Vector3
-local V3MT = {}
-local function v3(x, y, z) return real.setmetatable({ _isV3=true, _x=x, _y=y, _z=z }, V3MT) end
-V3MT.__index = function(self, k)
-  if k == "X" then return self._x elseif k == "Y" then return self._y elseif k == "Z" then return self._z
-  elseif k == "Magnitude" then return sqrt(self._x*self._x + self._y*self._y + self._z*self._z)
-  elseif k == "Unit" then local m = sqrt(self._x*self._x + self._y*self._y + self._z*self._z)
-    if m == 0 then return v3(0,0,0) end return v3(self._x/m, self._y/m, self._z/m) end
-  return nil
-end
-V3MT.__add = function(a, b) return v3(a._x+b._x, a._y+b._y, a._z+b._z) end
-V3MT.__sub = function(a, b) return v3(a._x-b._x, a._y-b._y, a._z-b._z) end
-V3MT.__mul = function(a, b)
-  if real.type(a) == "number" then return v3(b._x*a, b._y*a, b._z*a) end
-  if real.type(b) == "number" then return v3(a._x*b, a._y*b, a._z*b) end
-  return v3(a._x*b._x, a._y*b._y, a._z*b._z)
-end
-local Vector3 = { new = v3, zero = v3(0,0,0) }
-
-------------------------------------------------------------------- CFrame
--- Stored as position + (pitch, yaw). Roblox conventions: yaw=pitch=0 looks down -Z.
+----------------------------------------------------------------- CFrame
+-- Position-only model. Rotation is ignored (the aim line keeps position), which is
+-- all we need to prove WASD translates the follow-part.
 local CFMT = {}
-local function cf(pos, pitch, yaw) return real.setmetatable({ _isCF=true, _pos=pos, _pitch=pitch, _yaw=yaw }, CFMT) end
+local function cf(pos) return real.setmetatable({ _cf=true, _pos=pos }, CFMT) end
 CFMT.__index = function(self, k)
-  if k == "Position" then return self._pos
-  elseif k == "LookVector" then
-    return v3(-sin(self._yaw)*cos(self._pitch), sin(self._pitch), -cos(self._yaw)*cos(self._pitch))
-  elseif k == "RightVector" then
-    return v3(cos(self._yaw), 0, -sin(self._yaw))
-  elseif k == "ToEulerAnglesYXZ" then
-    return function(s) return s._pitch, s._yaw, 0 end
+  if k == "Position" or k == "p" then return self._pos
+  elseif k == "Lerp" then
+    return function(s, goal, t)
+      return cf(v3(s._pos.X + (goal._pos.X - s._pos.X) * t,
+                   s._pos.Y + (goal._pos.Y - s._pos.Y) * t,
+                   s._pos.Z + (goal._pos.Z - s._pos.Z) * t))
+    end
   end
   return nil
 end
--- translation(pos) * rotation(pitch,yaw): pos from the left, angles from the right
-CFMT.__mul = function(a, b) return cf(a._pos, a._pitch + b._pitch, a._yaw + b._yaw) end
-local CFrame = {
-  new = function(a, b, c)
-    if real.type(a) == "table" and a._isV3 then return cf(a, 0, 0) end
-    return cf(v3(a or 0, b or 0, c or 0), 0, 0)
-  end,
-  fromEulerAnglesYXZ = function(px, py, pz) return cf(v3(0,0,0), px, py) end,
-}
+CFMT.__mul = function(a, b) return cf(v3(a._pos.X+b._pos.X, a._pos.Y+b._pos.Y, a._pos.Z+b._pos.Z)) end
+local CFrame = { new = function(a, b, c)
+  if real.type(a) == "table" and a._v3 then return cf(a) end          -- new(pos) or new(pos, lookAt)
+  return cf(v3(a or 0, b or 0, c or 0))                                -- new(x,y,z) / new()
+end }
 
-------------------------------------------------------------------- Enum
-local function sentinel(n) return real.setmetatable({ _enum = n }, { __tostring = function() return n end }) end
-local Enum = {
-  KeyCode = { W=sentinel("W"), A=sentinel("A"), S=sentinel("S"), D=sentinel("D"),
-              Space=sentinel("Space"), LeftControl=sentinel("LeftControl"), LeftShift=sentinel("LeftShift") },
-  UserInputType = { MouseButton2 = sentinel("MouseButton2") },
-  MouseBehavior = { LockCenter = sentinel("LockCenter"), Default = sentinel("Default") },
-  CameraType    = { Scriptable = sentinel("Scriptable"), Custom = sentinel("Custom") },
-  RenderPriority = { Camera = { Value = 200 } },
-}
+----------------------------------------------------------------- Enum
+local function sent(n) return real.setmetatable({ _e=n }, { __tostring=function() return n end }) end
+local Enum = { KeyCode = {
+  W=sent("W"), A=sent("A"), S=sent("S"), D=sent("D"),
+  Space=sent("Space"), Q=sent("Q"), E=sent("E"), LeftControl=sent("LeftControl") } }
 
-------------------------------------------------------------------- Instances (chars/humanoids)
+----------------------------------------------------------------- events
+local function newEvent()
+  local h = {}
+  local e = { _h = h }
+  function e:Connect(fn) h[#h+1] = fn
+    return { Disconnect = function() for i,x in real.ipairs(h) do if x==fn then real.table.remove(h,i); break end end end } end
+  function e:Fire(...) local snap = {} for i,fn in real.ipairs(h) do snap[i]=fn end
+    for _,fn in real.ipairs(snap) do local ok,err = real.pcall(fn, ...); if not ok then ERRORS[#ERRORS+1]=real.tostring(err) end end end
+  return e
+end
+
+----------------------------------------------------------------- Instances
+local EVENTS = { RenderStepped=true, InputBegan=true, InputEnded=true }
 local InstanceMT
-local function newInstance(cls) return real.setmetatable({ _isInstance=true, ClassName=cls, Name=cls, _children={}, _props={}, _events={} }, InstanceMT) end
+local function newInstance(cls) return real.setmetatable({ _inst=true, ClassName=cls, Name=cls, _ch={}, _props={}, _events={} }, InstanceMT) end
 local function setParent(self, parent)
   local old = self._props.Parent
-  if old then for i,c in real.ipairs(old._children) do if c==self then real.table.remove(old._children,i) break end end end
+  if old then for i,c in real.ipairs(old._ch) do if c==self then real.table.remove(old._ch,i); break end end end
   self._props.Parent = parent
-  if parent then parent._children[#parent._children+1] = self end
+  if parent then parent._ch[#parent._ch+1] = self end
 end
 local METHODS = {}
-function METHODS:FindFirstChildOfClass(cl) for _,c in real.ipairs(self._children) do if c.ClassName==cl then return c end end return nil end
-function METHODS:FindFirstChild(n) for _,c in real.ipairs(self._children) do if c.Name==n then return c end end return nil end
-function METHODS:Move(_, _) self._moved = true end
+function METHODS:FindFirstChild(n) for _,c in real.ipairs(self._ch) do if c.Name==n then return c end end return nil end
+function METHODS:FindFirstChildOfClass(cl) for _,c in real.ipairs(self._ch) do if c.ClassName==cl then return c end end return nil end
+function METHODS:FindFirstChildWhichIsA(cl) for _,c in real.ipairs(self._ch) do if c.ClassName==cl then return c end end return nil end
+function METHODS:Destroy() self._destroyed = true; setParent(self, nil) end
 InstanceMT = {
   __index = function(self, k)
     if k == "Parent" then return self._props.Parent end
+    if EVENTS[k] then self._events[k] = self._events[k] or newEvent(); return self._events[k] end
     if METHODS[k] then return METHODS[k] end
-    if self._props[k] ~= nil then return self._props[k] end
-    return nil
+    return self._props[k]
   end,
   __newindex = function(self, k, v) if k == "Parent" then setParent(self, v) else self._props[k] = v end end,
 }
+local Instance = { new = function(cls) return newInstance(cls) end }
+
 local function mkChar(name)
   local m = newInstance("Model"); m.Name = name
-  local hum = newInstance("Humanoid")
-  hum.WalkSpeed = 16; hum.JumpPower = 50; hum.JumpHeight = 7.2; hum.AutoRotate = true
-  setParent(hum, m)
-  return m, hum
+  local hrp = newInstance("Part"); hrp.Name = "HumanoidRootPart"; setParent(hrp, m)
+  local hum = newInstance("Humanoid"); setParent(hum, m)
+  m.PrimaryPart = hrp
+  return m, hrp, hum
 end
 
-------------------------------------------------------------------- CharacterAdded event
-local function newEvent()
-  local h = {}
-  local ev = {}
-  function ev:Connect(fn) h[#h+1] = fn; return { Disconnect = function() for i,x in real.ipairs(h) do if x==fn then real.table.remove(h,i) break end end end } end
-  function ev:Fire(...) for _,fn in real.ipairs(h) do local ok,e = real.pcall(fn, ...); if not ok then ERRORS[#ERRORS+1] = "CharacterAdded: "..real.tostring(e) end end end
-  return ev
-end
+----------------------------------------------------------------- services
+local camera = newInstance("Camera"); camera.CFrame = CFrame.new(0, 0, 0)
+local Workspace = newInstance("Workspace"); Workspace.CurrentCamera = camera
 
-local char0, hum0 = mkChar("Char0")
-local charAdded = newEvent()
-local LocalPlayer = real.setmetatable({ _isInstance=true, ClassName="Player", Name="Tester",
-  _props = { Character = char0 }, CharacterAdded = charAdded }, {
-  __index = function(self, k) if k == "Character" then return self._props.Character end return real.rawget(self, k) end,
-  __newindex = function(self, k, v) if k == "Character" then self._props.Character = v else real.rawset(self, k, v) end end,
-})
-
-------------------------------------------------------------------- Services
-local camera = newInstance("Camera")
-camera.CFrame = CFrame.new(v3(0,0,0))           -- yaw=pitch=0, looking down -Z
-camera.CameraType = Enum.CameraType.Custom
-camera.CameraSubject = hum0
-camera.FieldOfView = 70
-local Workspace = { CurrentCamera = camera }
-
-local RunService = {}
-local renderFn, renderConnected = nil, false
-RunService.RenderStepped = {
-  Connect = function(_, fn) renderFn = fn; renderConnected = true
-    return { Disconnect = function() renderConnected = false end } end,
-}
-
-local UIS = {
-  MouseBehavior = Enum.MouseBehavior.Default, MouseIconEnabled = true,
-  _keys = {}, _mb2 = false, _delta = { X=0, Y=0 }, _focused = nil,
-}
-function UIS:IsKeyDown(kc) return self._keys[kc] == true end
-function UIS:IsMouseButtonDown(it) return it == Enum.UserInputType.MouseButton2 and self._mb2 == true end
-function UIS:GetMouseDelta() return self._delta end
-function UIS:GetFocusedTextBox() return self._focused end
-
+local char0, hrp0, hum0 = mkChar("Char0")
+local LocalPlayer = newInstance("Player"); LocalPlayer.Character = char0
 local Players = { LocalPlayer = LocalPlayer }
+
+local RunService = { RenderStepped = newEvent() }
+local UIS = { InputBegan = newEvent(), InputEnded = newEvent() }
+
 local SERVICES = { RunService=RunService, UserInputService=UIS, Players=Players, Workspace=Workspace }
-local game = { PlaceId = 1 }
+local game = {}
 function game:GetService(n) return SERVICES[n] end
 
-------------------------------------------------------------------- module stubs (feature/log/notify)
+----------------------------------------------------------------- module stubs
 local capturedDef = nil
 local function stub(name)
   if name == "ui.feature" then return { declare = function(def) capturedDef = def; return { root = newInstance("Frame") } end } end
@@ -169,11 +131,11 @@ local cache = {}
 local function myrequire(name) if cache[name] ~= nil then return cache[name] end local s = stub(name); cache[name] = s; return s end
 
 local ENV = real.setmetatable({
-  game = game, Vector3 = Vector3, CFrame = CFrame, Enum = Enum,
-  require = myrequire, math = mathx, print = real.print, warn = function() end,
-  string = real.string, table = real.table, pcall = real.pcall, ipairs = real.ipairs,
-  pairs = real.pairs, tostring = real.tostring, tonumber = real.tonumber, type = real.type,
-  select = real.select, next = real.next, setmetatable = real.setmetatable, error = real.error, assert = real.assert,
+  game=game, CFrame=CFrame, Enum=Enum, Instance=Instance, require=myrequire,
+  pcall=real.pcall, ipairs=real.ipairs, pairs=real.pairs, tostring=real.tostring,
+  tonumber=real.tonumber, type=real.type, select=real.select, next=real.next,
+  setmetatable=real.setmetatable, error=real.error, assert=real.assert, print=real.print,
+  warn=function() end, math=real.math, string=real.string, table=real.table,
 }, { __index = _G })
 
 local src   = python_read_file("modules.misc.freecam")
@@ -181,96 +143,71 @@ local chunk = real.assert(real.load(src, "@freecam", "t", ENV))
 local mod   = chunk()
 
 local out = {}
-local function approx(a, b) return real.math.abs(a - b) < 1e-3 end
 out.loaded = (mod ~= nil) and (mod.register ~= nil) and (mod.destroy ~= nil)
 
--- register
 local box = { added = 0 }
 function box:add(_) self.added = self.added + 1 end
 local okR, errR = real.pcall(function() mod.register(box) end)
 out.register_ok = okR; if not okR then out.register_err = real.tostring(errR) end
-out.box_added   = box.added
 out.feature_id  = capturedDef and capturedDef.id or "nil"
-out.has_3_sliders = capturedDef and capturedDef.settings and (#capturedDef.settings == 3)
+out.has_2_sliders = capturedDef and capturedDef.settings and (#capturedDef.settings == 2)
 
-local function frame(dt) if renderConnected and renderFn then renderFn(dt) end end
+local function tick() RunService.RenderStepped:Fire(0.016) end
+local function press(kc)   UIS.InputBegan:Fire({ KeyCode = kc }, false) end
+local function typed(kc)   UIS.InputBegan:Fire({ KeyCode = kc }, true)  end   -- game-processed
+local function release(kc) UIS.InputEnded:Fire({ KeyCode = kc }) end
 
 -- ---- enable ----
 real.pcall(function() capturedDef.onToggle(true) end)
-out.enable_scriptable = (camera.CameraType == Enum.CameraType.Scriptable)
-out.enable_bound      = (renderConnected == true)
-out.enable_parked     = (hum0.WalkSpeed == 0) and (hum0.JumpPower == 0) and (hum0.AutoRotate == false)
+local cp = camera.CameraSubject
+out.enable_made_part   = (cp ~= nil) and (cp.ClassName == "Part") and (cp.Anchored == true) and (cp.Transparency == 1)
+out.enable_part_parented = (cp ~= nil) and (cp.Parent == Workspace)
+out.enable_subject     = (camera.CameraSubject == cp)
+out.enable_body_anchor = (hrp0.Anchored == true)
+out.enable_connected   = (#RunService.RenderStepped._h == 1) and (#UIS.InputBegan._h == 1) and (#UIS.InputEnded._h == 1)
 
--- ---- fly forward: hold W one frame at speed 60, dt 0.1 (yaw 0 -> -Z) = 6 studs ----
-local z0 = camera.CFrame._pos._z
-UIS._keys[Enum.KeyCode.W] = true; frame(0.1); UIS._keys[Enum.KeyCode.W] = nil
-out.fly_forward = approx(camera.CFrame._pos._z - z0, -6)
+-- ---- typing is ignored: a game-processed W must NOT move the part ----
+typed(Enum.KeyCode.W)
+for _ = 1, 6 do tick() end
+out.typing_ignored = (real.math.abs(cp.CFrame.Position.Z) < 0.5)
 
--- ---- speed slider drives distance: set 120, dt 0.1 -> 12 studs this frame ----
-local speedOpt
-for _,o in real.ipairs(capturedDef.settings) do if o.key == "speed" then speedOpt = o end end
-out.speed_opt_found = speedOpt ~= nil
-if speedOpt then speedOpt.onChange(120) end
-local z1 = camera.CFrame._pos._z
-UIS._keys[Enum.KeyCode.W] = true; frame(0.1); UIS._keys[Enum.KeyCode.W] = nil
-out.fly_speed_slider = approx(camera.CFrame._pos._z - z1, -12)
-if speedOpt then speedOpt.onChange(60) end
+-- ---- real input flies the part forward (-Z) ----
+press(Enum.KeyCode.W)
+for _ = 1, 30 do tick() end
+out.fly_forward = (cp.CFrame.Position.Z < -1)
+release(Enum.KeyCode.W)
 
--- ---- dt clamp: a 5s hitch is capped at MAX_DT (0.1) -> 6 studs, not 300 ----
-local z2 = camera.CFrame._pos._z
-UIS._keys[Enum.KeyCode.W] = true; frame(5); UIS._keys[Enum.KeyCode.W] = nil
-out.dt_clamped = approx(camera.CFrame._pos._z - z2, -6)   -- 60 * 0.1, NOT 60 * 5
-
--- ---- look: hold RMB. First frame swallows delta; second applies it (turn right) ----
-UIS._mb2 = true; UIS._delta = { X = 100, Y = 0 }
-local yawA = camera.CFrame._yaw
-frame(1)                                   -- swallow (justLocked)
-out.look_swallow_first = approx(camera.CFrame._yaw, yawA)
-out.mouse_locked = (UIS.MouseBehavior == Enum.MouseBehavior.LockCenter)
-frame(1)                                   -- apply: yaw -= 100*0.0006*6 = 0.36
-out.look_right = (camera.CFrame._yaw < -0.30) and (camera.CFrame._yaw > -0.40)
--- pitch via mouse Y
-UIS._delta = { X = 0, Y = 100 }
-frame(1)                                   -- pitch -= 0.36 -> look down
-out.look_down = (camera.CFrame._pitch < -0.30) and (camera.CFrame._pitch > -0.40)
-UIS._mb2 = false; UIS._delta = { X=0, Y=0 }
-
--- ---- typing suppression: focused text box -> WASD must not move the camera ----
-frame(1)   -- releases mouse lock now that mb2 is false
-local z3 = camera.CFrame._pos._z
-UIS._focused = newInstance("TextBox")
-UIS._keys[Enum.KeyCode.W] = true; frame(1); UIS._keys[Enum.KeyCode.W] = nil
-UIS._focused = nil
-out.typing_suppressed = approx(camera.CFrame._pos._z, z3)
-out.mouse_released_on_rmb_up = (UIS.MouseBehavior == Enum.MouseBehavior.Default)
-
--- ---- respawn while active: new humanoid gets parked, old snapshot replaced ----
-local char1, hum1 = mkChar("Char1")
+-- ---- respawn while active: new root anchored, old root released ----
+local char1, hrp1, hum1 = mkChar("Char1")
 LocalPlayer.Character = char1
-charAdded:Fire(char1)
-frame(1)
-out.respawn_parked = (hum1.WalkSpeed == 0) and (hum1.AutoRotate == false)
+tick()
+out.respawn_new_anchored = (hrp1.Anchored == true)
+out.respawn_old_released = (hrp0.Anchored == false)
 
--- ---- disable: camera handed back, render unbound, body restored, mouse default ----
+-- ---- disable: camera handed back to the humanoid, body freed, part gone ----
 real.pcall(function() capturedDef.onToggle(false) end)
-out.disable_cam_restored = (camera.CameraType == Enum.CameraType.Custom)
-out.disable_unbound      = (renderConnected == false)
-out.disable_body_restored = (hum1.WalkSpeed == 16) and (hum1.JumpPower == 50) and (hum1.AutoRotate == true)
-out.disable_subject       = (camera.CameraSubject == hum1)
-out.disable_mouse_default  = (UIS.MouseBehavior == Enum.MouseBehavior.Default)
-out.disable_mouse_icon     = (UIS.MouseIconEnabled == true)
+out.disable_subject_hum = (camera.CameraSubject == hum1)
+out.disable_body_freed  = (hrp1.Anchored == false)
+out.disable_part_gone   = (cp._destroyed == true) and (cp.Parent == nil)
+out.disable_disconnected = (#RunService.RenderStepped._h == 0) and (#UIS.InputBegan._h == 0) and (#UIS.InputEnded._h == 0)
 
--- ---- disabled tick is inert (manually invoking step would do nothing) ----
-out.no_render_after_disable = (renderConnected == false)
+-- ---- a stray RenderStepped after disable is inert (no error) ----
+tick()
+out.inert_after_disable = true
 
--- ---- destroy clean ----
 local okD, errD = real.pcall(function() mod.destroy() end)
 out.destroy_ok = okD; if not okD then out.destroy_err = real.tostring(errD) end
 
 out.notifies = real.table.concat(NOTIFY, " | ")
 out.errors   = (#ERRORS > 0) and real.table.concat(ERRORS, " ;; ") or "none"
 
+local pass = out.loaded and out.register_ok and out.has_2_sliders and out.enable_made_part
+  and out.enable_part_parented and out.enable_subject and out.enable_body_anchor and out.enable_connected
+  and out.typing_ignored and out.fly_forward and out.respawn_new_anchored and out.respawn_old_released
+  and out.disable_subject_hum and out.disable_body_freed and out.disable_part_gone and out.disable_disconnected
+  and out.destroy_ok and (out.errors == "none")
+
 local function ser(v) if real.type(v)=="table" then local s="{" for k,val in real.pairs(v) do s=s.."\n  "..real.tostring(k).." = "..ser(val) end return s.."\n}" else return real.tostring(v) end end
-return ser(out)
+return ser(out) .. "\n\nRESULT: " .. (pass and "ALL PASS" or "FAIL")
 '''
 print(rt.execute(LUA))
