@@ -134,8 +134,11 @@ camera.FieldOfView = 70
 local Workspace = { CurrentCamera = camera }
 
 local RunService = {}
-function RunService:BindToRenderStep(name, prio, fn) self.boundName = name; self.bound = fn end
-function RunService:UnbindFromRenderStep(name) if self.boundName == name then self.bound = nil; self.boundName = nil end end
+local renderFn, renderConnected = nil, false
+RunService.RenderStepped = {
+  Connect = function(_, fn) renderFn = fn; renderConnected = true
+    return { Disconnect = function() renderConnected = false end } end,
+}
 
 local UIS = {
   MouseBehavior = Enum.MouseBehavior.Default, MouseIconEnabled = true,
@@ -190,12 +193,12 @@ out.box_added   = box.added
 out.feature_id  = capturedDef and capturedDef.id or "nil"
 out.has_3_sliders = capturedDef and capturedDef.settings and (#capturedDef.settings == 3)
 
-local function frame(dt) if RunService.bound then RunService.bound(dt) end end
+local function frame(dt) if renderConnected and renderFn then renderFn(dt) end end
 
 -- ---- enable ----
 real.pcall(function() capturedDef.onToggle(true) end)
 out.enable_scriptable = (camera.CameraType == Enum.CameraType.Scriptable)
-out.enable_bound      = (RunService.bound ~= nil)
+out.enable_bound      = (renderConnected == true)
 out.enable_parked     = (hum0.WalkSpeed == 0) and (hum0.JumpPower == 0) and (hum0.AutoRotate == false)
 
 -- ---- fly forward: hold W one frame at speed 60, dt 0.1 (yaw 0 -> -Z) = 6 studs ----
@@ -251,14 +254,14 @@ out.respawn_parked = (hum1.WalkSpeed == 0) and (hum1.AutoRotate == false)
 -- ---- disable: camera handed back, render unbound, body restored, mouse default ----
 real.pcall(function() capturedDef.onToggle(false) end)
 out.disable_cam_restored = (camera.CameraType == Enum.CameraType.Custom)
-out.disable_unbound      = (RunService.bound == nil)
+out.disable_unbound      = (renderConnected == false)
 out.disable_body_restored = (hum1.WalkSpeed == 16) and (hum1.JumpPower == 50) and (hum1.AutoRotate == true)
 out.disable_subject       = (camera.CameraSubject == hum1)
 out.disable_mouse_default  = (UIS.MouseBehavior == Enum.MouseBehavior.Default)
 out.disable_mouse_icon     = (UIS.MouseIconEnabled == true)
 
 -- ---- disabled tick is inert (manually invoking step would do nothing) ----
-out.no_render_after_disable = (RunService.bound == nil)
+out.no_render_after_disable = (renderConnected == false)
 
 -- ---- destroy clean ----
 local okD, errD = real.pcall(function() mod.destroy() end)

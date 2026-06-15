@@ -36,7 +36,6 @@ local notify  = require("ui.notify")
 
 local FreeCam = {}
 
-local RENDER_NAME = "PantheonFreeCam"
 local SENS_BASE   = 0.0006              -- radians per mouse pixel at sensitivity 1
 local PITCH_LIMIT = math.rad(89)        -- stop the view flipping over the poles
 local MAX_DT      = 0.1                 -- clamp lag spikes so a hitch can't teleport us
@@ -66,8 +65,9 @@ local speedSaved = nil   -- { hum, walk, jumpP, jumpH, autoRot }
 local mouseLocked = false
 local justLocked  = false
 
-local renderBound = false
-local charConn    = nil
+local renderConn   = nil
+local charConn     = nil
+local stepErrShown = false   -- surface a render-loop error once, not every frame
 
 local function currentHumanoid()
     local char = LP.Character
@@ -122,7 +122,7 @@ local function setMouseLook(looking)
     end
 end
 
-local function step(dt)
+local function stepInner(dt)
     if not enabled then return end
     local cam = Workspace.CurrentCamera
     if not cam then return end
@@ -177,6 +177,17 @@ local function step(dt)
     cam.CFrame = CFrame.new(pos) * CFrame.fromEulerAnglesYXZ(pitch, yaw, 0)
 end
 
+-- Surface a render-loop error ONCE instead of letting a thrown step silently
+-- freeze the camera. A detached-but-undriven camera + a parked body reads to the
+-- user as "the freecam won't move and I'm anchored" -- so tell them the real reason.
+local function step(dt)
+    local ok, err = pcall(stepInner, dt)
+    if not ok and not stepErrShown then
+        stepErrShown = true
+        pcall(function() notify.warn("Free Cam error: " .. tostring(err)) end)
+    end
+end
+
 local function setActive(v)
     v = v and true or false
     if enabled == v then return end
@@ -210,17 +221,18 @@ local function setActive(v)
             end)
         end
 
-        if not renderBound then
-            RunService:BindToRenderStep(RENDER_NAME, Enum.RenderPriority.Camera.Value + 1, step)
-            renderBound = true
+        stepErrShown = false
+        if not renderConn then
+            -- RenderStepped:Connect, NOT BindToRenderStep: callable from every executor
+            -- identity and still hands us deltaTime. BindToRenderStep can throw in some
+            -- executor contexts -- when it did, the camera detached but was never driven,
+            -- so it looked frozen (and the parked body looked anchored).
+            renderConn = RunService.RenderStepped:Connect(step)
         end
         notify.success("Free Cam ON -- WASD to fly, hold RMB to look, Shift to sprint")
     else
         enabled = false
-        if renderBound then
-            pcall(function() RunService:UnbindFromRenderStep(RENDER_NAME) end)
-            renderBound = false
-        end
+        if renderConn then pcall(function() renderConn:Disconnect() end); renderConn = nil end
         if charConn then pcall(function() charConn:Disconnect() end); charConn = nil end
 
         -- hand the camera back to the player
