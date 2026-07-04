@@ -40,7 +40,10 @@ local GKN = {}
 ----------------------------------------------------------------- settings (persisted)
 local CFG = {   -- numeric tunables, default reach locked to 2.6 (confirmed correct)
     reach = 2.6, windup = 0.33, perfectLead = 0.07, holdTime = 0.35,
-    heavyWindup = 0.50, dodgeLead = 0.05, chargeWindow = 0.60, spamInterval = 0.04,
+    heavyWindup = 0.50, dodgeLead = 0.05, chargeWindow = 0.60,
+    -- grip M1 spam: task.wait floors at ~1 frame, so one-click-per-tick caps at
+    -- ~60/s. spamBurst fires N clicks PER tick to blow past that ceiling.
+    spamInterval = 0.02, spamBurst = 6,
 }
 local S = {     -- feature toggles
     armed = true, parry = true, dodge = true, gripSpam = true,
@@ -215,7 +218,9 @@ local function startGripSpam()
     spamActive = true
     task.spawn(function()
         while gripping and S.armed and S.gripSpam do
-            if not (S.clickCancel and anyEnemyCharging()) then clickLeft() end
+            if not (S.clickCancel and anyEnemyCharging()) then
+                for _ = 1, math.max(1, math.floor(CFG.spamBurst)) do clickLeft() end   -- stack N clicks/tick
+            end
             task.wait(CFG.spamInterval)
         end
         spamActive = false
@@ -337,7 +342,8 @@ function GKN.register()
     tuneSlider(holder, 24, "Block Hold",  "holdTime",    0.10, 0.80, 0.05)
     tuneSlider(holder, 25, "Heavy Windup","heavyWindup", 0.20, 0.90, 0.01)
     tuneSlider(holder, 26, "Dodge Lead",  "dodgeLead",   0.00, 0.25, 0.01)
-    tuneSlider(holder, 27, "Spam Rate (s)","spamInterval",0.02, 0.15, 0.01)
+    tuneSlider(holder, 27, "Spam Rate (s)","spamInterval",0.01, 0.15, 0.01)
+    tuneSlider(holder, 28, "Spam Burst (clicks/tick)","spamBurst", 1, 20, 1)
 
     statusLbl = components.Label(holder, "nearest: -")
     statusLbl.LayoutOrder = 40
