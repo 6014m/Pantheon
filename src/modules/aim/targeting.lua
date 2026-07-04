@@ -8,8 +8,10 @@
 
 local state = require("modules.aim.state")
 
-local Players   = game:GetService("Players")
-local Workspace = game:GetService("Workspace")
+local Players    = game:GetService("Players")
+local Workspace  = game:GetService("Workspace")
+local UIS        = game:GetService("UserInputService")
+local GuiService = game:GetService("GuiService")
 
 local Targeting = {}
 
@@ -119,21 +121,40 @@ function Targeting.getBestTarget(exclude)
     if not myRoot then return nil end
 
     local visCheck = state.visibilityCheckEnabled
-    local best, bestType, bestDist = nil, nil, math.huge
+    local best, bestType, bestScore = nil, nil, math.huge
 
-    -- Cheap distance gate FIRST, then the expensive front/alive/visibility checks
-    -- (visibility raycasts were the crowded-server hitch). Anyone farther than the
-    -- current best can't win; if the closest fails a check we fall through to the
-    -- next, so "closest visible" semantics hold across players AND npcs.
+    -- Cursor mode: score candidates by SCREEN distance to the mouse instead of
+    -- world distance. GetMouseLocation includes the topbar inset; WorldToViewport
+    -- excludes it, so align by subtracting the inset once here.
+    local cursorMode = state.cursorTarget
+    local cam = Workspace.CurrentCamera
+    local mouse
+    if cursorMode and cam then
+        local m = UIS:GetMouseLocation()
+        local inset = GuiService:GetGuiInset()
+        mouse = Vector2.new(m.X, m.Y - inset.Y)
+    end
+
+    -- Cheap gate FIRST, then the expensive front/alive/visibility checks
+    -- (visibility raycasts were the crowded-server hitch). Anyone with a worse
+    -- score than the current best can't win; if the best fails a check we fall
+    -- through to the next, so "closest visible" semantics hold across players AND
+    -- npcs. rangeLimit always uses WORLD distance regardless of mode.
     local function consider(target, ttype, char)
         if not char or target == exclude then return end
         local root = rootOf(char)
         if not root then return end
-        local dist = (root.Position - myRoot.Position).Magnitude
-        if state.rangeLimit > 0 and dist > state.rangeLimit then return end
-        if dist >= bestDist then return end
+        local worldDist = (root.Position - myRoot.Position).Magnitude
+        if state.rangeLimit > 0 and worldDist > state.rangeLimit then return end
+        local score = worldDist
+        if cursorMode and mouse and cam then
+            local vp = cam:WorldToViewportPoint(root.Position)
+            if vp.Z <= 0 then return end   -- behind the camera
+            score = (Vector2.new(vp.X, vp.Y) - mouse).Magnitude
+        end
+        if score >= bestScore then return end
         if isInFront(root) and isAlive(char) and (not visCheck or isVisibleChar(char)) then
-            best, bestType, bestDist = target, ttype, dist
+            best, bestType, bestScore = target, ttype, score
         end
     end
 

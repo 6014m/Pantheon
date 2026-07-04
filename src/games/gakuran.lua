@@ -21,6 +21,7 @@ local components = require("ui.components")
 local persist    = require("core.persist")
 local log        = require("core.log")
 local notify     = require("ui.notify")
+local aimState   = require("modules.aim.state")   -- Target Select target
 
 local Players     = game:GetService("Players")
 local UIS         = game:GetService("UserInputService")
@@ -44,6 +45,9 @@ local CFG = {   -- numeric tunables, default reach locked to 2.6 (confirmed corr
 local S = {     -- feature toggles
     armed = true, parry = true, dodge = true, gripSpam = true,
     guardBreak = true, clickCancel = true, autoReach = true, logNew = false,
+    -- Only parry/log the Target Select target's attacks (no misfires from other
+    -- nearby players). Needs Target Select engaged on someone.
+    targetOnly = true,
 }
 local FACING_DOT = 0.15
 
@@ -173,8 +177,12 @@ local function sampleConnect(plr)
 end
 
 ----------------------------------------------------------------- react + grip spam
+-- true when this player is the current Target Select target
+local function isTarget(plr) return aimState.target_type == "player" and aimState.target == plr end
+
 local function react(attacker, id)
     if attacker == LP then return end
+    if S.targetOnly and not isTarget(attacker) then return end   -- only the Target Select target
     local heavy, m1 = HEAVY_DODGE[id], M1_PARRY[id]
     if not heavy and not m1 then return end
     local mh, hum = myRoot()
@@ -236,7 +244,7 @@ local function hookChar(plr, char)
             trk.Stopped:Connect(function() blocking[plr] = nil end)
         end
         react(plr, id)
-        if S.logNew and not KNOWN[id] and not seenNew[id] then
+        if S.logNew and (not S.targetOnly or isTarget(plr)) and not KNOWN[id] and not seenNew[id] then
             local d = distOf(plr)
             if d and d <= effRange(plr) + 8 then
                 seenNew[id] = true
@@ -319,7 +327,8 @@ function GKN.register()
     subToggle(holder, 5, "Guard Break (R)",  "guardBreak")
     subToggle(holder, 6, "Click Cancel",     "clickCancel")
     subToggle(holder, 7, "Auto Reach",       "autoReach")
-    subToggle(holder, 8, "Log New Anims",    "logNew")
+    subToggle(holder, 8, "Target Only",      "targetOnly")
+    subToggle(holder, 9, "Log New Anims",    "logNew")
 
     components.Section(holder, "Tuning").LayoutOrder = 20
     reachSlider = tuneSlider(holder, 21, "Reach x (height-scaled)", "reach", 0.5, 5.0, 0.1)

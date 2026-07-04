@@ -117,6 +117,10 @@ function module.register()
             -- Highlight all handle an NPC target the same as a player one.
             { type = "toggle", name = "Bot Mode (lock onto NPCs)", key = "bot_mode", default = false,
               onChange = function(v) state.botMode = v and true or false end },
+            -- Cursor targeting: pick whoever is nearest the MOUSE CURSOR (screen
+            -- space) instead of nearest by world distance. Off = classic nearest.
+            { type = "toggle", name = "Aim at cursor (nearest to mouse)", key = "cursor_target", default = false,
+              onChange = function(v) state.cursorTarget = v and true or false end },
             { type = "toggle", name = "Skip dead / shielded", default = true,
               onChange = function(v) state.checkHealthEnabled = v end },
             { type = "slider", name = "Range (0 = inf)",

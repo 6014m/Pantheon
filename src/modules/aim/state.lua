@@ -13,6 +13,9 @@ local state = {
     -- Bot Mode: when true, Target Select also considers NPCs / mobs (any model
     -- with a Humanoid that isn't a player), targeted as target_type == "npc".
     botMode               = false,
+    -- Cursor targeting: pick the candidate nearest the MOUSE CURSOR (screen
+    -- space) instead of nearest in world distance. Off = classic nearest.
+    cursorTarget          = false,
 
     -- Targeting filters
     realisticEnabled       = false,
