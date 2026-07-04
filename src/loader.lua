@@ -70,6 +70,7 @@ local files = {
     { "modules.addons.init",       "modules/addons/init.lua" },
     { "games.jjs",                 "games/jjs.lua" },
     { "games.evilplate",           "games/evilplate.lua" },
+    { "games.gakuran",             "games/gakuran.lua" },
     { "init",                      "init.lua" },
 }
 

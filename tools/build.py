@@ -48,6 +48,7 @@ BUILD_ORDER = [
     "modules/addons/init",
     "games/jjs",
     "games/evilplate",
+    "games/gakuran",
     "init",
 ]
 

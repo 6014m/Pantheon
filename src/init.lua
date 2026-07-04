@@ -61,6 +61,7 @@ misc.register()
 -- the registry table; its .register() only runs if the PlaceId matches.)
 require("games.jjs")
 require("games.evilplate")
+require("games.gakuran")
 
 -- Per-game module (if registered for this PlaceId)
 local gameMod = registry.current()
