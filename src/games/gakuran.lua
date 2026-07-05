@@ -90,8 +90,22 @@ local ENEMY_BLOCK = {
 }
 local GRIP_SELF = { ["108723830385066"]=true, ["71363952449940"]=true }
 local BLOCKHIT  = { ["134852521037165"]=true, ["138017825490326"]=true, ["76143419310137"]=true }
+-- Catalogued NON-attacks that kept surfacing in the "new anim" log (dashes,
+-- run/walk, idle stances, enemy perfect-block). They're not triggers and never
+-- will be, so fold them into KNOWN to stop them re-flagging and burying a
+-- genuinely new attack in noise. (verified against gakuran_anims_classified.json)
+local IGNORE_NOISE = {
+    ["94307187478472"]=true,   -- DashRight
+    ["127932830797262"]=true,  -- DashFront
+    ["113277528668896"]=true,  -- DashBack
+    ["131740405511777"]=true,  -- DashLeft
+    ["111739374926782"]=true,  -- MaleRun
+    ["116895075223460"]=true,  -- Capoeira Idle
+    ["81977030245036"]=true,   -- Capoeira Walk
+    ["102823909334302"]=true,  -- Parryer (enemy perfect block)
+}
 local KNOWN = { ["180435571"]=true }
-for _, t in ipairs({ M1_PARRY, HEAVY_DODGE, ENEMY_BLOCK, GRIP_SELF, REACTIONS }) do
+for _, t in ipairs({ M1_PARRY, HEAVY_DODGE, ENEMY_BLOCK, GRIP_SELF, REACTIONS, IGNORE_NOISE }) do
     for id in pairs(t) do KNOWN[id] = true end
 end
 
