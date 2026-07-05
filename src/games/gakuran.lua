@@ -186,24 +186,6 @@ local function effRange(plr) return presetDist(plr) end   -- learned, per-oppone
 -- are the values at normal size; this stretches/shrinks them per attacker.
 local function sizeScale(plr) return math.clamp(stableHeight(plr) / REF_HEIGHT, 0.3, 2.0) end
 
--- Time from now until the hit is expected to land. When "Read Anim Speed" is on
--- and we have the real AnimationTrack, we time off ITS actual duration
--- (Length / Speed) so every fighting style's -- and every individual attack's --
--- own swing speed drives the parry, instead of one flat windup. hitFrac = how far
--- into the swing the hit connects. Falls back to the fixed per-attack windup x
--- body-size scale when the track can't be read yet (or the toggle is off).
-local function impactLead(plr, trk, fallbackWindup)
-    if S.readAnim and trk then
-        local ok, len = pcall(function() return trk.Length end)
-        if ok and len and len > 0.05 then
-            local sok, spd = pcall(function() return trk.Speed end)
-            if not (sok and type(spd) == "number" and spd > 0.01) then spd = 1 end
-            return (len / spd) * CFG.hitFrac
-        end
-    end
-    return fallbackWindup * sizeScale(plr)
-end
-
 -- Fresh block-start per hit: if a prior hold is still active (fast combo), release
 -- and immediately re-press so each hit opens its own perfect-block window. A
 -- generation token makes sure only the latest hold's release timer fires, so an
@@ -296,6 +278,31 @@ end
 -- true when this player is the current Target Select target
 local function isTarget(plr) return aimState.target_type == "player" and aimState.target == plr end
 
+-- Schedule the timed block/dodge for an incoming attack. With Read Anim Speed on
+-- we wait ONE frame (task.defer) so a play-then-AdjustSpeed has settled -- small
+-- players are just fast swingers via a higher AnimationTrack speed -- then read
+-- the LIVE playhead (TimePosition) for the exact wall-clock time left until the
+-- hit, which also cancels out detection/signal lag. Falls back to the fixed
+-- windup x body-size scale when the track can't be read or the toggle's off.
+local function scheduleReaction(plr, trk, fallbackWindup, leadOffset, fire)
+    local function fallback()
+        task.delay(math.max(fallbackWindup * sizeScale(plr) - leadOffset - ping(), 0), fire)
+    end
+    if not (S.readAnim and trk) then return fallback() end
+    task.defer(function()
+        local ok,  len = pcall(function() return trk.Length end)
+        local sok, spd = pcall(function() return trk.Speed end)
+        local pok, pos = pcall(function() return trk.TimePosition end)
+        if ok and sok and pok and type(len) == "number" and len > 0.05
+           and type(spd) == "number" and spd > 0.01 and type(pos) == "number" then
+            local remaining = math.max(len * CFG.hitFrac - pos, 0) / spd
+            task.delay(math.max(remaining - leadOffset - ping(), 0), fire)
+        else
+            fallback()
+        end
+    end)
+end
+
 local function react(attacker, id, trk)
     if attacker == LP then return end
     if S.targetOnly and not isTarget(attacker) then return end   -- only the Target Select target
@@ -321,12 +328,14 @@ local function react(attacker, id, trk)
     if heavy then
         charging[attacker] = now + CFG.chargeWindow
         if S.dodge then
-            local lead = impactLead(attacker, trk, CFG.heavyWindup) - CFG.dodgeLead - ping()
-            task.delay(math.max(lead, 0), function() tapKey(DODGE_KEY); counts.dodge = counts.dodge + 1 end)
+            scheduleReaction(attacker, trk, CFG.heavyWindup, CFG.dodgeLead, function()
+                tapKey(DODGE_KEY); counts.dodge = counts.dodge + 1
+            end)
         end
     elseif S.parry then
-        local lead = impactLead(attacker, trk, CFG.windup) - CFG.perfectLead - ping()
-        task.delay(math.max(lead, 0), function() doBlock(CFG.holdTime); counts.parry = counts.parry + 1 end)
+        scheduleReaction(attacker, trk, CFG.windup, CFG.perfectLead, function()
+            doBlock(CFG.holdTime); counts.parry = counts.parry + 1
+        end)
     end
 end
 
