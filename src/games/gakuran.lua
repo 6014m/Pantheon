@@ -42,6 +42,8 @@ local GKN = {}
 local CFG = {   -- numeric tunables, default reach locked to 2.6 (confirmed correct)
     reach = 2.6, windup = 0.33, perfectLead = 0.07, holdTime = 0.35,
     heavyWindup = 0.50, dodgeLead = 0.05, chargeWindow = 0.60,
+    -- when reading anim speed: fraction of the swing that elapses before the hit lands
+    hitFrac = 0.5,
     -- grip M1 spam fires spamBurst full clicks EVERY frame (Heartbeat-driven) so
     -- the stream is continuous with no gaps; raise it for more clicks per frame.
     spamBurst = 12,
@@ -49,6 +51,9 @@ local CFG = {   -- numeric tunables, default reach locked to 2.6 (confirmed corr
 local S = {     -- feature toggles
     armed = true, parry = true, dodge = true, gripSpam = true,
     guardBreak = true, clickCancel = true, autoReach = true, logNew = false,
+    -- time parries off each attacker's real AnimationTrack (per-style / per-attack
+    -- swing speed) instead of one flat windup
+    readAnim = true,
     -- Only parry/log the Target Select target's attacks (no misfires from other
     -- nearby players). Needs Target Select engaged on someone.
     targetOnly = true,
@@ -167,6 +172,24 @@ local function effRange(plr) return presetDist(plr) end   -- learned, per-oppone
 -- are the values at normal size; this stretches/shrinks them per attacker.
 local function sizeScale(plr) return math.clamp(stableHeight(plr) / REF_HEIGHT, 0.3, 2.0) end
 
+-- Time from now until the hit is expected to land. When "Read Anim Speed" is on
+-- and we have the real AnimationTrack, we time off ITS actual duration
+-- (Length / Speed) so every fighting style's -- and every individual attack's --
+-- own swing speed drives the parry, instead of one flat windup. hitFrac = how far
+-- into the swing the hit connects. Falls back to the fixed per-attack windup x
+-- body-size scale when the track can't be read yet (or the toggle is off).
+local function impactLead(plr, trk, fallbackWindup)
+    if S.readAnim and trk then
+        local ok, len = pcall(function() return trk.Length end)
+        if ok and len and len > 0.05 then
+            local sok, spd = pcall(function() return trk.Speed end)
+            if not (sok and type(spd) == "number" and spd > 0.01) then spd = 1 end
+            return (len / spd) * CFG.hitFrac
+        end
+    end
+    return fallbackWindup * sizeScale(plr)
+end
+
 -- Fresh block-start per hit: if a prior hold is still active (fast combo), release
 -- and immediately re-press so each hit opens its own perfect-block window. A
 -- generation token makes sure only the latest hold's release timer fires, so an
@@ -259,7 +282,7 @@ end
 -- true when this player is the current Target Select target
 local function isTarget(plr) return aimState.target_type == "player" and aimState.target == plr end
 
-local function react(attacker, id)
+local function react(attacker, id, trk)
     if attacker == LP then return end
     if S.targetOnly and not isTarget(attacker) then return end   -- only the Target Select target
     local heavy, m1 = HEAVY_DODGE[id], M1_PARRY[id]
@@ -281,15 +304,14 @@ local function react(attacker, id)
     if lr and lr.id == id and (now - lr.t) < 0.15 then return end
     lastReact[attacker] = { id = id, t = now }
 
-    local scale = sizeScale(attacker)   -- smaller attacker = faster swing = shorter windup
     if heavy then
         charging[attacker] = now + CFG.chargeWindow
         if S.dodge then
-            local lead = CFG.heavyWindup * scale - CFG.dodgeLead - ping()
+            local lead = impactLead(attacker, trk, CFG.heavyWindup) - CFG.dodgeLead - ping()
             task.delay(math.max(lead, 0), function() tapKey(DODGE_KEY); counts.dodge = counts.dodge + 1 end)
         end
     elseif S.parry then
-        local lead = CFG.windup * scale - CFG.perfectLead - ping()
+        local lead = impactLead(attacker, trk, CFG.windup) - CFG.perfectLead - ping()
         task.delay(math.max(lead, 0), function() doBlock(CFG.holdTime); counts.parry = counts.parry + 1 end)
     end
 end
@@ -337,7 +359,7 @@ local function hookChar(plr, char)
             blocking[plr] = true
             trk.Stopped:Connect(function() blocking[plr] = nil end)
         end
-        react(plr, id)
+        react(plr, id, trk)
         if S.logNew and (not S.targetOnly or isTarget(plr)) and not KNOWN[id] and not seenNew[id] then
             local d = distOf(plr)
             if d and d <= effRange(plr) + 8 then
@@ -428,16 +450,18 @@ function GKN.register()
     subToggle(holder, 5, "Guard Break (R)",  "guardBreak")
     subToggle(holder, 6, "Click Cancel",     "clickCancel")
     subToggle(holder, 7, "Auto Reach (learn per size)", "autoReach")
-    subToggle(holder, 8, "Target Only",      "targetOnly")
-    subToggle(holder, 9, "Log New Anims",    "logNew")
+    subToggle(holder, 8, "Read Anim Speed",  "readAnim")
+    subToggle(holder, 9, "Target Only",      "targetOnly")
+    subToggle(holder, 10, "Log New Anims",   "logNew")
 
     components.Section(holder, "Tuning").LayoutOrder = 20
     reachSlider = tuneSlider(holder, 21, "Reach x (default / unlearned)", "reach", 0.5, 5.0, 0.1)
-    tuneSlider(holder, 22, "M1 Windup",   "windup",      0.10, 0.60, 0.01)
-    tuneSlider(holder, 23, "Parry Lead",  "perfectLead", 0.00, 0.25, 0.01)
-    tuneSlider(holder, 24, "Block Hold",  "holdTime",    0.10, 0.80, 0.05)
-    tuneSlider(holder, 25, "Heavy Windup","heavyWindup", 0.20, 0.90, 0.01)
-    tuneSlider(holder, 26, "Dodge Lead",  "dodgeLead",   0.00, 0.25, 0.01)
+    tuneSlider(holder, 22, "Anim Hit Point", "hitFrac",   0.20, 0.90, 0.05)
+    tuneSlider(holder, 23, "M1 Windup (fallback)", "windup", 0.10, 0.60, 0.01)
+    tuneSlider(holder, 24, "Parry Lead",  "perfectLead", 0.00, 0.25, 0.01)
+    tuneSlider(holder, 25, "Block Hold",  "holdTime",    0.10, 0.80, 0.05)
+    tuneSlider(holder, 26, "Heavy Windup (fallback)","heavyWindup", 0.20, 0.90, 0.01)
+    tuneSlider(holder, 27, "Dodge Lead",  "dodgeLead",   0.00, 0.25, 0.01)
     tuneSlider(holder, 28, "Spam Burst (clicks/frame)","spamBurst", 1, 40, 1)
 
     local resetBtn = components.Button(holder, { text = "Reset Learned Reach", onClick = function()
