@@ -27,10 +27,13 @@
 --   * Unknown attack anims are classified from the LIVE track LENGTH -- short -> M1,
 --     unknown attacks default to M1 (parry) and only DODGE a confirmed heavy (static DB
 --     or an asset name that says M2/heavy), so basic M1s never get mis-dodged.
---   * A HIT-CONFIRMATION learner watches for damage/block-hits: an unknown anim that
---     plays (facing, in range) and is then followed by us taking damage is CONFIRMED an
---     attack. This picks up brand-new styles without hand-adding ids, and can't be fooled
---     by a dash/emote because those never precede a hit.
+--   * A DAMAGE-DRIVEN RECLASSIFIER watches for damage/block-hits: any correctable enemy anim
+--     that plays and is then followed (within confirmWindow) by us taking a hit while it was
+--     in range is blamed and (re)classified an attack. Getting hit is ground truth, so this
+--     runs even off your locked target and regardless of the parry facing/reach gates. Unknown
+--     ids learn on the FIRST hit; an anim MIS-FILED as movement noise (a dash/idle whose real
+--     hit only shows up once you stop dodging it) is overridden only after CORRECT_HITS hits,
+--     so a coincidental dash/emote can't be flipped. A length gate keeps long idles/emotes out.
 --   * Anims you've already LOGGED are prefetched through the name-scan at register and
 --     classified by their real asset name -- never force-parried.
 --   Learned classes persist to disk + settings and are announced.
@@ -62,6 +65,7 @@ local GKN_IDS    = { 9199655655, 128736949265057 }   -- GameId first, then the k
 local NEW_FILE   = "gakuran_new_anims.json"
 local LEARN_FILE = "gakuran_learned_anims.json"       -- persisted auto-classifications
 local CLASS_VER  = 2   -- bump to invalidate old learned classifications (length-era heavies)
+local CORRECT_HITS = 2 -- damage confirmations needed to reclassify a MIS-FILED non-attack (dash/noise) as an attack
 local BLOCK_KEY, DODGE_KEY, HEAVY_KEY = Enum.KeyCode.F, Enum.KeyCode.Q, Enum.KeyCode.R
 local REACH      = 2.6   -- flat reach multiplier (x stableHeight). No longer tunable/learned.
 
@@ -80,6 +84,10 @@ local CFG = {   -- numeric tunables
     -- Cancel and auto-parry against that opponent so you keep your combo going instead of
     -- withholding your M1 / parrying their stun. Ends early if they block, dash, or heavy.
     priorityWindow = 0.55,
+    -- Damage-driven reclassifier: how far back a landed/blocked hit looks for the enemy anim
+    -- that caused it. Widen for slow heavies -- the anim that hit you may be up to this long
+    -- before the HP drop. (Was a hard-coded 0.9s; heavies land later than that.)
+    confirmWindow = 1.3,
     -- when an anim has no usable hit marker: fraction of the swing that elapses
     -- before the hit lands (fallback only; marker timing is exact)
     hitFrac = 0.5,
@@ -196,9 +204,12 @@ local learnedClass = {}
 -- Per-anim exact hit time (seconds, anim-local) from keyframe markers, or false when
 -- scanned with no usable marker. Declared here so the classifier can read it too.
 local hitTimeCache = {}
--- Most-recent unknown attack-candidate per attacker, for the hit-confirmation learner.
--- lastUnknown[plr] = { id=, t=, len= }
-local lastUnknown = {}
+-- Damage-driven reclassifier state. recentAnim[plr] = the last correctable enemy anim they
+-- played { id, t, len, role, facing, inReach }; when we then take/absorb a hit we blame the
+-- most recent in-reach one and (re)classify it as an attack. correctHits[id] counts how many
+-- times a MIS-FILED non-attack has preceded our damage, so a real dash/emote can't be flipped
+-- to an attack by one coincidence -- it needs CORRECT_HITS confirmations.
+local recentAnim, correctHits = {}, {}
 
 -- Auto-Tune state. tune[name] = per-opponent { lead, dlead, hold, miss, ok } that the
 -- outcome feedback nudges. pendingParry[name] tracks an in-flight parry/dodge so a
@@ -354,19 +365,64 @@ local function kindOf(id)
     return nil
 end
 
--- HIT CONFIRMATION: called when WE take damage / a hit lands on our block. Attribute it
--- to the most recent unknown attack-candidate anim (within the window) and commit it as
--- an attack, classified by the length we recorded when it played.
+-- An anim that landed a hit should look like an attack, not an idle/emote: readable length in
+-- a swing-ish window (unreadable length 0 is allowed -- the track may not be readable yet).
+local function attackShaped(len) return len == 0 or (len >= 0.2 and len <= 2.2) end
+-- Role of an id for the damage-driven reclassifier:
+--   nil       -> already a known/learned attack, or a definite non-attack (reaction/block/grip/
+--                carry) we must NEVER turn into a parry target.
+--   "unknown" -> never-seen id: one landed hit is enough to learn it as an attack.
+--   "noise"   -> currently MIS-FILED as movement (dash/run/idle noise): needs CORRECT_HITS
+--                landed hits before we override the label, so a coincidence can't flip it.
+local function correctRole(id)
+    if kindOf(id) then return nil end
+    if learnedClass[id] == "reaction" then return nil end    -- learned as a hit-result -> never an attack
+    if learnedClass[id] == "ignore"   then return "noise" end -- name-scan called it movement: correct only on repeat hits
+    if not KNOWN[id] then return "unknown" end
+    if REACTIONS[id] or ENEMY_BLOCK[id] or GRIP_SELF[id] or CARRY_SELF[id] then return nil end
+    return "noise"
+end
+-- Record a correctable enemy anim so a following hit can blame it. Decoupled from Target Only
+-- and from the parry facing/reach gates: taking a hit is ground truth, so we learn from whoever
+-- actually connected -- locked target or not. Geometry is stored as metadata, weighed on blame.
+local function noteCandidate(plr, id, trk)
+    if not S.autoClass then return end
+    local role = correctRole(id)
+    if not role then return end
+    local mh = myRoot(); local ac = plr.Character; local ah = ac and ac:FindFirstChild("HumanoidRootPart")
+    if not mh or not ah then return end
+    local delta = mh.Position - ah.Position
+    recentAnim[plr] = {
+        id = id, t = tick(), len = trackLen(trk), role = role,
+        facing  = ah.CFrame.LookVector:Dot(delta.Unit) >= FACING_DOT,
+        inReach = delta.Magnitude <= effRange(plr),
+    }
+end
+
+-- HIT CONFIRMATION / CORRECTION: called when WE take damage or a hit lands on our block.
+-- Blame the most recent in-reach, attack-shaped enemy anim and (re)classify it as an attack so
+-- it gets parried next time. Unknown ids learn on the FIRST hit; ids currently mis-filed as
+-- movement noise are only overridden after CORRECT_HITS hits (guards against coincidence).
 local function confirmFromDamage()
     if not (S.autoClass and S.armed) then return end
-    local now = tick(); local bestId, bestLen, bestT
-    for plr, info in pairs(lastUnknown) do
-        if now - info.t <= 0.9 then
-            if not bestT or info.t > bestT then bestId, bestLen, bestT = info.id, info.len, info.t end
-        else lastUnknown[plr] = nil end
+    local now = tick(); local best
+    for plr, info in pairs(recentAnim) do
+        if now - info.t <= CFG.confirmWindow then
+            if info.inReach and attackShaped(info.len) and (not best or info.t > best.t) then best = info end
+        else recentAnim[plr] = nil end
     end
-    if bestId and not learnedClass[bestId] and not KNOWN[bestId] then
-        commitClass(bestId, guessKind(bestId), "hit-confirm", true)
+    if not best or kindOf(best.id) then return end
+    if best.role == "unknown" then
+        commitClass(best.id, guessKind(best.id), "hit-confirm", true)
+    elseif best.role == "noise" and best.facing then
+        correctHits[best.id] = (correctHits[best.id] or 0) + 1
+        if correctHits[best.id] >= CORRECT_HITS and learnedClass[best.id] ~= "m1" then
+            local wasNew = learnedClass[best.id] == nil
+            learnedClass[best.id] = "m1"; if wasNew then counts.learned = counts.learned + 1 end
+            saveLearned()
+            log.info(("[gakuran] corrected %s (mis-filed non-attack) -> m1 after %d hits"):format(best.id, CORRECT_HITS))
+            pcall(function() notify.info(("Gakuran: corrected %s -> attack"):format(best.id), 5) end)
+        end
     end
 end
 
@@ -568,10 +624,9 @@ local function react(attacker, id, trk)
         -- Unknown anim: DON'T force-classify it (a logged block/dash would wrongly become
         -- a parry target). Just stash it for the hit-confirmation learner + kick the
         -- background name-scan; it only ever reacts once it's a confirmed attack.
-        if S.autoClass and facing and inReach and not KNOWN[id] then
-            lastUnknown[attacker] = { id = id, t = tick(), len = trackLen(trk) }
-            scanAnim(id)
-        end
+        -- (recording for the damage-driven reclassifier happens in noteCandidate, off the
+        -- AnimationPlayed handler -- decoupled from Target Only and the facing/reach gates.)
+        if S.autoClass and not KNOWN[id] then scanAnim(id) end
         return
     end
 
@@ -665,6 +720,7 @@ local function hookChar(plr, char)
         -- Click Cancel threat: flag ANY attacker's attack (not just the parry target)
         -- so we never M1-trade with someone we're not even parrying.
         if ek then noteThreat(plr, ek) end
+        noteCandidate(plr, id, trk)   -- record for the damage-driven reclassifier (learn/correct on hit)
         react(plr, id, trk)
         if S.logNew and (not S.targetOnly or isTarget(plr)) and not KNOWN[id] and not seenNew[id] then
             local d = distOf(plr)
@@ -788,6 +844,7 @@ function GKN.register()
     tuneSlider(holder, 28, "Click Cancel Window", "cancelWindow", 0.20, 1.00, 0.05)
     tuneSlider(holder, 29, "Hit Priority Window", "priorityWindow", 0.20, 1.20, 0.05)
     tuneSlider(holder, 30, "Spam Burst (clicks/frame)","spamBurst", 1, 40, 1)
+    tuneSlider(holder, 31, "Learn/Correct Window","confirmWindow", 0.60, 2.00, 0.05)
 
     local resetBtn = components.Button(holder, { text = "Reset Learned Anims", onClick = function()
         learnedClass = {}; counts.learned = 0; saveLearned()
@@ -850,7 +907,8 @@ function GKN.destroy()
     if blockActive then pcall(function() VIM:SendKeyEvent(false, BLOCK_KEY, false, game) end); blockActive = false end
     for c in pairs(activePolls) do pcall(function() c:Disconnect() end) end
     activePolls = {}
-    watched, charging, blocking, lastReact, lastUnknown = {}, {}, {}, {}, {}
+    watched, charging, blocking, lastReact = {}, {}, {}, {}
+    recentAnim, correctHits = {}, {}
     threats, tune, pendingParry, priority = {}, {}, {}, {}
     gripping, carried = false, false
     if gripConn then pcall(function() gripConn:Disconnect() end); gripConn = nil end
