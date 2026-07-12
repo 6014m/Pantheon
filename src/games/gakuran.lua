@@ -73,9 +73,11 @@ local CFG = {   -- numeric tunables
     -- when an anim has no usable hit marker: fraction of the swing that elapses
     -- before the hit lands (fallback only; marker timing is exact)
     hitFrac = 0.5,
-    -- live-track length at/above which an unknown attack is classified as a heavy
-    -- (M2) instead of an M1. M1 swings are short; heavies have a longer windup.
-    heavyLen = 0.85,
+    -- anim-local HIT time (from keyframe markers) at/above which an attack is a heavy
+    -- (M2) rather than an M1. Heavies have a longer windup to contact. Total track
+    -- LENGTH is a bad discriminator (M1 anims are long too), so we only split on the
+    -- real marker hit time; without a marker an unknown attack defaults to M1 (parry).
+    heavyHit = 0.42,
     -- grip M1 spam fires spamBurst full clicks EVERY frame (Heartbeat-driven) so
     -- the stream is continuous with no gaps; raise it for more clicks per frame.
     spamBurst = 12,
@@ -179,16 +181,17 @@ local newData, seenNew = {}, {}
 local lastTiming = { src = "-", sec = 0 }   -- for the status label: how the last reaction was timed
 -- Learned, persisted classifications. learnedClass[id] = "m1" | "heavy" | "reaction" | "ignore"
 local learnedClass = {}
+-- Per-anim exact hit time (seconds, anim-local) from keyframe markers, or false when
+-- scanned with no usable marker. Declared here so the classifier can read it too.
+local hitTimeCache = {}
 -- Most-recent unknown attack-candidate per attacker, for the hit-confirmation learner.
 -- lastUnknown[plr] = { id=, t=, len= }
 local lastUnknown = {}
 
 -- Auto-Tune state. tune[name] = per-opponent { lead, dlead, hold, miss, ok } that the
 -- outcome feedback nudges. pendingParry[name] tracks an in-flight parry/dodge so a
--- following hit (or clean pass) can score it. m1MaxLen/heavyMinLen auto-derive the
--- heavy-length split from the real anim lengths we see.
+-- following hit (or clean pass) can score it.
 local tune, pendingParry = {}, {}
-local m1MaxLen, heavyMinLen = 0, math.huge
 
 ----------------------------------------------------------------- helpers
 local REF_HEIGHT = 5.0     -- a normal R6/R15 rig is ~5 studs tall
@@ -298,7 +301,16 @@ local function commitClass(id, cls, src, announce)
         pcall(function() notify.info(("Gakuran: learned %s -> %s"):format(id, cls), 5) end)
     end
 end
-local function classByLen(len) return (len and len >= CFG.heavyLen) and "heavy" or "m1" end
+-- Best-guess kind for an attack we can't look up. Total anim LENGTH doesn't separate
+-- M1 from heavy (M1 swings are long too), so we only call "heavy" when a real keyframe
+-- HIT marker says the contact is late; otherwise default to "m1" (parry). M1s hugely
+-- outnumber heavies, and a wrong-parry (guard break) is far cheaper than dodging every
+-- single M1 -- and the background name/marker scan upgrades true heavies to dodge.
+local function guessKind(id)
+    local ht = hitTimeCache[id]
+    if type(ht) == "number" and ht > 0 then return ht >= CFG.heavyHit and "heavy" or "m1" end
+    return "m1"
+end
 
 -- Effective attack kind: static DB first, then learned. Returns "m1" | "heavy" | nil.
 local function kindOf(id)
@@ -319,7 +331,7 @@ local function confirmFromDamage()
         else lastUnknown[plr] = nil end
     end
     if bestId and not learnedClass[bestId] and not KNOWN[bestId] then
-        commitClass(bestId, classByLen(bestLen), "hit-confirm", true)
+        commitClass(bestId, guessKind(bestId), "hit-confirm", true)
     end
 end
 
@@ -376,24 +388,14 @@ local function registerHit(hard)
     end
     if bestName then local pp = pendingParry[bestName]; pp.scored = true; tuneMiss(bestName, pp.kind, hard) end
 end
--- Feed real anim lengths (from confirmed-kind attacks) into the heavy-length split so the
--- M1/M2 threshold sits between the longest M1 and the shortest heavy we've actually seen.
-local function recordLen(kind, len)
-    if not S.autoTune or not len or len <= 0.05 then return end
-    if kind == "m1" then if len > m1MaxLen and len < 1.2 then m1MaxLen = len end
-    elseif kind == "heavy" then if len < heavyMinLen then heavyMinLen = len end end
-    if m1MaxLen > 0 and heavyMinLen < math.huge and heavyMinLen > m1MaxLen then
-        CFG.heavyLen = (m1MaxLen + heavyMinLen) / 2
-    end
-end
-
 ----------------------------------------------------------------- GetObjects scan (background refinement)
 -- The live-length learner classifies INSTANTLY. This slow, async game:GetObjects pass
 -- runs in the background to (a) pull the exact hit-frame marker for timing and (b) read
 -- the asset name and CORRECT the fast length guess when the name is unambiguous (e.g. a
 -- long "...4thM1" that length mistook for a heavy, or a logged id that's really a dash).
--- Nothing blocks on it; if GetObjects is unavailable it just no-ops.
-local hitTimeCache, scanning = {}, {}
+-- Nothing blocks on it; if GetObjects is unavailable it just no-ops. (hitTimeCache is
+-- declared up in the runtime-state block so the classifier can read it.)
+local scanning = {}
 local HIT_MARKER_HINTS = { "hit", "attack", "damage", "swing", "cast", "contact", "impact", "active" }
 local function looksLikeHit(name)
     local n = string.lower(name or "")
@@ -440,11 +442,16 @@ local function scanAnim(id)
         end
         if not chosen then for _, mk in ipairs(markers) do if not chosen or mk.t > chosen.t then chosen = mk end end end
         hitTimeCache[id] = (chosen and chosen.t and chosen.t > 0) and chosen.t or false
-        -- accurate name-based correction of the fast length guess
+        -- correct the default guess: name first (most reliable), else the real marker
+        -- hit time (a late contact = heavy). Only ever flips an m1<->heavy, never touches
+        -- a reaction/ignore the name already pinned.
         if S.autoClass and not KNOWN[id] then
             local nc = classFromName(nm)
+            if not nc and type(hitTimeCache[id]) == "number" and (learnedClass[id] == "m1" or learnedClass[id] == "heavy") then
+                nc = hitTimeCache[id] >= CFG.heavyHit and "heavy" or "m1"
+            end
             if nc and learnedClass[id] ~= nc then
-                commitClass(id, nc, "name", learnedClass[id] == nil)   -- announce only if brand-new
+                commitClass(id, nc, nc and classFromName(nm) and "name" or "marker", learnedClass[id] == nil)
             end
         end
     end)
@@ -509,10 +516,10 @@ local function react(attacker, id, trk)
     local kind = kindOf(id)
     if not kind then
         if not (S.autoClass and facing) then return end
-        -- SUSPECT (already-logged combat anims): classify by live length right away.
+        -- SUSPECT (already-logged combat anims): commit them now so they react. Default
+        -- to M1 (parry); the background name/marker scan corrects real heavies to dodge.
         if SUSPECT[id] and not learnedClass[id] and inReach then
-            local len = trackLen(trk)
-            if len > 0 then commitClass(id, classByLen(len), "length", true); kind = kindOf(id) end
+            commitClass(id, guessKind(id), "suspect", true); kind = kindOf(id)
         end
         -- Any unknown: stash for the hit-confirmation learner AND kick a background
         -- GetObjects name-scan so it can be classified even before it ever hits us.
@@ -531,7 +538,6 @@ local function react(attacker, id, trk)
     if lr and lr.id == id and (now - lr.t) < 0.15 then return end
     lastReact[attacker] = { id = id, t = now }
 
-    recordLen(kind, trackLen(trk))   -- feed the auto heavy-length split
     -- per-opponent tuned lead/hold (falls back to the CFG sliders when Auto-Tune is off)
     local nm = attacker.Name
     local t = S.autoTune and tuneFor(nm) or nil
@@ -703,7 +709,7 @@ function GKN.register()
     -- With Auto-Tune ON these four are the STARTING point; the tuner adapts them per
     -- opponent from there. With it OFF they're used flat.
     tuneSlider(holder, 21, "Anim Hit Point", "hitFrac",   0.20, 0.90, 0.05)
-    tuneSlider(holder, 22, "Heavy Length (auto)", "heavyLen", 0.40, 1.50, 0.05)
+    tuneSlider(holder, 22, "Heavy Hit Time (M1/M2 split)", "heavyHit", 0.20, 0.80, 0.02)
     tuneSlider(holder, 23, "M1 Windup (fallback)", "windup", 0.10, 0.60, 0.01)
     tuneSlider(holder, 24, "Parry Lead (base)",  "perfectLead", 0.00, 0.25, 0.01)
     tuneSlider(holder, 25, "Block Hold (base)",  "holdTime",    0.10, 0.80, 0.05)
@@ -753,7 +759,7 @@ function GKN.register()
         local tuneStr
         if S.autoTune and nPlr and tune[nPlr.Name] then
             local tt = tune[nPlr.Name]
-            tuneStr = ("lead%.02f hold%.02f hL%.2f m%d/o%d"):format(tt.lead, tt.hold, CFG.heavyLen, tt.miss, tt.ok)
+            tuneStr = ("lead%.02f hold%.02f m%d/o%d"):format(tt.lead, tt.hold, tt.miss, tt.ok)
         else
             tuneStr = S.autoTune and "tuning…" or "manual"
         end
