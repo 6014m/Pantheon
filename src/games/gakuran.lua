@@ -115,6 +115,10 @@ local S = {     -- feature toggles
     -- Only parry/log/learn the Target Select target's attacks (no misfires from other
     -- nearby players). Needs Target Select engaged on someone.
     targetOnly = true,
+    -- Even with Target Only on, still parry/dodge attacks from players you're NOT locked onto
+    -- when they're a genuine threat (facing you, in range, a known/confirmed attack) -- so a
+    -- 3rd party can't free-hit you mid-fight. Target Only still governs logging/learn noise.
+    guardThirdParty = true,
 }
 local FACING_DOT = 0.15
 
@@ -616,7 +620,11 @@ end
 
 local function react(attacker, id, trk)
     if attacker == LP then return end
-    if S.targetOnly and not isTarget(attacker) then return end   -- only the Target Select target
+    -- Target Only restricts reactions to your locked target -- EXCEPT that a 3rd party can hit
+    -- you mid-fight, so with Guard 3rd Parties on we still react to anyone. The facing + in-range
+    -- + known-attack gates below keep this from misfiring on distant/irrelevant players; only a
+    -- real incoming threat gets parried/dodged. Target Only still gates logging + first-learn.
+    if S.targetOnly and not isTarget(attacker) and not S.guardThirdParty then return end
     -- We're comboing this person (hit priority) -> they're in hitstun, can't hit us; don't
     -- parry their stun/block. Priority ends when they block/dash/heavy out (cleared below).
     if hasPriority(attacker) then return end
@@ -845,8 +853,9 @@ function GKN.register()
     subToggle(holder, 9, "Auto-Learn Anims",    "autoClass")
     subToggle(holder, 10, "Auto-Tune (per opponent)", "autoTune")
     subToggle(holder, 11, "Target Only",        "targetOnly")
-    subToggle(holder, 12, "Log New Anims",      "logNew")
-    subToggle(holder, 13, "Debug Timing",       "debug")
+    subToggle(holder, 12, "Guard 3rd Parties",  "guardThirdParty")
+    subToggle(holder, 13, "Log New Anims",      "logNew")
+    subToggle(holder, 14, "Debug Timing",       "debug")
 
     components.Section(holder, "Tuning").LayoutOrder = 20
     -- With Auto-Tune ON these four are the STARTING point; the tuner adapts them per
