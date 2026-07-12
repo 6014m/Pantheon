@@ -70,6 +70,10 @@ local GKN = {}
 local CFG = {   -- numeric tunables
     windup = 0.33, perfectLead = 0.07, holdTime = 0.35,
     heavyWindup = 0.50, dodgeLead = 0.05, chargeWindow = 0.60,
+    -- Click Cancel: how long after an enemy STARTS an attack we keep withholding your
+    -- M1 so you never swing into their hit (and trade). Heavies get +0.4s on top since
+    -- they land later. Covers the whole windup so your auto-parry can do its job.
+    cancelWindow = 0.55,
     -- when an anim has no usable hit marker: fraction of the swing that elapses
     -- before the hit lands (fallback only; marker timing is exact)
     hitFrac = 0.5,
@@ -173,6 +177,7 @@ for _, id in ipairs(SEED_LOGGED) do SUSPECT[id] = true end
 local conns = {}
 local function track(c) conns[#conns + 1] = c; return c end
 local watched, charging, blocking, lastReact = {}, {}, {}, {}
+local threats = {}   -- attacker -> expiry tick, for Click Cancel (any incoming attack)
 local gripping, carried, spamActive, blockActive, casBound = false, false, false, false, false
 local gripConn = nil   -- Heartbeat driving the grip click stream (nil while idle)
 local sizeCache = setmetatable({}, { __mode = "k" })   -- char -> stable height (weak; GCs with the char)
@@ -256,12 +261,29 @@ local function clickBurst(n)
     end
 end
 
-local function anyEnemyCharging()
+-- Click Cancel threat tracking. noteThreat() marks that an attacker just STARTED an
+-- attack (any kind); the mark lasts through the windup so we withhold your M1 until
+-- their hit has come and gone. anyIncoming() is true while a live threat is still
+-- aimed at you and in range -- ANY attack, not just heavies, so plain M1 trades are
+-- withheld too (the whole point of "never get hit").
+local function noteThreat(attacker, kind)
+    local w = (kind == "heavy") and (CFG.cancelWindow + 0.40) or CFG.cancelWindow
+    threats[attacker] = tick() + w
+end
+local function anyIncoming()
+    local mh = myRoot(); if not mh then return false end
     local now = tick()
-    for plr, exp in pairs(charging) do
+    for plr, exp in pairs(threats) do
         if exp > now then
-            local d = distOf(plr); if d and d <= effRange(plr) then return true end
-        else charging[plr] = nil end
+            local ac = plr.Character; local h = ac and ac:FindFirstChild("HumanoidRootPart")
+            if h then
+                local delta = mh.Position - h.Position
+                -- their attack only threatens us if they're close enough AND facing us
+                if delta.Magnitude <= effRange(plr) + 3 and h.CFrame.LookVector:Dot(delta.Unit) >= FACING_DOT then
+                    return true
+                end
+            end
+        else threats[plr] = nil end
     end
     return false
 end
@@ -546,7 +568,6 @@ local function react(attacker, id, trk)
     local hold  = t and t.hold  or CFG.holdTime
 
     if kind == "heavy" then
-        charging[attacker] = now + CFG.chargeWindow
         if S.dodge then
             scheduleReaction(attacker, trk, id, kind, CFG.heavyWindup, dlead, function()
                 tapKey(DODGE_KEY); counts.dodge = counts.dodge + 1; markReaction(nm, kind, 0)
@@ -569,7 +590,7 @@ local function startGripSpam()
     spamActive = true
     gripConn = RS.Heartbeat:Connect(function()
         if not (gripping and S.armed and S.gripSpam) or carried then stopGripSpam(); return end
-        if S.clickCancel and anyEnemyCharging() then return end   -- withhold M1 into a charging heavy
+        if S.clickCancel and anyIncoming() then return end   -- withhold grip M1 into any incoming attack
         clickBurst(math.max(1, math.floor(CFG.spamBurst)))
     end)
 end
@@ -603,6 +624,10 @@ local function hookChar(plr, char)
             blocking[plr] = true
             trk.Stopped:Connect(function() blocking[plr] = nil end)
         end
+        -- Click Cancel threat: flag ANY attacker's attack (not just the parry target)
+        -- so we never M1-trade with someone we're not even parrying.
+        local ek = kindOf(id)
+        if ek then noteThreat(plr, ek) end
         react(plr, id, trk)
         if S.logNew and (not S.targetOnly or isTarget(plr)) and not KNOWN[id] and not seenNew[id] then
             local d = distOf(plr)
@@ -715,7 +740,8 @@ function GKN.register()
     tuneSlider(holder, 25, "Block Hold (base)",  "holdTime",    0.10, 0.80, 0.05)
     tuneSlider(holder, 26, "Heavy Windup (fallback)","heavyWindup", 0.20, 0.90, 0.01)
     tuneSlider(holder, 27, "Dodge Lead (base)",  "dodgeLead",   0.00, 0.25, 0.01)
-    tuneSlider(holder, 28, "Spam Burst (clicks/frame)","spamBurst", 1, 40, 1)
+    tuneSlider(holder, 28, "Click Cancel Window", "cancelWindow", 0.20, 1.00, 0.05)
+    tuneSlider(holder, 29, "Spam Burst (clicks/frame)","spamBurst", 1, 40, 1)
 
     local resetBtn = components.Button(holder, { text = "Reset Learned Anims", onClick = function()
         learnedClass = {}; counts.learned = 0; saveLearned()
@@ -736,7 +762,7 @@ function GKN.register()
     CAS:BindActionAtPriority("gkn_m1", function(_, st)
         if st ~= Enum.UserInputState.Begin or not S.armed then return Enum.ContextActionResult.Pass end
         if gripping then return Enum.ContextActionResult.Pass end   -- our own grip-spam clicks pass through
-        if S.clickCancel and anyEnemyCharging() then return Enum.ContextActionResult.Sink end
+        if S.clickCancel and anyIncoming() then return Enum.ContextActionResult.Sink end
         if S.guardBreak and frontBlocker() then
             tapKey(HEAVY_KEY); counts.gbreak = counts.gbreak + 1
             return Enum.ContextActionResult.Sink
@@ -776,7 +802,7 @@ function GKN.destroy()
     if casBound then pcall(function() CAS:UnbindAction("gkn_m1") end); casBound = false end
     if blockActive then pcall(function() VIM:SendKeyEvent(false, BLOCK_KEY, false, game) end); blockActive = false end
     watched, charging, blocking, lastReact, lastUnknown = {}, {}, {}, {}, {}
-    tune, pendingParry = {}, {}
+    threats, tune, pendingParry = {}, {}, {}
     gripping, carried = false, false
     if gripConn then pcall(function() gripConn:Disconnect() end); gripConn = nil end
     spamActive = false
