@@ -92,8 +92,9 @@ local CFG = {   -- numeric tunables
     -- before the hit lands (fallback only; marker timing is exact)
     hitFrac = 0.5,
     -- grip M1 spam fires spamBurst full clicks EVERY frame (Heartbeat-driven) so
-    -- the stream is continuous with no gaps; raise it for more clicks per frame.
-    spamBurst = 12,
+    -- the stream is continuous with no gaps; raise it for more clicks per frame. Bumped up
+    -- so a grip can't slip -- at ~60fps this is spamBurst*60 clicks/sec.
+    spamBurst = 24,
 }
 local S = {     -- feature toggles
     armed = true, parry = true, dodge = true, gripSpam = true,
@@ -511,13 +512,19 @@ end
 local function classFromName(name)
     local nm = string.lower(name or "")
     if nm == "" or nm == "keyframesequence" or nm == "animation" then return nil end
-    if nm:find("m2") or nm:find("heavy") or nm:find("charge") or nm:find("strong") or nm:find("smash") then return "heavy" end
+    if nm:find("m2") or nm:find("heavy") or nm:find("charge") or nm:find("strong") or nm:find("smash") or nm:find("slam") then return "heavy" end
     if nm:find("ehit") or nm:find("guardbreak") or nm:find("success") or nm:find("blockhit")
        or nm:find("parry") or nm:find("stun") or nm:find("react") then return "reaction" end
+    -- Attack words are checked BEFORE movement words, so a name with BOTH (e.g. "DashPunch",
+    -- "SprintKick", "RunningSlash") stays an ATTACK instead of being filed as movement. An attack
+    -- that whiffs or that we parry deals no damage but is still an attack -- its name must never
+    -- demote it. Only a name with a pure-movement word and NO attack word becomes "ignore".
+    if nm:find("m1") or nm:find("punch") or nm:find("kick") or nm:find("attack") or nm:find("combo")
+       or nm:find("slash") or nm:find("swing") or nm:find("strike") or nm:find("claw") or nm:find("jab")
+       or nm:find("hook") or nm:find("uppercut")
+       or nm:find("1st") or nm:find("2nd") or nm:find("3rd") or nm:find("4th") then return "m1" end
     if nm:find("dash") or nm:find("run") or nm:find("walk") or nm:find("idle") or nm:find("sprint")
        or nm:find("jump") or nm:find("carry") or nm:find("grip") or nm:find("emote") then return "ignore" end
-    if nm:find("m1") or nm:find("punch") or nm:find("kick") or nm:find("attack") or nm:find("combo")
-       or nm:find("1st") or nm:find("2nd") or nm:find("3rd") or nm:find("4th") then return "m1" end
     return nil
 end
 local function scanAnim(id)
@@ -552,8 +559,16 @@ local function scanAnim(id)
         -- too much and was mis-dodging basic M1s.
         if S.autoClass and not KNOWN[id] then
             local nc = classFromName(nm)
-            if nc and learnedClass[id] ~= nc then
-                commitClass(id, nc, "name", learnedClass[id] == nil)   -- announce only if brand-new
+            local cur = learnedClass[id]
+            -- A landed hit is ground truth; a name is a guess. NEVER let the name-scan demote a
+            -- PROVEN attack (already m1/heavy, e.g. damage-confirmed) down to a non-attack -- no
+            -- damage from a whiff or a successful parry does not mean it stopped being an attack.
+            -- Name may still refine m1<->heavy and classify things we haven't proven yet.
+            local demotes = (nc == "ignore" or nc == "reaction") and (cur == "m1" or cur == "heavy")
+            if nc and cur ~= nc and not demotes then
+                commitClass(id, nc, "name", cur == nil)   -- announce only if brand-new
+            elseif demotes then
+                log.info(("[gakuran] name-scan wanted %s -> %s, but it's a PROVEN attack -> keeping"):format(id, nc))
             end
         end
     end)
@@ -686,7 +701,10 @@ local function startGripSpam()
     spamActive = true
     gripConn = RS.Heartbeat:Connect(function()
         if not (gripping and S.armed and S.gripSpam) or carried then stopGripSpam(); return end
-        if S.clickCancel and anyIncoming() then return end   -- withhold grip M1 into any incoming attack
+        -- NOTE: Click Cancel does NOT gate grip spam. Withholding your M1 into an incoming attack
+        -- is right for a neutral trade, but during a grip it starves the click stream and the
+        -- grip slips -- exactly what we must never allow. Auto-parry still holds F independently,
+        -- so you keep blocking the incoming hit AND keep clicking to hold the grip.
         clickBurst(math.max(1, math.floor(CFG.spamBurst)))
     end)
 end
@@ -868,7 +886,7 @@ function GKN.register()
     tuneSlider(holder, 27, "Dodge Lead (base)",  "dodgeLead",   0.00, 0.25, 0.01)
     tuneSlider(holder, 28, "Click Cancel Window", "cancelWindow", 0.20, 1.00, 0.05)
     tuneSlider(holder, 29, "Hit Priority Window", "priorityWindow", 0.20, 1.20, 0.05)
-    tuneSlider(holder, 30, "Spam Burst (clicks/frame)","spamBurst", 1, 40, 1)
+    tuneSlider(holder, 30, "Spam Burst (clicks/frame)","spamBurst", 1, 80, 1)
     tuneSlider(holder, 31, "Learn/Correct Window","confirmWindow", 0.60, 2.00, 0.05)
 
     local resetBtn = components.Button(holder, { text = "Reset Learned Anims", onClick = function()
