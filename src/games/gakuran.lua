@@ -170,6 +170,14 @@ local IGNORE_NOISE = {
     ["81977030245036"]=true,   -- Capoeira Walk
     ["102823909334302"]=true,  -- Parryer (enemy perfect block)
 }
+-- Defensive anims: a blocking/parrying enemy is REACTING to us, not attacking. They must NEVER
+-- become a parry target -- not via a stale learned entry, not via the reclassifier. Covers the
+-- ENEMY_BLOCK set plus the enemy perfect-block "Parryer" (which lives in IGNORE_NOISE). This is
+-- the hard guard: after an enemy parry they often counter and hit you inside the confirm window,
+-- so the reclassifier could otherwise blame the PARRY for that damage and start parrying blocks.
+local DEFENSE = { ["102823909334302"]=true }   -- Parryer (enemy perfect block)
+for id in pairs(ENEMY_BLOCK) do DEFENSE[id] = true end
+
 local KNOWN = { ["180435571"]=true }
 for _, t in ipairs({ M1_PARRY, HEAVY_DODGE, ENEMY_BLOCK, GRIP_SELF, CARRY_SELF, REACTIONS, IGNORE_NOISE }) do
     for id in pairs(t) do KNOWN[id] = true end
@@ -360,6 +368,7 @@ local function guessKind() return "m1" end
 
 -- Effective attack kind: static DB first, then learned. Returns "m1" | "heavy" | nil.
 local function kindOf(id)
+    if DEFENSE[id] then return nil end   -- a block/parry is never an attack, whatever a stale learned entry says
     if M1_PARRY[id]    or learnedClass[id] == "m1"    then return "m1" end
     if HEAVY_DODGE[id] or learnedClass[id] == "heavy" then return "heavy" end
     return nil
@@ -375,6 +384,7 @@ local function attackShaped(len) return len == 0 or (len >= 0.2 and len <= 2.2) 
 --   "noise"   -> currently MIS-FILED as movement (dash/run/idle noise): needs CORRECT_HITS
 --                landed hits before we override the label, so a coincidence can't flip it.
 local function correctRole(id)
+    if DEFENSE[id] then return nil end                       -- block/parry: never learnable as an attack
     if kindOf(id) then return nil end
     if learnedClass[id] == "reaction" then return nil end    -- learned as a hit-result -> never an attack
     if learnedClass[id] == "ignore"   then return "noise" end -- name-scan called it movement: correct only on repeat hits
@@ -771,6 +781,12 @@ local function loadSettings()
         if writefile then pcall(function() writefile(LEARN_FILE, "{}") end) end
         log.info("[gakuran] classifier upgraded -> cleared stale learned anims")
     end
+    -- Scrub any block/parry the reclassifier may have mis-learned as an attack in an earlier
+    -- session (blamed for a post-parry counter's damage). The kindOf/correctRole guards stop it
+    -- going forward; this cleans what's already persisted so it stops being parried immediately.
+    local scrubbed = false
+    for id in pairs(DEFENSE) do if learnedClass[id] then learnedClass[id] = nil; scrubbed = true end end
+    if scrubbed then saveLearned(); log.info("[gakuran] scrubbed mis-learned block/parry anims from learned DB") end
     local n = 0; for _ in pairs(learnedClass) do n = n + 1 end; counts.learned = n
 end
 
