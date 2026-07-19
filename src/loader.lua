@@ -54,6 +54,7 @@ local files = {
     { "modules.aim.rotation_lock", "modules/aim/rotation_lock.lua" },
     { "modules.aim.lockon",        "modules/aim/lockon.lua" },
     { "modules.aim.target_select", "modules/aim/target_select.lua" },
+    { "modules.aim.align_keys",    "modules/aim/align_keys.lua" },
     { "modules.aim.init",          "modules/aim/init.lua" },
     { "modules.tech.engine",       "modules/tech/engine.lua" },
     { "modules.tech.scanner",      "modules/tech/scanner.lua" },

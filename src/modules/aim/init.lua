@@ -11,6 +11,7 @@ local shiftlock    = require("modules.aim.shiftlock")
 local rotationLock = require("modules.aim.rotation_lock")
 local lockon       = require("modules.aim.lockon")
 local targetSelect = require("modules.aim.target_select")
+local alignKeys    = require("modules.aim.align_keys")
 local log          = require("core.log")
 
 local module = {}
@@ -22,6 +23,7 @@ function module.register()
     rotationLock.init()
     lockon.init()
     targetSelect.init()
+    alignKeys.init()
     -- Shiftlock's rotation pin yields while Rotation Lock drives the body so
     -- the two don't fight over the character's facing.
     shiftlock.setExternalSkipRotation(function()
@@ -93,6 +95,29 @@ function module.register()
             { type = "toggle", name = "Allow game shiftlock when Pantheon off",
               key = "allow_game", default = false,
               onChange = function(v) shiftlock.setAllowGameShiftlock(v) end },
+        },
+    }).root)
+
+    -- Alignment Keys: classic , / . camera-rotation keys (removed from Roblox's
+    -- default camera). A faithful port of RootCamera: comma snaps the camera 45
+    -- degrees left, period 45 right, instant per press. See modules.aim.align_keys.
+    move:add(feature.declare({
+        id          = "aim.align_keys",
+        name        = "Alignment Keys",
+        description = "Re-enables Roblox's classic camera-rotation keys, a faithful port of the old RootCamera behavior: , (comma) snaps the camera 45 degrees left and . (period) snaps it 45 degrees right, instantly on each press -- no hold, no spin. Roblox removed this from the default camera; Pantheon replays the same yaw snap by orbiting the camera around its focus.",
+        default     = false,
+        onToggle    = function(v) alignKeys.setEnabled(v) end,
+        settings = {
+            { type = "keybind", name = "Rotate left (,)",  id = "aim.align_left",
+              default = Enum.KeyCode.Comma,
+              onPress = function() alignKeys.rotateLeft() end },
+            { type = "keybind", name = "Rotate right (.)", id = "aim.align_right",
+              default = Enum.KeyCode.Period,
+              onPress = function() alignKeys.rotateRight() end },
+            -- 45 is the authentic increment (RootCamera's eight2Pi = pi/4).
+            { type = "slider", name = "Snap increment (deg)",
+              key = "increment", min = 15, max = 90, step = 15, default = 45,
+              onChange = function(v) alignKeys.setIncrement(v) end },
         },
     }).root)
 
@@ -229,6 +254,7 @@ function module.destroy()
     pcall(function() if rotationLock.destroy then rotationLock.destroy() end end)
     pcall(function() if lockon.destroy       then lockon.destroy()       end end)
     pcall(function() if shiftlock.destroy    then shiftlock.destroy()    end end)
+    pcall(function() if alignKeys.destroy    then alignKeys.destroy()    end end)
     pcall(function() if highlight.destroy    then highlight.destroy()    end end)
 end
 
