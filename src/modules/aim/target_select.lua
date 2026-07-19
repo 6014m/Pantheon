@@ -54,18 +54,35 @@ local function step()
     s.lastStep = now
 
     local t = state.target
+    -- "Skip dead / shielded" (state.checkHealthEnabled) governs RETENTION too:
+    -- when it's OFF, keep the target locked through death (and respawn) -- only
+    -- drop them when they leave entirely (player left the game / NPC model gone)
+    -- or become friendly. When it's ON, a dead/removed target is released as
+    -- before so aim moves on to the next one.
     if state.target_type == "player" then
-        local char = t and t.Character
-        local hum  = char and char:FindFirstChildOfClass("Humanoid")
-        if not hum or hum.Health <= 0 or not char.Parent or state.isFriendly(t) then
+        if not t or not t.Parent or state.isFriendly(t) then  -- left game / friendly
             releaseTarget()
             return
         end
+        if state.checkHealthEnabled then
+            local char = t.Character
+            local hum  = char and char:FindFirstChildOfClass("Humanoid")
+            if not hum or hum.Health <= 0 or not char.Parent then
+                releaseTarget()
+                return
+            end
+        end
     elseif state.target_type == "npc" then
-        local hum = t and t:FindFirstChildOfClass("Humanoid")
-        if not hum or hum.Health <= 0 or not t.Parent then
+        if not t or not t.Parent then  -- model despawned entirely
             releaseTarget()
             return
+        end
+        if state.checkHealthEnabled then
+            local hum = t:FindFirstChildOfClass("Humanoid")
+            if not hum or hum.Health <= 0 then
+                releaseTarget()
+                return
+            end
         end
     end
 
