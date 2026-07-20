@@ -356,17 +356,44 @@ local QTE_KEYS = { W = Enum.KeyCode.W, A = Enum.KeyCode.A, S = Enum.KeyCode.S, D
 local qte = {
     enabled  = false,
     humanize = true,
-    reactMs  = 200,   -- base reaction delay per new letter (ms)
+    reactMs  = 200,   -- reaction delay (ms) before reacting to the bar dropping
     jitterMs = 120,   -- random extra on top (ms)
-    whiffPct = 12,    -- % chance a step gets an extra "whiff" delay
-    pausePct = 10,    -- % chance of ONE longer hesitation per QTE
+    whiffPct = 12,    -- % chance to react late (a "whiff") when the bar dips
+    pausePct = 10,    -- % chance of ONE longer hesitation per QTE (only while safely ahead)
     conn = nil,
     -- runtime
+    active = false, pushing = false,
+    targetLo = 0.53, targetHi = 0.62,   -- hover band (fraction of the bar that's yours)
     lastLetter = nil, lastPress = 0, reactReady = nil, pauseUntil = 0, pauseUsed = false,
 }
 
 local function qteReset()
+    qte.active = false; qte.pushing = false
     qte.lastLetter = nil; qte.reactReady = nil; qte.pauseUntil = 0; qte.pauseUsed = false
+end
+
+-- Fresh per-QTE targets so each struggle looks a little different. The band is
+-- kept just above 0.5 (even) so it "barely wins" instead of maxing the bar.
+local function qteInitTargets()
+    qte.targetLo = 0.52 + math.random() * 0.03   -- react when your fill dips to ~0.52-0.55
+    qte.targetHi = 0.60 + math.random() * 0.06   -- ease off once ahead by ~0.60-0.66
+    qte.pushing = false; qte.reactReady = nil
+    qte.pauseUntil = 0; qte.pauseUsed = false
+    qte.active = true
+end
+
+-- Your share of the struggle bar: Bar1 (yours) / Health width. >0.5 winning,
+-- <0.5 losing. Path confirmed by the QTE dump: QTE.Health.Bar1.
+local function qteFraction()
+    local pgui = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    local scr  = pgui and pgui:FindFirstChild("QTE")
+    if not scr then return nil end
+    local health = scr:FindFirstChild("Health")
+    local bar1   = health and health:FindFirstChild("Bar1")
+    if not health or not bar1 then return nil end
+    local total = health.AbsoluteSize.X
+    if total <= 0 then return nil end
+    return bar1.AbsoluteSize.X / total
 end
 
 -- Current required key for an ACTIVE QTE, or nil. Layered guards = misfire-proof.
@@ -398,42 +425,60 @@ end
 local function qteStep()
     if not qte.enabled then return end
     local kc, letter = qteCurrentKey()
-    if not kc then qteReset(); return end
+    if not kc then qteReset(); return end       -- no active QTE
+    if not qte.active then qteInitTargets() end  -- new QTE just started
     local now = os.clock()
 
-    -- Base (fast) behaviour when Humanize is off: instant, mash-cadence re-press.
+    -- Base (fast) behaviour when Humanize is off: slam it to a quick win.
     if not qte.humanize then
-        if letter ~= qte.lastLetter or (now - qte.lastPress) >= 0.08 then
+        if letter ~= qte.lastLetter or (now - qte.lastPress) >= 0.05 then
             qteTap(kc); qte.lastLetter = letter; qte.lastPress = now
         end
         return
     end
 
-    -- Humanized: sit out an active hesitation window first.
-    if now < qte.pauseUntil then return end
+    -- Humanized: keep your share of the bar hovering just above half so it
+    -- barely wins instead of maxing out.
+    local frac = qteFraction()
 
-    if letter ~= qte.lastLetter then
-        qte.lastLetter = letter
-        -- one longer hesitation per QTE (the "not press for a bit" pass)
-        if (not qte.pauseUsed) and math.random(100) <= qte.pausePct then
-            qte.pauseUsed = true
-            qte.pauseUntil = now + 0.7 + math.random() * 0.9   -- ~0.7-1.6s
-            qte.reactReady = qte.pauseUntil + qteReactionDelay()
-            return
+    -- Bar unreadable -> safe human mash so we never accidentally lose.
+    if not frac then
+        if letter ~= qte.lastLetter then
+            qte.lastLetter = letter
+            qte.reactReady = now + qteReactionDelay()
+        elseif qte.reactReady and now >= qte.reactReady then
+            qteTap(kc); qte.lastPress = now; qte.reactReady = now + 0.10 + math.random() * 0.10
         end
-        -- normal human reaction to a new letter; occasionally a late "whiff"
-        local delay = qteReactionDelay()
-        if math.random(100) <= qte.whiffPct then delay = delay + 0.15 + math.random() * 0.25 end
-        qte.reactReady = now + delay
         return
     end
 
-    -- Same letter still up: press once the reaction window elapses, then re-press
-    -- at a human mash cadence for consecutive-identical steps.
-    if qte.reactReady and now >= qte.reactReady then
+    -- serve out an active hesitation
+    if now < qte.pauseUntil then return end
+
+    if frac >= qte.targetHi then
+        -- comfortably ahead: ease off, let the bar drift back toward the band.
+        qte.pushing = false; qte.reactReady = nil
+        -- take the single per-QTE hesitation now, while it's safe to.
+        if (not qte.pauseUsed) and math.random(100) <= qte.pausePct then
+            qte.pauseUsed = true
+            qte.pauseUntil = now + 0.6 + math.random() * 0.7   -- ~0.6-1.3s
+        end
+        return
+    end
+
+    if frac <= qte.targetLo and not qte.pushing then
+        -- bar dropped to the danger line: react like a human (sometimes late).
+        qte.pushing = true
+        local delay = qteReactionDelay()
+        if math.random(100) <= qte.whiffPct then delay = delay + 0.12 + math.random() * 0.2 end
+        qte.reactReady = now + delay
+    end
+
+    -- while pushing, mash the shown key at a human cadence until back above targetHi.
+    if qte.pushing and qte.reactReady and now >= qte.reactReady then
         qteTap(kc)
         qte.lastPress = now
-        qte.reactReady = now + 0.12 + math.random() * 0.10   -- ~120-220ms
+        qte.reactReady = now + 0.09 + math.random() * 0.08   -- ~90-170ms
     end
 end
 
@@ -475,7 +520,7 @@ function JJS.register()
     box:add(feature.declare({
         id          = "jjs.auto_qte",
         name        = "Auto QTE",
-        description = "Auto-completes the on-screen struggle QTE (e.g. Higuruma's Deadly Sentencing). Reads the game's own prompt (PlayerGui.QTE.QTE_PC) and presses exactly the shown W/A/S/D key, only while that QTE is active -- it can't misfire onto the hotbar or anything else. Humanize (on by default) adds human reaction time, the odd whiff, and a rare ~1s hesitation so it looks like a person barely scraping the win instead of a frame-perfect bot. Turn Humanize off for instant frame-perfect clears.",
+        description = "Auto-completes the struggle QTE (e.g. Higuruma's Deadly Sentencing). Reads the game's own prompt (PlayerGui.QTE.QTE_PC) and presses exactly the shown W/A/S/D key, only while that QTE is active -- it can't misfire onto the hotbar or anything else. Humanize (on by default) is bar-aware: it watches your side of the struggle bar (QTE.Health.Bar1) and only pushes when your fill dips toward half, easing off once you're ahead -- so it hovers just above 0.5 and BARELY wins instead of maxing the bar, with human reaction time, the odd late whiff, and a rare hesitation while safely ahead. Turn Humanize off to slam it to an instant win. Sliders tune reaction / whiff / hesitation; nudge them up if it wins too cleanly, down if it ever loses.",
         default     = false,
         onToggle    = function(v) qte.enabled = v and true or false; if not v then qteReset() end end,
         settings = {
