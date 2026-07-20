@@ -519,7 +519,7 @@ function JJS.register()
     -- Auto QTE: auto-clears the struggle QTE (Higuruma's Deadly Sentencing etc).
     box:add(feature.declare({
         id          = "jjs.auto_qte",
-        name        = "Auto QTE",
+        name        = "Auto Final Judgement",
         description = "Auto-completes the struggle QTE (e.g. Higuruma's Deadly Sentencing). Reads the game's own prompt (PlayerGui.QTE.QTE_PC) and presses exactly the shown W/A/S/D key, only while that QTE is active -- it can't misfire onto the hotbar or anything else. Humanize (on by default) is bar-aware: it watches your side of the struggle bar (QTE.Health.Bar1) and only pushes when your fill dips toward half, easing off once you're ahead -- so it hovers just above 0.5 and BARELY wins instead of maxing the bar, with human reaction time, the odd late whiff, and a rare hesitation while safely ahead. Turn Humanize off to slam it to an instant win. Sliders tune reaction / whiff / hesitation; nudge them up if it wins too cleanly, down if it ever loses.",
         default     = false,
         onToggle    = function(v) qte.enabled = v and true or false; if not v then qteReset() end end,
