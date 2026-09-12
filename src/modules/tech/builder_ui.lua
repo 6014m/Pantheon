@@ -35,10 +35,10 @@ local CONDITIONS = {
     { id = "target_playing", label = "Target playing anim" },
 }
 -- palette buttons (Release is added automatically with Hold, not its own button)
-local ACTION_TYPES = { "look", "rotate", "during", "wait", "within", "return", "feature", "key", "hold", "usebtn" }
+local ACTION_TYPES = { "look", "rotate", "during", "wait", "within", "return", "feature", "key", "click", "hold", "usebtn" }
 local STEP_LABEL   = { look = "Look", rotate = "Rotate", wait = "Wait", during = "During",
                        within = "Within", ["return"] = "Return", feature = "Use", key = "Press",
-                       hold = "Hold", release = "Release", usebtn = "Use Move" }
+                       hold = "Hold", release = "Release", usebtn = "Use Move", click = "Click" }
 local YAW_PRESETS  = { 180, 135, 90, 45, 0, -45, -90, -135, -180 }
 
 -- Scratch-style category coloring. Block fill = category color; the action's
@@ -54,7 +54,7 @@ local CATEGORY = {
     -- sensing / gating
     within = "sense",
     -- actions / "operators"
-    feature = "action", key = "action", usebtn = "action",
+    feature = "action", key = "action", usebtn = "action", click = "action",
 }
 local CAT_COLOR = {
     motion  = Color3.fromRGB(76, 151, 255),    -- blue
@@ -539,10 +539,16 @@ local function buildChip(parent, i, act)
             val.Text = "press a key..."
             local conn
             conn = UIS.InputBegan:Connect(function(input)
-                if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
-                if input.KeyCode == Enum.KeyCode.Unknown then return end
-                if input.KeyCode ~= Enum.KeyCode.Escape then
-                    local kn = (tostring(input.KeyCode):gsub("Enum.KeyCode.", ""))
+                local kn
+                local ut = input.UserInputType
+                if ut == Enum.UserInputType.MouseButton1 or ut == Enum.UserInputType.MouseButton2 or ut == Enum.UserInputType.MouseButton3 then
+                    if act.type == "key" then return end   -- Press stays keyboard-only; use a Click step for M1/M2
+                    kn = (tostring(ut):gsub("Enum.UserInputType.", ""))
+                elseif ut == Enum.UserInputType.Keyboard then
+                    if input.KeyCode == Enum.KeyCode.Unknown then return end
+                    if input.KeyCode ~= Enum.KeyCode.Escape then kn = (tostring(input.KeyCode):gsub("Enum.KeyCode.", "")) end
+                else return end
+                if kn then
                     act.key = kn
                     -- Hold + Release share one key, so set both halves of the pair
                     if act.holdId then
@@ -552,6 +558,15 @@ local function buildChip(parent, i, act)
                 val.Text = act.key and ("key: " .. act.key) or "(click, press a key)"
                 conn:Disconnect()
             end)
+        end)
+    elseif act.type == "click" then
+        -- mouse click at the cursor: click cycles M1 -> M2 -> M3
+        act.button = act.button or "M1"
+        val = Instance.new("TextButton"); val.AutoButtonColor = false
+        val.Text = act.button
+        val.MouseButton1Click:Connect(function()
+            act.button = ({ M1 = "M2", M2 = "M3", M3 = "M1" })[act.button] or "M1"
+            val.Text = act.button
         end)
     elseif act.type == "usebtn" then
         -- pick which hotbar move's GUI button this step fires (from the live scan)
@@ -976,6 +991,7 @@ local function openOrEditor(orBlock)
             elseif t == "rotate" then return { x = 180 }
             elseif t == "wait" then return { seconds = 0.5 }
             elseif t == "within" then return { studs = 5 }
+            elseif t == "click" then return { button = "M1" }
             end
             return {}
         end
@@ -990,7 +1006,7 @@ local function openOrEditor(orBlock)
             b.MouseButton1Click:Connect(function() mc:addBlock(t, defaultParamsFor(t)) end)
         end
         for _, t in ipairs(CanvasUI.HAT_TYPES) do paletteBtn(t) end
-        for _, t in ipairs({ "look", "rotate", "wait", "within", "return", "feature", "key", "usebtn" }) do paletteBtn(t) end
+        for _, t in ipairs({ "look", "rotate", "wait", "within", "return", "feature", "key", "click", "usebtn" }) do paletteBtn(t) end
     end
 
     makeBranchSection(1)
@@ -1123,11 +1139,12 @@ local function openBranchEditor(andBlock)
             elseif t == "rotate" then return { x = 180 }
             elseif t == "wait" then return { seconds = 0.5 }
             elseif t == "within" then return { studs = 5 }
+            elseif t == "click" then return { button = "M1" }
             end
             return {}
         end
 
-        for _, t in ipairs({ "look", "rotate", "wait", "within", "return", "feature", "key", "usebtn" }) do
+        for _, t in ipairs({ "look", "rotate", "wait", "within", "return", "feature", "key", "click", "usebtn" }) do
             local c = colorOf(t)
             local b = Instance.new("TextButton")
             b.BackgroundColor3 = Color3.fromRGB(math.floor(c.R*255*0.78), math.floor(c.G*255*0.78), math.floor(c.B*255*0.78))
@@ -1518,6 +1535,7 @@ rebuild = function()
             elseif t == "rotate" then return { x = 180 }
             elseif t == "wait" then return { seconds = 0.5 }
             elseif t == "within" then return { studs = 5 }
+            elseif t == "click" then return { button = "M1" }
             elseif t == "feature" then local fa = feature.all(); return { feature = fa[1] and fa[1].id or nil }
             elseif t == "usebtn" then local res = scanner.cached() or scanner.scan(); local m = (res.buttons or {})[1]; return { move = m and m.name or nil }
             end

@@ -55,7 +55,7 @@ local CATEGORY = {
     wait = "control", during = "control", ["return"] = "control",
     hold = "control", release = "control", ["and"] = "control", ["or"] = "control",
     within = "sense",
-    feature = "action", key = "action", usebtn = "action",
+    feature = "action", key = "action", usebtn = "action", click = "action",
     -- Hat blocks (event triggers). Each carries the trigger params on its
     -- own .params table; builder_ui detects a hat at the top of a chain at
     -- Save and extracts it into tech.trigger.
@@ -74,7 +74,7 @@ local CAT_COLOR = {
 local STEP_LABEL = {
     look = "Look", rotate = "Rotate", wait = "Wait", during = "During",
     within = "Within", ["return"] = "Return", feature = "Use", key = "Press",
-    hold = "Hold", release = "Release", usebtn = "Use Move", ["and"] = "AND", ["or"] = "OR",
+    hold = "Hold", release = "Release", usebtn = "Use Move", click = "Click", ["and"] = "AND", ["or"] = "OR",
     event_key         = "When key",
     event_anim        = "When my anim",
     event_target_anim = "When target anim",
@@ -207,14 +207,26 @@ do
                 if blk._keyCaptureConn then blk._keyCaptureConn:Disconnect(); blk._keyCaptureConn = nil end
                 b.Text = "press a key..."
                 blk._keyCaptureConn = UIS.InputBegan:Connect(function(input)
-                    if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
-                    if input.KeyCode == Enum.KeyCode.Unknown then return end
-                    if input.KeyCode ~= Enum.KeyCode.Escape then
-                        p.key = (tostring(input.KeyCode):gsub("Enum.KeyCode.", ""))
-                    end
+                    local ut = input.UserInputType
+                    if ut == Enum.UserInputType.MouseButton1 or ut == Enum.UserInputType.MouseButton2 or ut == Enum.UserInputType.MouseButton3 then
+                        if t == "key" then return end   -- Press stays keyboard-only; use a Click block for M1/M2
+                        p.key = (tostring(ut):gsub("Enum.UserInputType.", ""))
+                    elseif ut == Enum.UserInputType.Keyboard then
+                        if input.KeyCode == Enum.KeyCode.Unknown then return end
+                        if input.KeyCode ~= Enum.KeyCode.Escape then
+                            p.key = (tostring(input.KeyCode):gsub("Enum.KeyCode.", ""))
+                        end
+                    else return end
                     b.Text = p.key and ("key: " .. p.key) or "(click, press a key)"
                     if blk._keyCaptureConn then blk._keyCaptureConn:Disconnect(); blk._keyCaptureConn = nil end
                 end)
+            end)
+        elseif t == "click" then
+            p.button = p.button or "M1"
+            local b = valBtn(blk, p.button)
+            guardedClick(b, function()
+                p.button = ({ M1 = "M2", M2 = "M3", M3 = "M1" })[p.button] or "M1"
+                b.Text = p.button
             end)
         elseif t == "feature" then
             local function featName(id)

@@ -217,6 +217,28 @@ ACTIONS.key = function(a)
     task.wait(tonumber(a.hold) or 0.04)
     VIM:SendKeyEvent(false, kc, false, game)
 end
+-- Mouse buttons: "MouseButton1"/"M1" -> 0, "MouseButton2"/"M2" -> 1, "MouseButton3"/"M3" -> 2.
+-- Returns nil for anything that isn't a mouse button (so callers can fall back to KeyCode).
+local MOUSE_BTN = { M1 = 0, M2 = 1, M3 = 2, MouseButton1 = 0, MouseButton2 = 1, MouseButton3 = 2 }
+local function mouseButtonOf(name) return name and MOUSE_BTN[tostring(name)] or nil end
+-- Send a mouse button down/up at the CURRENT cursor position. GetMouseLocation is
+-- inset-inclusive, which is the space VIM wants (fireButton adds +36 to
+-- AbsolutePosition for the same reason).
+local function sendMouse(btn, down)
+    local pos = UIS:GetMouseLocation()
+    VIM:SendMouseButtonEvent(pos.X, pos.Y, btn, down, game, 0)
+end
+-- Click step: press + release a mouse button where the cursor is (a.button =
+-- "M1"|"M2"|"M3", default M1; a.hold = seconds held, default one frame-ish).
+-- Goes through VIM so the game's own M1 handler sees a normal click.
+ACTIONS.click = function(a)
+    local btn = mouseButtonOf(a.button) or 0
+    sendMouse(btn, true)
+    task.wait(tonumber(a.hold) or 0.04)
+    sendMouse(btn, false)
+end
+Engine.mouseButtonOf = mouseButtonOf
+Engine.sendMouse = sendMouse
 Engine.ACTIONS = ACTIONS
 
 -- ===== conditions =====
@@ -579,11 +601,22 @@ local function runStep(a, ctx)
     elseif a.type == "hold" then
         -- press the key DOWN and keep it held until the matching Release
         -- (or the safety release at the end), so steps in between run while held.
-        local kc = a.key and safeKeyCode(a.key)
-        if kc then pcall(function() VIM:SendKeyEvent(true, kc, false, game) end); ctx.heldKeys[kc] = true end
+        -- a.key may also be a mouse button ("MouseButton1"/"M1" ...).
+        local mb = mouseButtonOf(a.key)
+        if mb then
+            pcall(sendMouse, mb, true); ctx.heldMouse[mb] = true
+        else
+            local kc = a.key and safeKeyCode(a.key)
+            if kc then pcall(function() VIM:SendKeyEvent(true, kc, false, game) end); ctx.heldKeys[kc] = true end
+        end
     elseif a.type == "release" then
-        local kc = a.key and safeKeyCode(a.key)
-        if kc then pcall(function() VIM:SendKeyEvent(false, kc, false, game) end); ctx.heldKeys[kc] = nil end
+        local mb = mouseButtonOf(a.key)
+        if mb then
+            pcall(sendMouse, mb, false); ctx.heldMouse[mb] = nil
+        else
+            local kc = a.key and safeKeyCode(a.key)
+            if kc then pcall(function() VIM:SendKeyEvent(false, kc, false, game) end); ctx.heldKeys[kc] = nil end
+        end
     elseif a.type == "feature" then
         if a.feature then
             if ctx.featRestore[a.feature] == nil then ctx.featRestore[a.feature] = feature.getEnabled(a.feature) end
@@ -643,15 +676,17 @@ local function runTech(tech, hold, triggerIndex)
         local ignoreWelds = firingTrig and firingTrig.ignoreWelds
         if ignoreWelds then state.techIgnoreWelds = true end
         local heldKeys = {}    -- keys pressed by a Hold step, released by a Release (or at the end)
+        local heldMouse = {}   -- mouse buttons (VIM index) held by a Hold step
         local featRestore = {} -- [featureId] = state BEFORE this tech toggled it, for Return/end
         local ctx = {
-            releaseAfterWait = false, heldKeys = heldKeys, featRestore = featRestore,
+            releaseAfterWait = false, heldKeys = heldKeys, heldMouse = heldMouse, featRestore = featRestore,
             triggerIndex = triggerIndex or 1,   -- which subtrigger fired (OR step reads this)
         }
         ctx.restoreAll = function(snap)
             releaseHold(snap)
             for id, prev in pairs(featRestore) do pcall(function() feature.setEnabled(id, prev) end); featRestore[id] = nil end
             for kc in pairs(heldKeys) do pcall(function() VIM:SendKeyEvent(false, kc, false, game) end); heldKeys[kc] = nil end
+            for mb in pairs(heldMouse) do pcall(sendMouse, mb, false); heldMouse[mb] = nil end
         end
         -- Wrap the whole run so a throw in any step can't leave `running` stuck
         -- true -- that would silently brick EVERY tech (the guard at the top of
@@ -684,6 +719,7 @@ local function runTech(tech, hold, triggerIndex)
                 ctx.restoreAll(false)
             else
                 for kc in pairs(heldKeys) do pcall(function() VIM:SendKeyEvent(false, kc, false, game) end) end
+                for mb in pairs(heldMouse) do pcall(sendMouse, mb, false) end
             end
         end)
         if not ok then
