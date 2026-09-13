@@ -376,6 +376,7 @@ function Canvas:_refreshBlockText(blk)
 end
 
 function Canvas:_fireChanged()
+    if self._loading then return end   -- loadActions fires once at the end instead of per block
     self.changed:Fire()
     if self.onChange then pcall(self.onChange) end
 end
@@ -586,7 +587,20 @@ function Canvas:addBlock(blockType, params, x, y)
     -- mode can shrink the block to 0 height (which was the most plausible
     -- explanation for the "thin sliver" rendering in the user's screenshot).
     f.AutomaticSize = Enum.AutomaticSize.None
-    f.Position = UDim2.fromOffset(x or 12, y or (#self.blocks * (BLOCK_H + 4) + 12))
+    if y == nil then
+        -- default drop = directly under the lowest chain tail, so the auto-snap
+        -- below always connects it (the old blocks*(H+4) guess drifted off the
+        -- gapless chain after a few blocks and left new steps floating).
+        local tail, bottom
+        for _, b in ipairs(self.blocks) do
+            if not b.next then
+                local by = b.frame.Position.Y.Offset + b.frame.Size.Y.Offset
+                if not bottom or by > bottom then bottom, tail = by, b end
+            end
+        end
+        if tail then x = x or tail.frame.Position.X.Offset; y = bottom else y = 12 end
+    end
+    f.Position = UDim2.fromOffset(x or 12, y)
     f.BackgroundColor3 = colorOf(blockType); f.BorderSizePixel = 0
     f.ZIndex = 2; f.Parent = self.frame
 
@@ -644,6 +658,7 @@ end
 -- saved tech opens visually identical to a Scratch stack).
 function Canvas:loadActions(actions)
     self:clear()
+    self._loading = true
     local y = 12
     local prev
     for _, a in ipairs(actions or {}) do
@@ -657,6 +672,9 @@ function Canvas:loadActions(actions)
         prev = blk
     end
     if prev then self:_layoutChain(chainHead(prev)) end
+    self._loading = false
+    self:_resizeToContent()
+    self:_fireChanged()
 end
 
 return Canvas

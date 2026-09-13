@@ -27,15 +27,15 @@ local gui, rootFrame, formScroll
 local canvas, canvasContainer   -- Scratch canvas + its wrapper Frame; persist across rebuilds so blocks don't get destroyed when the form re-renders
 local winDragConns = {}         -- global UIS connections for the window-drag handle; disconnected in Builder.destroy()
 local draft
-local animDropOpen = false   -- is the played-anim dropdown expanded right now
 
 local CONDITIONS = {
     { id = "locked_on",      label = "Locked on"          },
     { id = "shiftlock",      label = "Shiftlock on"       },
     { id = "target_playing", label = "Target playing anim" },
 }
--- palette buttons (Release is added automatically with Hold, not its own button)
-local ACTION_TYPES = { "look", "rotate", "during", "wait", "within", "return", "feature", "key", "click", "hold", "usebtn" }
+-- palette buttons. Hold + Release are separate steps: Hold presses a key/button
+-- down, Release lets it go (or the engine releases it at tech end / key-up).
+local ACTION_TYPES = { "look", "rotate", "during", "wait", "within", "return", "feature", "key", "click", "hold", "release", "usebtn" }
 local STEP_LABEL   = { look = "Look", rotate = "Rotate", wait = "Wait", during = "During",
                        within = "Within", ["return"] = "Return", feature = "Use", key = "Press",
                        hold = "Hold", release = "Release", usebtn = "Use Move", click = "Click" }
@@ -190,6 +190,12 @@ local function copyAction(a)
     return out
 end
 
+-- Fields that belong to the hat block (trigger type + its own params). Form-
+-- level gates (maxRange, ignoreWelds, conditions, targetAnimId) are NOT hat
+-- fields: copying them into the hat made the hat's stale copy overwrite the
+-- form's edits on Save ("Within X studs" / "Ignore welds" silently reverted).
+local HAT_FIELDS = { key = true, suppress = true, modkey = true, animId = true, animEnd = true, move = true, movekey = true }
+
 -- Map an engine trigger.event string -> the matching canvas hat block type.
 local function hatTypeForEvent(ev)
     if ev == "key" or ev == "keyhold" then return "event_key"
@@ -242,7 +248,7 @@ local function draftFromTech(t)
         if hatType then
             local hat = { type = hatType }
             for k, v in pairs(t.trigger or {}) do
-                if k ~= "event" and k ~= "conditions" and k ~= "subtriggers" then hat[k] = v end
+                if HAT_FIELDS[k] then hat[k] = v end
             end
             if hatType == "event_key" then hat.event = t.trigger.event end   -- "key" vs "keyhold"
             actions[#actions + 1] = hat
@@ -328,7 +334,7 @@ local function buildTechFromDraft(id)
         local hat = table.remove(actions, 1)
         trigger.event = eventForHat(hat)
         for k, v in pairs(hat) do
-            if k ~= "type" and k ~= "event" then trigger[k] = v end
+            if HAT_FIELDS[k] then trigger[k] = v end
         end
     end
 
@@ -353,7 +359,21 @@ local function onSave()
     if canvas then draft.actions = canvas:toActions() end
     local tech = buildTechFromDraft(id)
     engine.saveCustom(tech)
-    notify.success("Tech saved: " .. tech.name)
+    -- Say so when the tech can't fire as saved (it used to save silently and do nothing).
+    local trig = tech.trigger or {}
+    local armed
+    if trig.event == "or" then armed = #(trig.subtriggers or {}) > 0
+    elseif trig.event == "key" or trig.event == "keyhold" then armed = trig.key ~= nil and trig.key ~= "" and trig.key ~= Enum.KeyCode.Unknown
+    elseif trig.event == "move" then armed = trig.movekey ~= nil and trig.movekey ~= ""
+    elseif trig.event == "anim" or trig.event == "target_anim" then armed = trig.animId ~= nil and trig.animId ~= ""
+    else armed = false end
+    if not armed then
+        notify.warn("Saved '" .. tech.name .. "' but it has no trigger -- add a 'When ...' block and set its key/anim/move", 7)
+    elseif #(tech.actions or {}) == 0 then
+        notify.warn("Saved '" .. tech.name .. "' with no steps", 5)
+    else
+        notify.success("Tech saved: " .. tech.name)
+    end
     Builder.close()
 end
 
@@ -470,194 +490,8 @@ local function previewDraft()
     end)
 end
 
--- ---------- step chip (Scratch-style block) ----------
--- V0 of the Scratch rewrite: visual restyle of the existing chip rows. Colored
--- by category, rounded with category-tinted background, decorative top-notch
--- and bottom-tab so blocks visually "join" in the column. Drag-and-drop +
--- snap-to-connect + nested slots arrive in V1; this layer keeps the proven
--- click-to-add palette + ^/v reorder so we ship working blocks today.
+-- ---------- form (left pane) forward decl ----------
 local rebuild
-local function buildChip(parent, i, act)
-    local cat = catOf(act.type)
-    local fill = colorOf(act.type)
-
-    -- decorative "notch" above (in the gap of the UIListLayout) so the column
-    -- reads as one chain. The UIListLayout padding is set to 0 on the form so
-    -- consecutive blocks visually butt up against each other.
-    local f = Instance.new("Frame")
-    f.Size = UDim2.new(1, 0, 0, 38); f.BackgroundColor3 = fill; f.BorderSizePixel = 0
-    f.Parent = parent
-    corner(f, 10)
-    local s = stroke(f, theme.bgDark); s.Thickness = 2; s.Transparency = 0.4
-
-    -- bottom "tab" -- a tiny rectangle protruding from the block's bottom edge.
-    -- Visual only; on snap-connect (V1) this is the actual connector.
-    local tab = Instance.new("Frame")
-    tab.Size = UDim2.fromOffset(20, 3); tab.Position = UDim2.new(0, 22, 1, 0)
-    tab.BackgroundColor3 = fill; tab.BorderSizePixel = 0; tab.ZIndex = (f.ZIndex or 1) + 1
-    tab.Parent = f
-    local tabC = Instance.new("UICorner"); tabC.CornerRadius = UDim.new(0, 2); tabC.Parent = tab
-
-    -- left grip column = drag handle (visual only in V0; V1 wires it to a
-    -- real reorder drag). Currently the ^/v buttons handle reordering.
-    local grip = Instance.new("TextLabel")
-    grip.Size = UDim2.fromOffset(10, 24); grip.Position = UDim2.new(0, 4, 0.5, -12)
-    grip.BackgroundTransparency = 1
-    grip.Text = "::"; grip.TextColor3 = theme.fg
-    grip.Font = theme.fontBold; grip.TextSize = 14
-    grip.TextTransparency = 0.5
-    grip.Parent = f
-
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(0, 78, 1, 0); lbl.Position = UDim2.fromOffset(18, 0); lbl.BackgroundTransparency = 1
-    lbl.Text = i .. ".  " .. (STEP_LABEL[act.type] or act.type)
-    lbl.TextColor3 = theme.fg; lbl.Font = theme.fontBold; lbl.TextSize = 13
-    lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Parent = f
-
-    local val
-    if act.type == "wait" then
-        val = Instance.new("TextBox"); val.ClearTextOnFocus = false; val.PlaceholderText = "seconds"
-        val.Text = tostring(act.seconds or 0.5)
-        val.FocusLost:Connect(function()
-            local n = tonumber((val.Text:gsub("[^%d%.]", "")))
-            if n then act.seconds = math.clamp(n, 0, 60) end
-            val.Text = tostring(act.seconds or 0.5)
-        end)
-    elseif act.type == "within" then
-        -- wait here until the target is within this many studs, then continue
-        val = Instance.new("TextBox"); val.ClearTextOnFocus = false; val.PlaceholderText = "studs"
-        val.Text = tostring(act.studs or 5)
-        val.FocusLost:Connect(function()
-            local n = tonumber((val.Text:gsub("[^%d%.]", "")))
-            if n then act.studs = math.clamp(n, 0, 500) end
-            val.Text = tostring(act.studs or 5)
-        end)
-    elseif act.type == "key" or act.type == "hold" or act.type == "release" then
-        val = Instance.new("TextButton"); val.AutoButtonColor = false
-        val.Text = act.key and ("key: " .. act.key) or "(click, press a key)"
-        val.MouseButton1Click:Connect(function()
-            val.Text = "press a key..."
-            local conn
-            conn = UIS.InputBegan:Connect(function(input)
-                local kn
-                local ut = input.UserInputType
-                if ut == Enum.UserInputType.MouseButton1 or ut == Enum.UserInputType.MouseButton2 or ut == Enum.UserInputType.MouseButton3 then
-                    if act.type == "key" then return end   -- Press stays keyboard-only; use a Click step for M1/M2
-                    kn = (tostring(ut):gsub("Enum.UserInputType.", ""))
-                elseif ut == Enum.UserInputType.Keyboard then
-                    if input.KeyCode == Enum.KeyCode.Unknown then return end
-                    if input.KeyCode ~= Enum.KeyCode.Escape then kn = (tostring(input.KeyCode):gsub("Enum.KeyCode.", "")) end
-                else return end
-                if kn then
-                    act.key = kn
-                    -- Hold + Release share one key, so set both halves of the pair
-                    if act.holdId then
-                        for _, o in ipairs(draft.actions) do if o.holdId == act.holdId then o.key = kn end end
-                    end
-                end
-                val.Text = act.key and ("key: " .. act.key) or "(click, press a key)"
-                conn:Disconnect()
-            end)
-        end)
-    elseif act.type == "click" then
-        -- mouse click at the cursor: click cycles M1 -> M2 -> M3
-        act.button = act.button or "M1"
-        val = Instance.new("TextButton"); val.AutoButtonColor = false
-        val.Text = act.button
-        val.MouseButton1Click:Connect(function()
-            act.button = ({ M1 = "M2", M2 = "M3", M3 = "M1" })[act.button] or "M1"
-            val.Text = act.button
-        end)
-    elseif act.type == "usebtn" then
-        -- pick which hotbar move's GUI button this step fires (from the live scan)
-        local res = scanner.cached() or scanner.scan()
-        local moveset = res.buttons or {}
-        if act.move == nil and #moveset > 0 then act.move = moveset[1].name end
-        val = Instance.new("TextButton"); val.AutoButtonColor = false
-        local function moveLabel()
-            if #moveset == 0 then return "(no moves - Dump GUI)" end
-            for _, b in ipairs(moveset) do
-                if b.name == act.move then return (b.text ~= "" and b.text) or b.name end
-            end
-            return "(pick move)"
-        end
-        val.Text = moveLabel()
-        val.MouseButton1Click:Connect(function()
-            if #moveset == 0 then return end
-            local idx = 0
-            for k, b in ipairs(moveset) do if b.name == act.move then idx = k end end
-            act.move = moveset[(idx % #moveset) + 1].name
-            val.Text = moveLabel()
-        end)
-    else
-        val = Instance.new("TextButton"); val.AutoButtonColor = false
-        local function valText()
-            if act.type == "look" or act.type == "rotate" then return tostring(act.x or 0) .. "\u{00B0}"
-            elseif act.type == "feature" then return featName(act.feature)
-            elseif act.type == "during" then return "holds prev step for next wait"
-            else return "re-face target" end
-        end
-        val.Text = valText()
-        if act.type ~= "return" and act.type ~= "during" then
-            val.MouseButton1Click:Connect(function()
-                if act.type == "look" or act.type == "rotate" then
-                    act.x = nextPreset(YAW_PRESETS, act.x)
-                elseif act.type == "feature" then
-                    local feats = feature.all()
-                    table.sort(feats, function(a, b) return (a.name or a.id) < (b.name or b.id) end)
-                    if #feats > 0 then
-                        local idx = 0
-                        for k, ft in ipairs(feats) do if ft.id == act.feature then idx = k end end
-                        act.feature = feats[(idx % #feats) + 1].id
-                    end
-                end
-                val.Text = valText()
-            end)
-        end
-    end
-    val.Size = UDim2.new(1, -174, 1, -10); val.Position = UDim2.new(0, 100, 0, 5)
-    val.BackgroundColor3 = theme.bgDark
-    val.TextColor3 = (act.type == "return" or act.type == "during") and theme.fgDim or theme.fg
-    val.Font = theme.font; val.TextSize = 12; val.Parent = f
-    pcall(function() local vc = Instance.new("UICorner"); vc.CornerRadius = UDim.new(0, 6); vc.Parent = val end)
-
-    local up = smallBtn(f, "^", -68)
-    up.MouseButton1Click:Connect(function()
-        if i > 1 then draft.actions[i], draft.actions[i-1] = draft.actions[i-1], draft.actions[i]; rebuild() end
-    end)
-    local down = smallBtn(f, "v", -46)
-    down.MouseButton1Click:Connect(function()
-        if i < #draft.actions then draft.actions[i], draft.actions[i+1] = draft.actions[i+1], draft.actions[i]; rebuild() end
-    end)
-    local rem = smallBtn(f, "X", -22, theme.danger)
-    rem.MouseButton1Click:Connect(function() table.remove(draft.actions, i); rebuild() end)
-    return f
-end
-
--- "Hat block" wrapper for the trigger section header. Yellow band with a flat
--- bottom that visually connects into the first action block underneath. This
--- is decoration-only in V0 -- the trigger form fields render normally below.
-local function buildHatHeader(parent, label)
-    local f = Instance.new("Frame")
-    f.Size = UDim2.new(1, 0, 0, 28); f.BackgroundColor3 = CAT_COLOR.event; f.BorderSizePixel = 0
-    f.Parent = parent
-    corner(f, 10)
-    -- pin the bottom flat so it lies flush against the first action block
-    local flat = Instance.new("Frame")
-    flat.Size = UDim2.new(1, 0, 0, 10); flat.Position = UDim2.new(0, 0, 1, -10)
-    flat.BackgroundColor3 = CAT_COLOR.event; flat.BorderSizePixel = 0; flat.Parent = f
-    -- tab on the bottom matching action-block notch position
-    local tab = Instance.new("Frame")
-    tab.Size = UDim2.fromOffset(20, 3); tab.Position = UDim2.new(0, 22, 1, 0)
-    tab.BackgroundColor3 = CAT_COLOR.event; tab.BorderSizePixel = 0; tab.Parent = f
-    local tc = Instance.new("UICorner"); tc.CornerRadius = UDim.new(0, 2); tc.Parent = tab
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, -16, 1, 0); lbl.Position = UDim2.fromOffset(12, 0); lbl.BackgroundTransparency = 1
-    lbl.Text = label; lbl.TextColor3 = Color3.fromRGB(40, 30, 0); lbl.Font = theme.fontBold; lbl.TextSize = 13
-    lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Parent = f
-    return f
-end
-
 -- ---------- Hat-block trigger editor (sub-modal) ----------
 -- Click on a hat block's summary button -> open this modal. Per-type rows
 -- (key picker / anim picker / move picker / etc.) write into the hat's
@@ -1244,221 +1078,9 @@ rebuild = function()
         end))
     end
 
-    -- Trigger lives on the canvas as a hat block now (V3.1). The legacy
-    -- in-form trigger UI is gone -- drag a "When ..." block from the
-    -- palette and click its inline summary to configure. The block below
-    -- (suppress/modkey/hold/anim-picker/move-picker etc.) used to live
-    -- here and is preserved only behind `false` so a future merge can
-    -- compare; the hat-block modal in openHatEditor covers all of it.
-    if false then  -- legacy form trigger UI (disabled; hat block replaces it)
-    if draft.event == "anim" then
-        -- bind to a played animation via a collapsible dropdown, Capture, or paste.
-        local hist = engine.animHistory()
-        local selLabel = "(pick an animation)"
-        if draft.animId then
-            for _, h in ipairs(hist) do if tostring(h.id) == tostring(draft.animId) then selLabel = h.label end end
-            if selLabel == "(pick an animation)" then selLabel = "anim " .. tostring(draft.animId) end
-        end
-        place(wrap(28, function(p)
-            local b = Instance.new("TextButton")
-            b.Size = UDim2.new(1, 0, 0, 26); b.BackgroundColor3 = theme.bgDark; b.AutoButtonColor = true
-            b.TextColor3 = theme.fg; b.Font = theme.font; b.TextSize = 12
-            b.TextXAlignment = Enum.TextXAlignment.Left; b.TextTruncate = Enum.TextTruncate.AtEnd
-            b.Text = "  " .. selLabel .. (animDropOpen and "    [x]" or "    [v]"); b.Parent = p; corner(b, 4)
-            b.MouseButton1Click:Connect(function() animDropOpen = not animDropOpen; rebuild() end)
-        end))
-        if animDropOpen then
-          if #hist == 0 then
-            place(components.Label(formScroll, "(none yet - play your moves, or hit Capture below)"))
-          else
-            place(components.Label(formScroll, "click=preview, double-click=select"))
-            place(wrap(24, function(p)
-                local cb = Instance.new("TextButton")
-                cb.Size = UDim2.new(1, 0, 0, 22); cb.BackgroundColor3 = theme.bgAlt; cb.AutoButtonColor = true
-                cb.TextColor3 = theme.danger; cb.Font = theme.font; cb.TextSize = 11
-                cb.Text = "Clear logged anims (" .. #hist .. ")"; cb.Parent = p; corner(cb, 4)
-                cb.MouseButton1Click:Connect(function() engine.clearAnimHistory(); rebuild() end)
-            end))
-            local n = math.min(#hist, 7)
-            local listWrap = Instance.new("Frame")
-            listWrap.Size = UDim2.new(1, 0, 0, n * 24 + 4); listWrap.BackgroundColor3 = theme.bgDark
-            listWrap.BorderSizePixel = 0; corner(listWrap, 4)
-            local sf = Instance.new("ScrollingFrame")
-            sf.Size = UDim2.new(1, -4, 1, -4); sf.Position = UDim2.fromOffset(2, 2)
-            sf.BackgroundTransparency = 1; sf.BorderSizePixel = 0; sf.ScrollBarThickness = 4
-            sf.CanvasSize = UDim2.new(0, 0, 0, 0); sf.AutomaticCanvasSize = Enum.AutomaticSize.Y; sf.Parent = listWrap
-            local sl = Instance.new("UIListLayout", sf); sl.Padding = UDim.new(0, 2); sl.SortOrder = Enum.SortOrder.LayoutOrder
-            for hi, h in ipairs(hist) do
-                local row = Instance.new("TextButton")
-                row.Size = UDim2.new(1, 0, 0, 22); row.AutoButtonColor = true; row.LayoutOrder = hi
-                row.BackgroundColor3 = (tostring(draft.animId) == tostring(h.id)) and theme.accent or theme.bgAlt
-                row.TextColor3 = theme.fg; row.Font = theme.font; row.TextSize = 11
-                row.TextXAlignment = Enum.TextXAlignment.Left; row.TextTruncate = Enum.TextTruncate.AtEnd
-                row.Text = "  " .. (h.label or tostring(h.id)) .. "  (" .. tostring(h.id) .. ")"; row.Parent = sf
-                -- single click = audition in the preview; double click = fully select
-                local lastClick = 0
-                row.MouseButton1Click:Connect(function()
-                    playAnimOnRig(h.id, true)   -- preview (looped) on every click
-                    if os.clock() - lastClick < 0.35 then
-                        draft.animId = tostring(h.id)   -- commit the selection
-                        animDropOpen = false            -- collapse the dropdown on select
-                        rebuild()
-                    end
-                    lastClick = os.clock()
-                end)
-            end
-            place(listWrap)
-          end
-        end
-        -- fire when the animation ENDS instead of when it starts
-        place(wrap(30, function(p) components.Toggle(p, { text = "Fire on animation END (not start)",
-            default = draft.animEnd == true,
-            onChange = function(v) draft.animEnd = v or nil end }) end))
-        place(wrap(28, function(p)
-            local b = Instance.new("TextButton")
-            b.Size = UDim2.new(1, 0, 0, 24); b.BackgroundColor3 = theme.bgDark; b.AutoButtonColor = true
-            b.TextColor3 = theme.accent; b.Font = theme.fontBold; b.TextSize = 12
-            b.Text = "Capture (play the move now)"; b.Parent = p; corner(b, 4)
-            b.MouseButton1Click:Connect(function()
-                b.Text = "Capturing... play the move now"
-                pcall(function() notify.info("Capturing -- play the move now", 3) end)
-                engine.captureAnim(function(raw)
-                    draft.animId = tostring(raw):match("%d+") or tostring(raw)
-                    animDropOpen = false
-                    pcall(function() notify.success("Captured anim " .. tostring(draft.animId)) end)
-                    rebuild()
-                end)
-            end)
-        end))
-        place(textRow(formScroll, "Or paste ID", draft.animId, function(t)
-            local id = t and t:match("%d+")
-            draft.animId = id or (t ~= "" and t) or nil
-        end))
-    elseif draft.event == "target_anim" then
-        -- mirror of the anim branch but the picker uses the TARGET'S anim
-        -- history (Engine.targetAnimHistory) and Capture binds via captureTarget
-        -- Anim, so you bind to an opponent's animation. Falls back to a paste
-        -- box if you haven't seen any target anims yet (no lock-on / Target
-        -- Select target ever held during this session).
-        local hist = engine.targetAnimHistory and engine.targetAnimHistory() or {}
-        place(components.Label(formScroll, "Hint: lock onto an opponent so their played anims show up below."))
-        place(wrap(28, function(p)
-            local b = Instance.new("TextButton")
-            b.Size = UDim2.new(1, 0, 0, 24); b.BackgroundColor3 = theme.bgDark; b.AutoButtonColor = true
-            b.TextColor3 = theme.accent; b.Font = theme.fontBold; b.TextSize = 12
-            b.Text = "Capture target anim (play it on the opponent)"; b.Parent = p; corner(b, 4)
-            b.MouseButton1Click:Connect(function()
-                b.Text = "Capturing... bait the move on opponent"
-                pcall(function() notify.info("Capturing target anim", 4) end)
-                if engine.captureTargetAnim then
-                    engine.captureTargetAnim(function(raw)
-                        draft.animId = tostring(raw):match("%d+") or tostring(raw)
-                        pcall(function() notify.success("Captured target anim " .. tostring(draft.animId)) end)
-                        rebuild()
-                    end)
-                end
-            end)
-        end))
-        place(textRow(formScroll, "Or paste ID", draft.animId, function(t)
-            local id = t and t:match("%d+")
-            draft.animId = id or (t ~= "" and t) or nil
-        end))
-        if #hist > 0 then
-            place(components.Label(formScroll, "Recently seen on target (click=set):"))
-            local n = math.min(#hist, 7)
-            local sf = Instance.new("ScrollingFrame")
-            sf.Size = UDim2.new(1, 0, 0, n * 22 + 4); sf.BackgroundColor3 = theme.bgDark
-            sf.BorderSizePixel = 0; sf.ScrollBarThickness = 4
-            sf.CanvasSize = UDim2.new(0, 0, 0, 0); sf.AutomaticCanvasSize = Enum.AutomaticSize.Y
-            corner(sf, 4)
-            local sl = Instance.new("UIListLayout", sf); sl.Padding = UDim.new(0, 2)
-            for hi, h in ipairs(hist) do
-                local row = Instance.new("TextButton")
-                row.Size = UDim2.new(1, 0, 0, 20); row.LayoutOrder = hi
-                row.BackgroundColor3 = (tostring(draft.animId) == tostring(h.id)) and theme.accent or theme.bgAlt
-                row.TextColor3 = theme.fg; row.Font = theme.font; row.TextSize = 11
-                row.TextXAlignment = Enum.TextXAlignment.Left; row.TextTruncate = Enum.TextTruncate.AtEnd
-                row.Text = "  " .. (h.label or tostring(h.id)) .. "  (" .. tostring(h.id) .. ")"
-                row.Parent = sf
-                row.MouseButton1Click:Connect(function()
-                    draft.animId = tostring(h.id); rebuild()
-                end)
-            end
-            place(sf)
-        end
-        place(wrap(30, function(p) components.Toggle(p, { text = "Fire on animation END (not start)",
-            default = draft.animEnd == true,
-            onChange = function(v) draft.animEnd = v or nil end }) end))
-    elseif draft.event == "move" then
-        local res = scanner.cached() or scanner.scan()
-        local moveset = res.buttons or {}
-        if #moveset == 0 then
-            place(components.Label(formScroll, "No moves detected yet (run 'Dump GUI' so I can map your hotbar)"))
-        else
-            local labels = {}
-            for _, b in ipairs(moveset) do
-                local lbl = (b.text ~= "" and b.text) or b.name
-                if b.key then lbl = lbl .. " [" .. b.key .. "]" end
-                labels[#labels + 1] = lbl
-            end
-            if not draft.move then
-                draft.move = moveset[1].name
-                if moveset[1].key and not draft.movekey then draft.movekey = keyNameNorm(moveset[1].key) end
-            end
-            local idx = 1
-            for i, b in ipairs(moveset) do if b.name == draft.move then idx = i end end
-            place(cycleRow(formScroll, "Move", labels, idx, function(i)
-                draft.move = moveset[i].name
-                if moveset[i].key then draft.movekey = keyNameNorm(moveset[i].key) end
-                rebuild()
-            end))
-            place(wrap(28, function(p)
-                local def = toKeyCode(draft.movekey) or Enum.KeyCode.Unknown
-                components.KeybindSetter(p, { label = "Move key", default = def,
-                    onChange = function(k)
-                        draft.movekey = (k and k ~= Enum.KeyCode.Unknown) and (tostring(k):gsub("Enum.KeyCode.", "")) or nil
-                    end })
-            end))
-        end
-    else
-        place(wrap(28, function(p)
-            components.KeybindSetter(p, { label = "Key", default = draft.key, onChange = function(k) draft.key = k end })
-        end))
-    end
-    -- optional modifier that must be HELD for the trigger to fire (hold A + press Q)
-    place(wrap(28, function(p)
-        local def = toKeyCode(draft.modkey) or Enum.KeyCode.Unknown
-        components.KeybindSetter(p, { label = "Hold-key (optional)", default = def,
-            onChange = function(k)
-                draft.modkey = (k and k ~= Enum.KeyCode.Unknown) and (tostring(k):gsub("Enum.KeyCode.", "")) or nil
-            end })
-    end))
-    -- Block this key's normal action (key & move triggers): the engine sinks the
-    -- key so the game can't fire its move -- only this tech runs (which can fire the
-    -- move itself via a Use Move step). Pointless for an anim trigger.
-    if draft.event ~= "anim" then
-        place(wrap(30, function(p) components.Toggle(p, { text = "Block this key's normal action",
-            default = draft.suppress == true,
-            onChange = function(v) draft.suppress = v or nil end }) end))
-    end
-    if draft.event == "key" or draft.event == "keyhold" then
-        place(wrap(30, function(p) components.Toggle(p, { text = "Hold the key (release = return)",
-            default = draft.event == "keyhold",
-            onChange = function(v)
-                if v then draft.event = "keyhold" elseif draft.event == "keyhold" then draft.event = "key" end
-                rebuild()
-            end }) end))
-    end
-    place(wrap(30, function(p) components.Toggle(p, { text = "Trigger on a move instead",
-        default = draft.event == "move",
-        onChange = function(v) draft.event = v and "move" or "key"; rebuild() end }) end))
-    place(wrap(30, function(p) components.Toggle(p, { text = "Trigger on an animation instead",
-        default = draft.event == "anim",
-        onChange = function(v) draft.event = v and "anim" or "key"; rebuild() end }) end))
-    place(wrap(30, function(p) components.Toggle(p, { text = "Trigger on TARGET's animation instead",
-        default = draft.event == "target_anim",
-        onChange = function(v) draft.event = v and "target_anim" or "key"; rebuild() end }) end))
-    end   -- end of `if false then` legacy trigger UI block
+    -- The trigger lives on the canvas as a hat block ("When ..."): drag one from
+    -- the palette and click its summary to configure it (openHatEditor). The
+    -- rows below are the form-level gates that apply to whichever trigger fires.
     place(wrap(30, function(p) components.Toggle(p, { text = "Only while locked on",
         default = draft.conditions.locked_on == true,
         onChange = function(v) draft.conditions.locked_on = v or nil end }) end))
@@ -1774,7 +1396,6 @@ function Builder.open(existingTech)
         -- script re-execute. Clearing forces re-scan against the LIVE PG.
         pcall(function() scanner.clearCache() end)
         draft = existingTech and draftFromTech(existingTech) or newDraft()
-        animDropOpen = not (draft.animId)   -- expanded when nothing's picked yet
         -- Discard the canvas from a prior session if it exists. Use the
         -- explicit Canvas:destroy() to disconnect each block's UIS drag
         -- conns -- a bare Frame:Destroy() leaves the UIS connections

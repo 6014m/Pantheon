@@ -184,6 +184,18 @@ local function renderHold()
     applyCamHold(); applyBodyHold()
 end
 
+-- A move key hint can be a DIGIT ("1".."9") but Enum.KeyCode["1"] THROWS (the
+-- member is "One"). Map digits to names and look up safely so a numbered move key
+-- never errors out wiring/dispatch.
+local DIGIT_NAMES = { ["0"]="Zero",["1"]="One",["2"]="Two",["3"]="Three",["4"]="Four",
+                      ["5"]="Five",["6"]="Six",["7"]="Seven",["8"]="Eight",["9"]="Nine" }
+local function safeKeyCode(name)
+    if not name then return nil end
+    name = DIGIT_NAMES[tostring(name)] or name
+    local ok, kc = pcall(function() return Enum.KeyCode[name] end)
+    return ok and kc or nil
+end
+
 -- ===== actions =====
 local ACTIONS = {}
 -- Apply immediately (in addition to setting the held state for renderhold to
@@ -211,8 +223,8 @@ end
 -- send a real keyboard key (a.key is the short name, e.g. "R"), so a tech can
 -- press keys -- e.g. fire a game move via its keybind, dash, jump, etc.
 ACTIONS.key = function(a)
-    local kc = a.key and Enum.KeyCode[a.key]
-    if not kc then return end
+    local kc = safeKeyCode(a.key)   -- digit names ("1") resolve to One..Nine instead of throwing
+    if not kc or kc == Enum.KeyCode.Unknown then return end
     VIM:SendKeyEvent(true, kc, false, game)
     task.wait(tonumber(a.hold) or 0.04)
     VIM:SendKeyEvent(false, kc, false, game)
@@ -282,23 +294,13 @@ end
 
 Engine.CONDITIONS = CONDITIONS
 
--- A move key hint can be a DIGIT ("1".."9") but Enum.KeyCode["1"] THROWS (the
--- member is "One"). Map digits to names and look up safely so a numbered move key
--- never errors out wiring/dispatch.
-local DIGIT_NAMES = { ["0"]="Zero",["1"]="One",["2"]="Two",["3"]="Three",["4"]="Four",
-                      ["5"]="Five",["6"]="Six",["7"]="Seven",["8"]="Eight",["9"]="Nine" }
-local function safeKeyCode(name)
-    if not name then return nil end
-    name = DIGIT_NAMES[tostring(name)] or name
-    local ok, kc = pcall(function() return Enum.KeyCode[name] end)
-    return ok and kc or nil
-end
 
 -- optional modifier key that must be HELD for a key/move trigger to fire
 -- (e.g. hold A + press Q). Takes a TRIGGER (not the whole tech) so multi-
 -- trigger "or" techs can have per-subtrigger modkeys.
-local function modifierHeld(trig)
+local function modifierHeld(trig, top)
     local m = trig and trig.modkey
+    if m == nil and top and top ~= trig then m = top.modkey end   -- OR wrapper's hold-key applies to every branch
     if not m then return true end
     local kc = safeKeyCode(m)
     return kc ~= nil and UIS:IsKeyDown(kc)
@@ -322,8 +324,7 @@ end
 -- are honored (they live on each subtrigger, not the top-level "or" wrapper).
 -- Legacy single-trigger techs pass trig == tech.trigger, so the fallback keeps
 -- their behavior identical.
-local function conditionsMet(tech, trig)
-    trig = trig or tech.trigger
+local function gatesPass(tech, trig)
     for _, c in ipairs(trig.conditions or {}) do
         local fn = CONDITIONS[c]
         if fn and not fn(tech) then return false end
@@ -336,6 +337,16 @@ local function conditionsMet(tech, trig)
         if not (mr and tr) then return false end
         if (tr.Position - mr.Position).Magnitude > maxR then return false end
     end
+    return true
+end
+local function conditionsMet(tech, trig)
+    local top = tech.trigger or {}
+    trig = trig or top
+    if not gatesPass(tech, trig) then return false end
+    -- An OR tech's "Only while locked on" / "Within X studs" toggles live on the
+    -- WRAPPER trigger (the form), not on each subtrigger -- they were silently
+    -- ignored for multi-trigger techs. Check the wrapper too.
+    if trig ~= top and not gatesPass(tech, top) then return false end
     return true
 end
 
@@ -511,10 +522,18 @@ ACTIONS.usebtn = function(a)
     -- Always resolve the button from a LIVE scan -- the game rebuilds its hotbar
     -- (respawn, move swap) so any cached button reference goes dead. Never trust
     -- the cache for firing: re-find the CURRENT button by name on every fire.
-    local res = scanner.scan()
-    local entry
-    for _, b in ipairs(res.buttons or {}) do
-        if b.name == a.move then entry = b; break end
+    -- Cached scan first; only re-walk the PlayerGui (expensive, and this runs
+    -- MID-COMBO) when the cached button for this move is gone (respawn / move
+    -- swap rebuilds the hotbar).
+    local function findEntry(res)
+        for _, b in ipairs((res and res.buttons) or {}) do
+            if b.name == a.move then return b end
+        end
+        return nil
+    end
+    local entry = findEntry(scanner.cached())
+    if not (entry and entry.button and entry.button.Parent) then
+        entry = findEntry(scanner.scan())
     end
     -- Explicit "press key": VIM the key. Works for MANUAL moves the scanner
     -- can't see (no live button to click) -- only needs a key.
@@ -572,6 +591,12 @@ end
 -- over the held facing. Hold techs run their (instant) actions and finish the
 -- coroutine immediately, so `running` clears right away and re-pressing works.
 local running = false
+local runningSince = 0
+-- keyhold techs park their run context here while the trigger key is down, so
+-- the key-up path can release Hold-step keys/buttons and restore toggled
+-- features (previously: keys released instantly at the end of the actions,
+-- features never restored at all).
+local activeHold = {}   -- tech.id -> ctx
 
 -- Single-step runner used by both the top-level action loop AND recursive
 -- contexts (AND branches). ctx carries per-run state shared across branches
@@ -635,11 +660,17 @@ local function runStep(a, ctx)
         local done = 0
         for _, branch in ipairs(branches) do
             task.spawn(function()
-                for _, step in ipairs(branch or {}) do runStep(step, ctx) end
+                -- pcall per branch: an error in one branch must still count it
+                -- as finished, or the wait below never ends and `running` sticks.
+                local ok, err = pcall(function()
+                    for _, step in ipairs(branch or {}) do runStep(step, ctx) end
+                end)
+                if not ok then log.warn("[tech] AND branch error: " .. tostring(err)) end
                 done = done + 1
             end)
         end
-        while done < n do task.wait(0.03) end
+        local t0 = os.clock()
+        while done < n and os.clock() - t0 < 30 do task.wait(0.03) end   -- 30s cap: never wedge the runner
     elseif a.type == "or" then
         -- OR step: picks ONE branch based on which subtrigger fired this run.
         -- ctx.triggerIndex was set by runTech from the trigger that queueRun'd
@@ -664,6 +695,7 @@ end
 local function runTech(tech, hold, triggerIndex)
     if running then return end
     running = true
+    runningSince = os.clock()
     task.spawn(function()
         local cam = Workspace.CurrentCamera
         startCamLook = cam and cam.CFrame.LookVector or nil
@@ -718,8 +750,10 @@ local function runTech(tech, hold, triggerIndex)
                 end
                 ctx.restoreAll(false)
             else
-                for kc in pairs(heldKeys) do pcall(function() VIM:SendKeyEvent(false, kc, false, game) end) end
-                for mb in pairs(heldMouse) do pcall(sendMouse, mb, false) end
+                -- keyhold tech: leave Hold-step keys/buttons + toggled features as
+                -- they are; releaseHoldTech() restores them on the trigger key-up.
+                if activeHold[tech.id] and activeHold[tech.id] ~= ctx then pcall(function() activeHold[tech.id].restoreAll(false) end) end
+                activeHold[tech.id] = ctx
             end
         end)
         if not ok then
@@ -730,6 +764,16 @@ local function runTech(tech, hold, triggerIndex)
         if ignoreWelds and not hold then state.techIgnoreWelds = false end
         running = false
     end)
+end
+
+-- Key-up of a keyhold trigger: snap the facing back AND restore whatever the
+-- hold run changed (Hold-step keys, toggled features). Safe to call when the
+-- tech never ran (conditions failed): only the facing release happens then.
+local function releaseHoldTech(tech, trig)
+    local ctx = activeHold[tech.id]
+    activeHold[tech.id] = nil
+    if ctx then pcall(function() ctx.restoreAll(true) end) else releaseHold(true) end
+    if trig and trig.ignoreWelds then state.techIgnoreWelds = false end
 end
 
 -- Run a tech FROM A TRIGGER. One-shot techs are queued and dispatched on Heartbeat
@@ -747,6 +791,12 @@ local function queueRun(tech, hold, triggerIndex)
     end
 end
 local function drainPending()
+    -- watchdog: a run that somehow never cleared `running` (yield that never
+    -- resumed) would silently disable every tech; recover after 60s.
+    if running and os.clock() - runningSince > 60 then
+        log.warn("[tech] runner watchdog: forcing reset")
+        running = false
+    end
     if #pendingRuns == 0 then return end
     local q = pendingRuns; pendingRuns = {}
     for _, item in ipairs(q) do runTech(item.tech, false, item.triggerIndex) end
@@ -844,13 +894,13 @@ local function onAnimPlayed(track)
             for tidx, trig in ipairs(techTriggers(tech)) do
                 if trig.event == "anim" then
                     watching = true
-                    if animIdNum(trig.animId) == id and modifierHeld(trig) and conditionsMet(tech, trig) and scopeMatches(tech) then
+                    if animIdNum(trig.animId) == id and modifierHeld(trig, tech.trigger) and conditionsMet(tech, trig) and scopeMatches(tech) then
                         if trig.animEnd then
                             log.info("[tech] anim trigger armed on-end: " .. tostring(tech.name))
                             local conn
                             conn = track.Stopped:Connect(function()
                                 if conn then conn:Disconnect(); conn = nil end
-                                if tech.enabled and modifierHeld(trig) and conditionsMet(tech, trig) and scopeMatches(tech) then
+                                if tech.enabled and modifierHeld(trig, tech.trigger) and conditionsMet(tech, trig) and scopeMatches(tech) then
                                     log.info("[tech] anim trigger fired (end): " .. tostring(tech.name))
                                     queueRun(tech, false, tidx)
                                 end
@@ -948,12 +998,12 @@ local function onTargetAnimPlayed(track)
         if tech.enabled then
             for tidx, trig in ipairs(techTriggers(tech)) do
                 if trig.event == "target_anim" then
-                    if animIdNum(trig.animId) == id and modifierHeld(trig) and conditionsMet(tech, trig) and scopeMatches(tech) then
+                    if animIdNum(trig.animId) == id and modifierHeld(trig, tech.trigger) and conditionsMet(tech, trig) and scopeMatches(tech) then
                         if trig.animEnd then
                             local conn
                             conn = track.Stopped:Connect(function()
                                 if conn then conn:Disconnect(); conn = nil end
-                                if tech.enabled and modifierHeld(trig) and conditionsMet(tech, trig) and scopeMatches(tech) then
+                                if tech.enabled and modifierHeld(trig, tech.trigger) and conditionsMet(tech, trig) and scopeMatches(tech) then
                                     log.info("[tech] target_anim trigger fired (end): " .. tostring(tech.name))
                                     queueRun(tech, false, tidx)
                                 end
@@ -1025,10 +1075,9 @@ local function wireKey(tech, trig, tidx)
         CAS:BindActionAtPriority(action, function(_, inputState)
             if bypassKeys[key] then return Enum.ContextActionResult.Pass end
             if inputState == Enum.UserInputState.Begin then
-                if tech.enabled and modifierHeld(trig) and conditionsMet(tech, trig) and scopeMatches(tech) then queueRun(tech, isHold, tidx) end
+                if tech.enabled and modifierHeld(trig, tech.trigger) and conditionsMet(tech, trig) and scopeMatches(tech) then queueRun(tech, isHold, tidx) end
             elseif inputState == Enum.UserInputState.End and isHold then
-                releaseHold(true)
-                if trig.ignoreWelds then state.techIgnoreWelds = false end
+                releaseHoldTech(tech, trig)
             end
             return Enum.ContextActionResult.Sink
         end, false, 3000, key)
@@ -1036,8 +1085,11 @@ local function wireKey(tech, trig, tidx)
         return
     end
     keybinds.set(bindId, key,
-        function() if tech.enabled and modifierHeld(trig) and conditionsMet(tech, trig) and scopeMatches(tech) then queueRun(tech, isHold, tidx) end end,
-        function() if isHold then releaseHold(true); if trig.ignoreWelds then state.techIgnoreWelds = false end end end)
+        function()
+            if bypassKeys[key] then return end   -- our own VIM-sent key (Press step) must not re-trigger us
+            if tech.enabled and modifierHeld(trig, tech.trigger) and conditionsMet(tech, trig) and scopeMatches(tech) then queueRun(tech, isHold, tidx) end
+        end,
+        function() if isHold then releaseHoldTech(tech, trig) end end)
 end
 
 local function wireMove(tech, trig, tidx)
@@ -1054,7 +1106,7 @@ local function wireMove(tech, trig, tidx)
         CAS:BindActionAtPriority(action, function(_, inputState)
             if bypassKeys[kc] then return Enum.ContextActionResult.Pass end
             if inputState == Enum.UserInputState.Begin
-               and tech.enabled and modifierHeld(trig) and conditionsMet(tech, trig) and scopeMatches(tech) then
+               and tech.enabled and modifierHeld(trig, tech.trigger) and conditionsMet(tech, trig) and scopeMatches(tech) then
                 queueRun(tech, false, tidx)
             end
             return Enum.ContextActionResult.Sink
@@ -1063,8 +1115,22 @@ local function wireMove(tech, trig, tidx)
         return
     end
     keybinds.set(bindId, kc,
-        function() if tech.enabled and modifierHeld(trig) and conditionsMet(tech, trig) and scopeMatches(tech) then queueRun(tech, false, tidx) end end,
+        function()
+            if bypassKeys[kc] then return end
+            if tech.enabled and modifierHeld(trig, tech.trigger) and conditionsMet(tech, trig) and scopeMatches(tech) then queueRun(tech, false, tidx) end
+        end,
         nil)
+end
+
+-- Rewire + list refresh are coalesced to once per frame: loadCustom / a game
+-- module registering N techs used to do N full rewires, each walking the whole
+-- PlayerGui for move-button suppression, and N UI list rebuilds.
+local rewireScheduled = false
+local function scheduleRewire()
+    if rewireScheduled then return end
+    rewireScheduled = true
+    local function go() rewireScheduled = false; Engine.rewire(); Engine.changed:Fire() end
+    if task and task.defer then task.defer(go) else go() end
 end
 
 function Engine.rewire()
@@ -1199,8 +1265,7 @@ function Engine.add(tech)
         if savedEnabled ~= nil then tech.enabled = savedEnabled and true or false end
     end
     techs[tech.id] = tech
-    Engine.rewire()
-    Engine.changed:Fire()
+    scheduleRewire()
 end
 
 -- Persist a user-built tech's full definition (and add/replace it live).
@@ -1276,8 +1341,7 @@ function Engine.setEnabled(id, v)
     else
         persist.set(ENABLED_KEY .. id, t.enabled)
     end
-    Engine.rewire()
-    Engine.changed:Fire()
+    scheduleRewire()
 end
 
 function Engine.remove(id)
@@ -1293,8 +1357,9 @@ function Engine.remove(id)
         persist.scheduleSave()
     end
     keybinds.clear("tech." .. id)
-    Engine.rewire()
-    Engine.changed:Fire()
+    for i = 1, 8 do keybinds.clear("tech." .. id .. "." .. i) end   -- per-trigger binds too, or a deleted tech keeps firing
+    if activeHold[id] then pcall(function() activeHold[id].restoreAll(true) end); activeHold[id] = nil end
+    scheduleRewire()
 end
 
 function Engine.init()
@@ -1346,6 +1411,18 @@ function Engine.destroy()
     clearTargetAnimHook()
     for _, list in pairs(conns) do for _, c in ipairs(list) do pcall(function() c:Disconnect() end) end end
     conns = {}
+    -- key sinks / keybinds / cancelled move buttons must not outlive this instance:
+    -- after a re-execute the old closures kept sinking keys and firing dead techs.
+    for _, action in pairs(casBound) do pcall(function() CAS:UnbindAction(action) end) end
+    casBound = {}
+    for id in pairs(techs) do
+        keybinds.clear("tech." .. id)
+        for i = 1, 8 do keybinds.clear("tech." .. id .. "." .. i) end
+    end
+    for b in pairs(suppressed) do unsuppressButton(b) end
+    for id, ctx in pairs(activeHold) do pcall(function() ctx.restoreAll(true) end); activeHold[id] = nil end
+    pendingRuns = {}
+    running = false
     releaseHold(true)
     if techAlign then pcall(function() techAlign:Destroy() end); techAlign = nil end
     if techAttach then pcall(function() techAttach:Destroy() end); techAttach = nil end
