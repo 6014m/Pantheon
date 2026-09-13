@@ -35,9 +35,9 @@ local CONDITIONS = {
 }
 -- palette buttons. Hold + Release are separate steps: Hold presses a key/button
 -- down, Release lets it go (or the engine releases it at tech end / key-up).
-local ACTION_TYPES = { "look", "rotate", "during", "wait", "within", "return", "feature", "key", "click", "hold", "release", "usebtn" }
+local ACTION_TYPES = { "look", "rotate", "during", "wait", "within", "animwait", "return", "feature", "key", "click", "hold", "release", "usebtn" }
 local STEP_LABEL   = { look = "Look", rotate = "Rotate", wait = "Wait", during = "During",
-                       within = "Within", ["return"] = "Return", feature = "Use", key = "Press",
+                       within = "Within", animwait = "Anim at", ["return"] = "Return", feature = "Use", key = "Press",
                        hold = "Hold", release = "Release", usebtn = "Use Move", click = "Click" }
 local YAW_PRESETS  = { 180, 135, 90, 45, 0, -45, -90, -135, -180 }
 
@@ -52,7 +52,7 @@ local CATEGORY = {
     wait = "control", during = "control", ["return"] = "control",
     hold = "control", release = "control",
     -- sensing / gating
-    within = "sense",
+    within = "sense", animwait = "sense",
     -- actions / "operators"
     feature = "action", key = "action", usebtn = "action", click = "action",
 }
@@ -194,7 +194,7 @@ end
 -- level gates (maxRange, ignoreWelds, conditions, targetAnimId) are NOT hat
 -- fields: copying them into the hat made the hat's stale copy overwrite the
 -- form's edits on Save ("Within X studs" / "Ignore welds" silently reverted).
-local HAT_FIELDS = { key = true, suppress = true, modkey = true, animId = true, animEnd = true, move = true, movekey = true }
+local HAT_FIELDS = { key = true, suppress = true, modkey = true, animId = true, animEnd = true, animAt = true, move = true, movekey = true }
 
 -- Map an engine trigger.event string -> the matching canvas hat block type.
 local function hatTypeForEvent(ev)
@@ -272,7 +272,7 @@ local function draftFromTech(t)
         scope = scope, pinChar = pinChar,
         event = t.trigger.event, key = t.trigger.key, move = t.trigger.move, movekey = t.trigger.movekey,
         modkey = t.trigger.modkey, maxRange = t.trigger.maxRange,
-        animId = t.trigger.animId, animEnd = t.trigger.animEnd,
+        animId = t.trigger.animId, animEnd = t.trigger.animEnd, animAt = t.trigger.animAt,
         targetAnimId = t.trigger.targetAnimId,
         suppress = t.trigger.suppress, ignoreWelds = t.trigger.ignoreWelds,
         conditions = conds, actions = actions,
@@ -311,7 +311,7 @@ local function buildTechFromDraft(id)
     local trigger = {
         event = draft.event, key = draft.key, move = draft.move, movekey = draft.movekey,
         modkey = draft.modkey, maxRange = draft.maxRange,
-        animId = draft.animId, animEnd = draft.animEnd,
+        animId = draft.animId, animEnd = draft.animEnd, animAt = draft.animAt,
         targetAnimId = draft.targetAnimId,
         suppress = draft.suppress, ignoreWelds = draft.ignoreWelds,
         conditions = draftConditions(),
@@ -446,6 +446,151 @@ local function playAnimOnRig(id, loop)
     end
 end
 
+-- Freeze the preview rig at `t` seconds into animation `id` (timeline scrub).
+-- Loads the track once per id and keeps it paused; returns the track length
+-- once the asset has streamed in (0 until then).
+local scrubId
+local function scrubAnimOnRig(id, t)
+    if not curRig then buildRigPreview() end
+    if not curRig then return 0 end
+    local num = tostring(id):match("%d+"); if not num then return 0 end
+    if scrubId ~= num or not curTrack then
+        playAnimOnRig(num, false)
+        scrubId = num
+        if curTrack then pcall(function() curTrack:AdjustSpeed(0) end) end
+    end
+    local tr = curTrack
+    if not tr then return 0 end
+    pcall(function()
+        if not tr.IsPlaying then tr:Play(0); tr:AdjustSpeed(0) end
+        tr.TimePosition = math.max(0, math.min(t or 0, (tr.Length > 0) and tr.Length or t or 0))
+    end)
+    return tr.Length or 0
+end
+
+-- Timeline row for anim hats: pick the exact point in the animation the
+-- trigger fires (start / a time / end). Drag the bar to scrub -- the preview
+-- rig freezes at that frame -- and keyframe names show as ticks so you can
+-- line the fire point up with the move's actual hit frame.
+local function buildAnimTimeline(parent, p, isTarget)
+    local f = Instance.new("Frame")
+    f.Size = UDim2.new(1, 0, 0, 92); f.BackgroundColor3 = theme.bgAlt; f.BorderSizePixel = 0
+    corner(f, 6)
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -16, 0, 18); title.Position = UDim2.fromOffset(8, 4); title.BackgroundTransparency = 1
+    title.TextColor3 = theme.fg; title.Font = theme.fontBold; title.TextSize = 12
+    title.TextXAlignment = Enum.TextXAlignment.Left; title.Parent = f
+    local hintL = Instance.new("TextLabel")
+    hintL.Size = UDim2.new(1, -16, 0, 14); hintL.Position = UDim2.fromOffset(8, 74); hintL.BackgroundTransparency = 1
+    hintL.TextColor3 = theme.fgDim; hintL.Font = theme.font; hintL.TextSize = 10
+    hintL.TextXAlignment = Enum.TextXAlignment.Left; hintL.Parent = f
+    hintL.Text = "drag to scrub (preview freezes at that frame) - ticks = keyframes"
+
+    local length = 0
+    local bar = Instance.new("Frame")
+    bar.Size = UDim2.new(1, -16, 0, 10); bar.Position = UDim2.fromOffset(8, 40)
+    bar.BackgroundColor3 = theme.bgDark; bar.BorderSizePixel = 0; bar.Parent = f
+    corner(bar, 3)
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.new(0, 0, 1, 0); fill.BackgroundColor3 = theme.accent; fill.BorderSizePixel = 0; fill.Parent = bar
+    corner(fill, 3)
+    local marker = Instance.new("Frame")
+    marker.Size = UDim2.fromOffset(4, 18); marker.AnchorPoint = Vector2.new(0.5, 0.5); marker.Position = UDim2.new(0, 0, 0.5, 0)
+    marker.BackgroundColor3 = theme.fg; marker.BorderSizePixel = 0; marker.ZIndex = 3; marker.Parent = bar
+    local ticks = Instance.new("Frame")
+    ticks.Size = UDim2.new(1, -16, 0, 16); ticks.Position = UDim2.fromOffset(8, 54); ticks.BackgroundTransparency = 1; ticks.Parent = f
+
+    local function curAt()
+        if p.animEnd then return length end
+        return math.max(0, math.min(tonumber(p.animAt) or 0, length > 0 and length or 1e9))
+    end
+    local function refreshLabel()
+        local at = tonumber(p.animAt) or 0
+        local where
+        if p.animEnd then where = "END"
+        elseif at > 0 then where = string.format("%.2fs", at) .. (length > 0 and string.format(" of %.2fs (%d%%)", length, math.floor(at / length * 100 + 0.5)) or "")
+        else where = "START" end
+        title.Text = "Fire at: " .. where
+        local frac = (length > 0) and (curAt() / length) or 0
+        fill.Size = UDim2.new(frac, 0, 1, 0)
+        marker.Position = UDim2.new(frac, 0, 0.5, 0)
+    end
+    local function setAt(t)
+        if length > 0 and t >= length - 0.01 then p.animEnd = true; p.animAt = nil
+        elseif t <= 0.005 then p.animEnd = nil; p.animAt = nil
+        else p.animEnd = nil; p.animAt = math.floor(t * 100 + 0.5) / 100 end
+        refreshLabel()
+    end
+    local function setFromX(x)
+        if length <= 0 then return end
+        local rel = math.clamp(x - bar.AbsolutePosition.X, 0, bar.AbsoluteSize.X)
+        local t = (bar.AbsoluteSize.X > 0) and (rel / bar.AbsoluteSize.X * length) or 0
+        setAt(t)
+        scrubAnimOnRig(p.animId, t)
+    end
+    local dragging = false
+    bar.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = true; setFromX(i.Position.X) end end)
+    local c1 = UIS.InputChanged:Connect(function(i) if dragging and i.UserInputType == Enum.UserInputType.MouseMovement then setFromX(i.Position.X) end end)
+    local c2 = UIS.InputEnded:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end end)
+    f.Destroying:Connect(function() c1:Disconnect(); c2:Disconnect() end)
+
+    local function quick(txt, x, fn)
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.fromOffset(44, 18); b.Position = UDim2.new(1, x, 0, 4); b.BackgroundColor3 = theme.bgDark
+        b.AutoButtonColor = true; b.TextColor3 = theme.fg; b.Font = theme.font; b.TextSize = 11; b.Text = txt; b.Parent = f
+        corner(b, 4); b.MouseButton1Click:Connect(fn)
+    end
+    quick("Start", -104, function() setAt(0); scrubAnimOnRig(p.animId, 0) end)
+    quick("End", -56, function() p.animEnd = true; p.animAt = nil; refreshLabel(); scrubAnimOnRig(p.animId, length) end)
+
+    -- keyframe ticks (names) from the KeyframeSequence, async
+    local function loadTicks()
+        for _, c in ipairs(ticks:GetChildren()) do c:Destroy() end
+        local num = tostring(p.animId or ""):match("%d+"); if not num or length <= 0 then return end
+        task.spawn(function()
+            local ok, ks = pcall(function() return game:GetService("KeyframeSequenceProvider"):GetKeyframeSequenceAsync("rbxassetid://" .. num) end)
+            if not ok or not ks or not f.Parent then return end
+            local kfs = ks:GetKeyframes()
+            table.sort(kfs, function(a, b) return a.Time < b.Time end)
+            for _, kf in ipairs(kfs) do
+                if kf.Time > 0 and kf.Time < length then
+                    local frac = kf.Time / length
+                    local tk = Instance.new("Frame")
+                    tk.Size = UDim2.fromOffset(1, 6); tk.Position = UDim2.new(frac, 0, 0, 0)
+                    tk.BackgroundColor3 = theme.fgDim; tk.BorderSizePixel = 0; tk.Parent = ticks
+                    local nm = kf.Name
+                    if nm and nm ~= "" and nm ~= "Keyframe" then
+                        local l = Instance.new("TextLabel")
+                        l.Size = UDim2.fromOffset(60, 10); l.Position = UDim2.new(frac, -30, 0, 6); l.BackgroundTransparency = 1
+                        l.Text = nm; l.TextColor3 = theme.fgDim; l.Font = theme.font; l.TextSize = 9
+                        l.TextTruncate = Enum.TextTruncate.AtEnd; l.Parent = ticks
+                    end
+                end
+            end
+            pcall(function() ks:Destroy() end)
+        end)
+    end
+
+    -- length: from history if we've seen it play, else measure on the preview rig
+    local function refresh()
+        length = engine.animLength and engine.animLength(p.animId) or 0
+        if length <= 0 and p.animId then
+            task.spawn(function()
+                for _ = 1, 20 do
+                    local l = scrubAnimOnRig(p.animId, 0)
+                    if l and l > 0 then length = l; break end
+                    task.wait(0.1)
+                end
+                if f.Parent then refreshLabel(); loadTicks() end
+            end)
+        end
+        refreshLabel(); loadTicks()
+    end
+    refresh()
+    f.Parent = parent
+    return f, refresh
+end
+
 local function tweenYaw(target, dur)
     dur = dur or 0.15
     local start, t0 = curYaw, os.clock()
@@ -478,8 +623,8 @@ local function previewDraft()
                 if releaseAfter then tweenYaw(0); releaseAfter = false end
             elseif a.type == "during" then
                 releaseAfter = true
-            elseif a.type == "within" then
-                task.wait(0.3)   -- can't gauge range in the preview; brief beat
+            elseif a.type == "within" or a.type == "animwait" then
+                task.wait(0.3)   -- can't gauge range / anim time in the preview; brief beat
                 if releaseAfter then tweenYaw(0); releaseAfter = false end
             elseif a.type == "return" then
                 tweenYaw(0)
@@ -502,8 +647,8 @@ local function openHatEditor(hatBlock)
     local t, p = hatBlock.type, hatBlock.params
 
     local modal = Instance.new("Frame")
-    modal.Size = UDim2.new(0, 360, 0, 280)
-    modal.Position = UDim2.new(0.5, -180, 0.5, -140)
+    modal.Size = UDim2.new(0, 360, 0, 340)
+    modal.Position = UDim2.new(0.5, -180, 0.5, -170)
     modal.BackgroundColor3 = theme.bg; modal.BorderSizePixel = 0
     modal.ZIndex = 200; modal.Parent = rootFrame
     corner(modal, 8); stroke(modal, theme.accent, 2)
@@ -550,8 +695,10 @@ local function openHatEditor(hatBlock)
         end))
     elseif t == "event_anim" or t == "event_target_anim" then
         local isTarget = (t == "event_target_anim")
+        local refreshTimeline
         place(textRow(body, "Anim ID", p.animId, function(s)
             local id = s and s:match("%d+"); p.animId = id or (s ~= "" and s) or nil
+            if refreshTimeline then refreshTimeline() end
         end))
         place(wrap(28, function(host)
             local b = Instance.new("TextButton")
@@ -567,13 +714,17 @@ local function openHatEditor(hatBlock)
                     cap(function(raw)
                         p.animId = tostring(raw):match("%d+") or tostring(raw)
                         b.Text = isTarget and "Capture (target plays the move)" or "Capture (play the move now)"
+                        if refreshTimeline then refreshTimeline() end
                     end)
                 end
             end)
         end))
-        place(wrap(28, function(host) components.Toggle(host, { text = "Fire on animation END (not start)",
-            default = p.animEnd == true,
-            onChange = function(v) p.animEnd = v or nil end }) end))
+        -- timeline: WHEN in the animation to fire (replaces the old "fire on END" toggle)
+        do
+            local tl, refresh = buildAnimTimeline(body, p, isTarget)
+            refreshTimeline = refresh
+            place(tl)
+        end
     elseif t == "event_move" then
         -- The engine fires a move trigger off the move's KEY (wireMove uses
         -- trig.movekey); the move NAME is optional (label + "block normal fire"
@@ -826,6 +977,7 @@ local function openOrEditor(orBlock)
             elseif t == "wait" then return { seconds = 0.5 }
             elseif t == "within" then return { studs = 5 }
             elseif t == "click" then return { button = "M1" }
+            elseif t == "animwait" then return { at = 0.3 }
             end
             return {}
         end
@@ -840,7 +992,7 @@ local function openOrEditor(orBlock)
             b.MouseButton1Click:Connect(function() mc:addBlock(t, defaultParamsFor(t)) end)
         end
         for _, t in ipairs(CanvasUI.HAT_TYPES) do paletteBtn(t) end
-        for _, t in ipairs({ "look", "rotate", "wait", "within", "return", "feature", "key", "click", "usebtn" }) do paletteBtn(t) end
+        for _, t in ipairs({ "look", "rotate", "wait", "within", "animwait", "return", "feature", "key", "click", "usebtn" }) do paletteBtn(t) end
     end
 
     makeBranchSection(1)
@@ -974,11 +1126,12 @@ local function openBranchEditor(andBlock)
             elseif t == "wait" then return { seconds = 0.5 }
             elseif t == "within" then return { studs = 5 }
             elseif t == "click" then return { button = "M1" }
+            elseif t == "animwait" then return { at = 0.3 }
             end
             return {}
         end
 
-        for _, t in ipairs({ "look", "rotate", "wait", "within", "return", "feature", "key", "click", "usebtn" }) do
+        for _, t in ipairs({ "look", "rotate", "wait", "within", "animwait", "return", "feature", "key", "click", "usebtn" }) do
             local c = colorOf(t)
             local b = Instance.new("TextButton")
             b.BackgroundColor3 = Color3.fromRGB(math.floor(c.R*255*0.78), math.floor(c.G*255*0.78), math.floor(c.B*255*0.78))
@@ -1158,6 +1311,7 @@ rebuild = function()
             elseif t == "wait" then return { seconds = 0.5 }
             elseif t == "within" then return { studs = 5 }
             elseif t == "click" then return { button = "M1" }
+            elseif t == "animwait" then return { at = 0.3 }
             elseif t == "feature" then local fa = feature.all(); return { feature = fa[1] and fa[1].id or nil }
             elseif t == "usebtn" then local res = scanner.cached() or scanner.scan(); local m = (res.buttons or {})[1]; return { move = m and m.name or nil }
             end

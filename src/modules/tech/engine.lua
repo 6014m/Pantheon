@@ -623,6 +623,18 @@ local function runStep(a, ctx)
             task.wait(0.05)
         end
         if ctx.releaseAfterWait then releaseHold(true); ctx.releaseAfterWait = false end
+    elseif a.type == "animwait" then
+        -- gate: wait until the animation that TRIGGERED this tech reaches `at`
+        -- seconds (the timeline point picked in the editor). No triggering
+        -- track (key-triggered tech) = falls through immediately. Stops early
+        -- if the anim ends first (cancelled move), 10s cap.
+        local tr = ctx.animTrack
+        local at = tonumber(a.at) or 0
+        if tr and at > 0 then
+            local t0 = os.clock()
+            while tr.IsPlaying and tr.TimePosition < at and os.clock() - t0 < 10 do task.wait() end
+        end
+        if ctx.releaseAfterWait then releaseHold(true); ctx.releaseAfterWait = false end
     elseif a.type == "hold" then
         -- press the key DOWN and keep it held until the matching Release
         -- (or the safety release at the end), so steps in between run while held.
@@ -692,7 +704,7 @@ local function runStep(a, ctx)
     end
 end
 
-local function runTech(tech, hold, triggerIndex)
+local function runTech(tech, hold, triggerIndex, animTrack)
     if running then return end
     running = true
     runningSince = os.clock()
@@ -713,6 +725,7 @@ local function runTech(tech, hold, triggerIndex)
         local ctx = {
             releaseAfterWait = false, heldKeys = heldKeys, heldMouse = heldMouse, featRestore = featRestore,
             triggerIndex = triggerIndex or 1,   -- which subtrigger fired (OR step reads this)
+            animTrack = animTrack,              -- the track that fired an anim trigger ("Anim at" steps wait on it)
         }
         ctx.restoreAll = function(snap)
             releaseHold(snap)
@@ -783,11 +796,11 @@ end
 -- techs just set a facing instantly (no meaningful wait), so they run immediately
 -- to avoid a 1-frame gap / fast-tap stuck-facing.
 local pendingRuns = {}
-local function queueRun(tech, hold, triggerIndex)
+local function queueRun(tech, hold, triggerIndex, animTrack)
     if hold then
-        runTech(tech, true, triggerIndex)
+        runTech(tech, true, triggerIndex, animTrack)
     else
-        pendingRuns[#pendingRuns + 1] = { tech = tech, triggerIndex = triggerIndex or 1 }
+        pendingRuns[#pendingRuns + 1] = { tech = tech, triggerIndex = triggerIndex or 1, animTrack = animTrack }
     end
 end
 local function drainPending()
@@ -799,7 +812,7 @@ local function drainPending()
     end
     if #pendingRuns == 0 then return end
     local q = pendingRuns; pendingRuns = {}
-    for _, item in ipairs(q) do runTech(item.tech, false, item.triggerIndex) end
+    for _, item in ipairs(q) do runTech(item.tech, false, item.triggerIndex, item.animTrack) end
 end
 
 -- ===== animation triggers + capture =====
@@ -864,6 +877,7 @@ end
 
 -- history of non-locomotion anims you've played this session, for the dropdown
 local animLog, animLogSeen = {}, {}
+local targetAnimLogRef   -- set once targetAnimLog exists below (Engine.animLength reads both)
 local function recordAnim(track, id, raw)
     if animLogSeen[id] then return end
     loadAnimNames()
@@ -875,19 +889,66 @@ local function recordAnim(track, id, raw)
         elseif a and a.Name and a.Name ~= "" and a.Name ~= "Animation" then label = a.Name end
     end
     animLogSeen[id] = true
-    animLog[#animLog + 1] = { id = id, raw = raw, label = label or ("anim " .. id) }
+    local len = 0
+    pcall(function() len = track and track.Length or 0 end)
+    animLog[#animLog + 1] = { id = id, raw = raw, label = label or ("anim " .. id), length = len }
 end
 function Engine.animHistory() return animLog end
+-- Length (seconds) of an animation we've seen play, for the editor's timeline.
+-- nil if never seen (the editor then loads it on the preview rig to measure).
+function Engine.animLength(id)
+    local n = animIdNum(id)
+    if not n then return nil end
+    for _, h in ipairs(animLog) do if h.id == n and (h.length or 0) > 0 then return h.length end end
+    for _, h in ipairs(targetAnimLogRef or {}) do if h.id == n and (h.length or 0) > 0 then return h.length end end
+    return nil
+end
 -- wipe the played-anim log (the dropdown gets cluttered with emotes/effects)
 function Engine.clearAnimHistory()
     for i = #animLog, 1, -1 do animLog[i] = nil end
     for k in pairs(animLogSeen) do animLogSeen[k] = nil end
 end
 
+-- Fire `fire()` at the point in `track` the trigger asks for: start (default),
+-- a time in seconds (trig.animAt), or the end (trig.animEnd). The timed path
+-- polls TimePosition per frame; if the track stops before reaching the time it
+-- never fires (a cancelled move shouldn't run the follow-up).
+local function armAnimFire(track, trig, fire)
+    local at = tonumber(trig.animAt)
+    if trig.animEnd then
+        local conn
+        conn = track.Stopped:Connect(function()
+            if conn then conn:Disconnect(); conn = nil end
+            fire()
+        end)
+    elseif at and at > 0 then
+        task.spawn(function()
+            local t0 = os.clock()
+            while track.IsPlaying and track.TimePosition < at do
+                if os.clock() - t0 > 30 then return end
+                task.wait()
+            end
+            if track.TimePosition >= at then fire() end
+        end)
+    else
+        fire()
+    end
+end
+local function animAtLabel(trig)
+    if trig.animEnd then return " @end" end
+    local at = tonumber(trig.animAt)
+    if at and at > 0 then return string.format(" @%.2fs", at) end
+    return ""
+end
+
 local function onAnimPlayed(track)
     local raw = track and track.Animation and track.Animation.AnimationId
     local id = animIdNum(raw)
     if not id then return end
+    -- a first play can report Length 0 before the asset streams in; fix it up
+    for _, h in ipairs(animLog) do
+        if h.id == id and (h.length or 0) == 0 then pcall(function() h.length = track.Length end) end
+    end
     local watching = false
     for _, tech in pairs(techs) do
         if tech.enabled then
@@ -895,20 +956,12 @@ local function onAnimPlayed(track)
                 if trig.event == "anim" then
                     watching = true
                     if animIdNum(trig.animId) == id and modifierHeld(trig, tech.trigger) and conditionsMet(tech, trig) and scopeMatches(tech) then
-                        if trig.animEnd then
-                            log.info("[tech] anim trigger armed on-end: " .. tostring(tech.name))
-                            local conn
-                            conn = track.Stopped:Connect(function()
-                                if conn then conn:Disconnect(); conn = nil end
-                                if tech.enabled and modifierHeld(trig, tech.trigger) and conditionsMet(tech, trig) and scopeMatches(tech) then
-                                    log.info("[tech] anim trigger fired (end): " .. tostring(tech.name))
-                                    queueRun(tech, false, tidx)
-                                end
-                            end)
-                        else
-                            log.info("[tech] anim trigger fired: " .. tostring(tech.name) .. " <- " .. id)
-                            queueRun(tech, false, tidx)
-                        end
+                        armAnimFire(track, trig, function()
+                            -- re-check gates if we waited (time/end): the situation may have changed
+                            if (trig.animEnd or tonumber(trig.animAt)) and not (tech.enabled and modifierHeld(trig, tech.trigger) and conditionsMet(tech, trig) and scopeMatches(tech)) then return end
+                            log.info("[tech] anim trigger fired: " .. tostring(tech.name) .. " <- " .. id .. animAtLabel(trig))
+                            queueRun(tech, false, tidx, track)
+                        end)
                     end
                 end
             end
@@ -968,6 +1021,7 @@ function Engine.captureAnim(cb) animCaptureCbs[#animCaptureCbs + 1] = cb end
 -- only fires target_anim-event techs (NOT the LP anim techs). target anim
 -- history is kept separately so the editor picker doesn't conflate them.
 local targetAnimLog, targetAnimLogSeen = {}, {}
+targetAnimLogRef = targetAnimLog   -- upvalue for Engine.animLength (declared above it)
 local targetAnimCaptureCbs = {}
 function Engine.targetAnimHistory() return targetAnimLog end
 function Engine.clearTargetAnimHistory()
@@ -987,7 +1041,9 @@ local function recordTargetAnim(track, id, raw)
         elseif a and a.Name and a.Name ~= "" and a.Name ~= "Animation" then label = a.Name end
     end
     targetAnimLogSeen[id] = true
-    targetAnimLog[#targetAnimLog + 1] = { id = id, raw = raw, label = label or ("anim " .. id) }
+    local len = 0
+    pcall(function() len = track and track.Length or 0 end)
+    targetAnimLog[#targetAnimLog + 1] = { id = id, raw = raw, label = label or ("anim " .. id), length = len }
 end
 
 local function onTargetAnimPlayed(track)
@@ -999,19 +1055,11 @@ local function onTargetAnimPlayed(track)
             for tidx, trig in ipairs(techTriggers(tech)) do
                 if trig.event == "target_anim" then
                     if animIdNum(trig.animId) == id and modifierHeld(trig, tech.trigger) and conditionsMet(tech, trig) and scopeMatches(tech) then
-                        if trig.animEnd then
-                            local conn
-                            conn = track.Stopped:Connect(function()
-                                if conn then conn:Disconnect(); conn = nil end
-                                if tech.enabled and modifierHeld(trig, tech.trigger) and conditionsMet(tech, trig) and scopeMatches(tech) then
-                                    log.info("[tech] target_anim trigger fired (end): " .. tostring(tech.name))
-                                    queueRun(tech, false, tidx)
-                                end
-                            end)
-                        else
-                            log.info("[tech] target_anim trigger fired: " .. tostring(tech.name) .. " <- " .. id)
-                            queueRun(tech, false, tidx)
-                        end
+                        armAnimFire(track, trig, function()
+                            if (trig.animEnd or tonumber(trig.animAt)) and not (tech.enabled and modifierHeld(trig, tech.trigger) and conditionsMet(tech, trig) and scopeMatches(tech)) then return end
+                            log.info("[tech] target_anim trigger fired: " .. tostring(tech.name) .. " <- " .. id .. animAtLabel(trig))
+                            queueRun(tech, false, tidx, track)
+                        end)
                     end
                 end
             end
@@ -1185,6 +1233,7 @@ local function serializeTrigger(trig)
         maxRange   = trig.maxRange,
         animId     = trig.animId,
         animEnd    = trig.animEnd,
+        animAt     = trig.animAt,
         targetAnimId = trig.targetAnimId,
         suppress   = trig.suppress,
         ignoreWelds = trig.ignoreWelds,
@@ -1201,6 +1250,7 @@ local function deserializeTrigger(s)
         maxRange   = s.maxRange,
         animId     = s.animId,
         animEnd    = s.animEnd,
+        animAt     = s.animAt,
         targetAnimId = s.targetAnimId,
         suppress   = s.suppress,
         ignoreWelds = s.ignoreWelds,

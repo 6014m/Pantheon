@@ -54,7 +54,7 @@ local CATEGORY = {
     look = "motion", rotate = "motion",
     wait = "control", during = "control", ["return"] = "control",
     hold = "control", release = "control", ["and"] = "control", ["or"] = "control",
-    within = "sense",
+    within = "sense", animwait = "sense",
     feature = "action", key = "action", usebtn = "action", click = "action",
     -- Hat blocks (event triggers). Each carries the trigger params on its
     -- own .params table; builder_ui detects a hat at the top of a chain at
@@ -73,7 +73,7 @@ local CAT_COLOR = {
 }
 local STEP_LABEL = {
     look = "Look", rotate = "Rotate", wait = "Wait", during = "During",
-    within = "Within", ["return"] = "Return", feature = "Use", key = "Press",
+    within = "Within", animwait = "Anim at", ["return"] = "Return", feature = "Use", key = "Press",
     hold = "Hold", release = "Release", usebtn = "Use Move", click = "Click", ["and"] = "AND", ["or"] = "OR",
     event_key         = "When key",
     event_anim        = "When my anim",
@@ -197,6 +197,13 @@ do
                 if n and not isRead then p.studs = math.clamp(n, 0, 500) end
                 return tostring(p.studs or 5)
             end)
+        elseif t == "animwait" then
+            -- wait until the TRIGGERING animation reaches this many seconds
+            valTextbox(blk, tostring(p.at or 0.3) .. "s", function(s, isRead)
+                local n = tonumber((tostring(s):gsub("[^%d%.]", "")))
+                if n and not isRead then p.at = math.clamp(n, 0, 30) end
+                return tostring(p.at or 0.3) .. "s"
+            end)
         elseif t == "during" or t == "return" then
             valBtn(blk, t == "during" and "holds prev step for next wait" or "re-face target")
         elseif t == "key" or t == "hold" or t == "release" then
@@ -313,10 +320,10 @@ do
                     return ((kn and kn ~= "") and ("key: " .. kn) or "(no key set)") ..
                            (p.suppress and " [block]" or "") ..
                            ((p.event or "key") == "keyhold" and " [hold]" or "")
-                elseif t == "event_anim" then
-                    return p.animId and ("anim " .. tostring(p.animId)) or "(no anim set)"
-                elseif t == "event_target_anim" then
-                    return p.animId and ("target anim " .. tostring(p.animId)) or "(no anim set)"
+                elseif t == "event_anim" or t == "event_target_anim" then
+                    if not p.animId then return "(no anim set)" end
+                    local at = p.animEnd and " @end" or ((tonumber(p.animAt) and tonumber(p.animAt) > 0) and string.format(" @%.2fs", tonumber(p.animAt)) or "")
+                    return (t == "event_anim" and "anim " or "target anim ") .. tostring(p.animId) .. at
                 elseif t == "event_move" then
                     -- A move trigger fires off its KEY; the name is optional. Show
                     -- whichever is set so a key-only (scanner-less) config reads as
