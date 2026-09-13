@@ -23,8 +23,20 @@ local Players = game:GetService("Players")
 
 local System = {}
 
--- The released bundle. ?v=tick() busts Wave's aggressive HttpGet cache.
-local DIST_URL = "https://raw.githubusercontent.com/6014m/Pantheon/main/dist/main.lua"
+-- The released bundle. ?v=tick() busts Wave's aggressive HttpGet cache -- but
+-- NOT GitHub's raw CDN, which ignores the query string and serves the branch
+-- path stale for up to 5 minutes after a push. So the bundle is fetched by
+-- COMMIT SHA (a path the CDN has never seen = always the real latest): ask the
+-- GitHub API for main's head, then load raw/<sha>/dist/main.lua. Falls back to
+-- the branch path if the API is unreachable / rate-limited (60/hr unauth).
+local REPO_API = "https://api.github.com/repos/6014m/Pantheon/commits/main"
+local RAW_BASE = "https://raw.githubusercontent.com/6014m/Pantheon/"
+local DIST_URL = RAW_BASE .. "main/dist/main.lua"
+local function resolveDistUrl()
+    local ok, r = pcall(function() return game:HttpGet(REPO_API) end)
+    local sha = ok and type(r) == "string" and r:match('"sha"%s*:%s*"(%x+)"') or nil
+    return RAW_BASE .. (sha or "main") .. "/dist/main.lua?v=" .. tostring(tick())
+end
 
 -- queue_on_teleport varies by executor. Undefined names resolve to nil safely,
 -- so this just picks the first one that exists.
@@ -33,13 +45,18 @@ local queueteleport = queue_on_teleport
     or (fluxus and fluxus.queue_on_teleport)
     or (getgenv and getgenv().queue_on_teleport)
 
--- Payload run in the NEW place after a teleport. The `?v=" .. tostring(tick())`
--- is literal text INSIDE the payload string, so it evaluates (and cache-busts)
--- at re-exec time in the destination place.
-local PAYLOAD =
-    'repeat task.wait() until game:IsLoaded()\n' ..
-    'task.wait(2)\n' ..
-    'pcall(function() loadstring(game:HttpGet("' .. DIST_URL .. '?v=" .. tostring(tick())))() end)\n'
+-- Payload run in the NEW place after a teleport. Same SHA-pinned resolve as
+-- resolveDistUrl(), written out as source text so it evaluates at re-exec
+-- time in the destination place (long string: no escaping to get wrong).
+local PAYLOAD = [[
+repeat task.wait() until game:IsLoaded()
+task.wait(2)
+pcall(function()
+    local ok, r = pcall(function() return game:HttpGet("]] .. REPO_API .. [[") end)
+    local sha = ok and type(r) == "string" and r:match('"sha"%s*:%s*"(%x+)"') or "main"
+    loadstring(game:HttpGet("]] .. RAW_BASE .. [[" .. sha .. "/dist/main.lua?v=" .. tostring(tick())))()
+end)
+]]
 
 local s = { auto = false, tpConn = nil }
 
@@ -48,7 +65,7 @@ local s = { auto = false, tpConn = nil }
 local function reexecNow()
     task.spawn(function()
         local ok, src = pcall(function()
-            return game:HttpGet(DIST_URL .. "?v=" .. tostring(tick()))
+            return game:HttpGet(resolveDistUrl())
         end)
         if not ok or type(src) ~= "string" or #src == 0 then
             notify.warn("Re-execute: download failed"); return
