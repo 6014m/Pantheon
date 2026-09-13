@@ -590,8 +590,29 @@ end
 -- while one is mid-run (e.g. during a Wait) is ignored, so two techs can't fight
 -- over the held facing. Hold techs run their (instant) actions and finish the
 -- coroutine immediately, so `running` clears right away and re-pressing works.
+-- ===== trace =====
+-- Timestamped trace of anim-trigger events + run steps, appended to
+-- pantheon_tech_trace.txt in the executor workspace, so timing questions
+-- ("did it fire at 0.6s or at the end?") can be answered from the file
+-- instead of guessed. Truncated on init. Cheap: only fires/steps write.
+Engine.traceEnabled = true
+local TRACE_FILE = "pantheon_tech_trace.txt"
+local traceStart = os.clock()
+local function trace(msg)
+    if not Engine.traceEnabled then return end
+    local line = string.format("%8.3f  %s\n", os.clock() - traceStart, tostring(msg))
+    if typeof(appendfile) == "function" then pcall(appendfile, TRACE_FILE, line) end
+end
+local function traceReset()
+    if typeof(writefile) == "function" then pcall(writefile, TRACE_FILE, "# Pantheon tech trace " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n") end
+end
+
 local running = false
 local runningSince = 0
+local armedFires = {}    -- timed anim-trigger fires, checked every Heartbeat (see checkArmedFires)
+local checkArmedFires    -- defined with the anim section below
+local lastPlayed         -- { track, id, t, seq } = most recent non-locomotion anim on us ("Anim at" fallback)
+local playingTrackById   -- defined with the anim section below
 -- keyhold techs park their run context here while the trigger key is down, so
 -- the key-up path can release Hold-step keys/buttons and restore toggled
 -- features (previously: keys released instantly at the end of the actions,
@@ -624,15 +645,58 @@ local function runStep(a, ctx)
         end
         if ctx.releaseAfterWait then releaseHold(true); ctx.releaseAfterWait = false end
     elseif a.type == "animwait" then
-        -- gate: wait until the animation that TRIGGERED this tech reaches `at`
-        -- seconds (the timeline point picked in the editor). No triggering
-        -- track (key-triggered tech) = falls through immediately. Stops early
-        -- if the anim ends first (cancelled move), 10s cap.
-        local tr = ctx.animTrack
+        -- gate: wait until an animation reaches `at` seconds. Which animation:
+        --   * a.animId set      -> that anim (already playing, or starts within 2s)
+        --   * anim-triggered    -> the track that fired the trigger
+        --   * key-triggered     -> the move's OWN anim: the most recent non-
+        --                          locomotion anim if it just started, else the
+        --                          next one to start (2s cap). So "Press R ->
+        --                          Anim at 0.4 -> Press E" times E to R's animation.
+        -- Stops early if the anim ends first (cancelled move), 10s cap.
         local at = tonumber(a.at) or 0
+        local tr
+        local want = a.animId and tostring(a.animId):match("%d+")
+        if want then
+            tr = playingTrackById and playingTrackById(want)
+            local t0 = os.clock()
+            while not tr and os.clock() - t0 < 2 do task.wait(); tr = playingTrackById and playingTrackById(want) end
+        else
+            tr = ctx.animTrack
+            local alive = false
+            pcall(function() alive = tr ~= nil and tr.IsPlaying end)
+            if not alive then
+                -- The move's own anim starts a frame or two around the trigger
+                -- (before runStart if the game fired the move off the same key
+                -- press we triggered on, after it if a Press step fired it), so
+                -- accept anims from ~0.1s before the run began onward; anything
+                -- older is a leftover from a previous move, even if still playing.
+                local lp = lastPlayed
+                local lpAlive = false
+                pcall(function() lpAlive = lp ~= nil and lp.track.IsPlaying and lp.t >= (ctx.runStart or 0) - 0.1 end)
+                if lpAlive then tr = lp.track
+                else
+                    local seq0 = lp and lp.seq or 0
+                    local t0 = os.clock()
+                    tr = nil
+                    while os.clock() - t0 < 2 do
+                        task.wait()
+                        if lastPlayed and lastPlayed.seq ~= seq0 then tr = lastPlayed.track; break end
+                    end
+                end
+                if tr then ctx.animTrack = tr end   -- later Anim at steps ride the same track
+            end
+        end
         if tr and at > 0 then
             local t0 = os.clock()
-            while tr.IsPlaying and tr.TimePosition < at and os.clock() - t0 < 10 do task.wait() end
+            while os.clock() - t0 < 10 do
+                local playing, pos = false, 0
+                pcall(function() playing, pos = tr.IsPlaying, tr.TimePosition end)
+                if not playing or pos >= at then break end
+                task.wait()
+            end
+            pcall(function() trace(("  animwait %.2f reached at pos=%.3f playing=%s"):format(at, tr.TimePosition, tostring(tr.IsPlaying))) end)
+        elseif at > 0 then
+            trace("  animwait: no animation to bind to (fell through)")
         end
         if ctx.releaseAfterWait then releaseHold(true); ctx.releaseAfterWait = false end
     elseif a.type == "hold" then
@@ -726,6 +790,7 @@ local function runTech(tech, hold, triggerIndex, animTrack)
             releaseAfterWait = false, heldKeys = heldKeys, heldMouse = heldMouse, featRestore = featRestore,
             triggerIndex = triggerIndex or 1,   -- which subtrigger fired (OR step reads this)
             animTrack = animTrack,              -- the track that fired an anim trigger ("Anim at" steps wait on it)
+            runStart = os.clock(),              -- "Anim at" on a key tech only binds anims that started with this run
         }
         ctx.restoreAll = function(snap)
             releaseHold(snap)
@@ -738,8 +803,16 @@ local function runTech(tech, hold, triggerIndex, animTrack)
         -- runTech bails while running) until a re-execute. The most likely
         -- culprit is an invalid Enum.KeyCode[a.key] on a Hold/Release step with a
         -- bad/hand-edited key name (digit names throw). Cleanup runs either way.
+        trace(("run %s (trigger %d)%s"):format(tostring(tech.name), ctx.triggerIndex, animTrack and " anim-bound" or ""))
         local ok, err = pcall(function()
-            for _, a in ipairs(tech.actions or {}) do runStep(a, ctx) end
+            for i, a in ipairs(tech.actions or {}) do
+                if Engine.traceEnabled then
+                    local pos = ""
+                    pcall(function() if ctx.animTrack then pos = (" animpos=%.3f"):format(ctx.animTrack.TimePosition) end end)
+                    trace(("  step %d %s%s"):format(i, tostring(a.type), pos))
+                end
+                runStep(a, ctx)
+            end
             -- one-shot techs auto-clean at the end -- features toggled go back,
             -- held keys release. If a Rotate ran, hold the rotation briefly past
             -- tech end so it is VISIBLE under shiftlock (the game's shiftlock
@@ -810,6 +883,7 @@ local function drainPending()
         log.warn("[tech] runner watchdog: forcing reset")
         running = false
     end
+    if checkArmedFires then checkArmedFires() end
     if #pendingRuns == 0 then return end
     local q = pendingRuns; pendingRuns = {}
     for _, item in ipairs(q) do runTech(item.tech, false, item.triggerIndex, item.animTrack) end
@@ -917,14 +991,13 @@ local function armAnimFire(track, trig, fire)
     local at = tonumber(trig.animAt)
     -- a picked time wins over a leftover animEnd (older saves can carry both)
     if at and at > 0 then
-        task.spawn(function()
-            local t0 = os.clock()
-            while track.IsPlaying and track.TimePosition < at do
-                if os.clock() - t0 > 30 then return end
-                task.wait()
-            end
-            if track.TimePosition >= at then fire() end
-        end)
+        -- Polled from Heartbeat (drainPending), NOT from a thread spawned here:
+        -- a coroutine task.spawn'd inside a signal handler doesn't reliably get
+        -- its task.wait resumed on Wave (the same reason trigger runs are
+        -- queued to Heartbeat), so an in-handler poll loop fired late or never.
+        armedFires[#armedFires + 1] = { track = track, at = at, fire = fire, t0 = os.clock() }
+        local len = 0; pcall(function() len = track.Length end)
+        trace(("armed anim fire @%.2fs (track len %.2f)"):format(at, len or 0))
     elseif trig.animEnd then
         local conn
         conn = track.Stopped:Connect(function()
@@ -935,6 +1008,42 @@ local function armAnimFire(track, trig, fire)
         fire()
     end
 end
+-- Every Heartbeat: fire any armed timed trigger whose track has reached its
+-- time; drop ones whose track stopped first (cancelled move) or timed out.
+checkArmedFires = function()
+    if #armedFires == 0 then return end
+    local keep = {}
+    for _, e in ipairs(armedFires) do
+        local ok, pos, playing = pcall(function() return e.track.TimePosition, e.track.IsPlaying end)
+        if not ok then
+            trace("armed fire dropped (track gone)")
+        elseif pos >= e.at then
+            trace(("anim fire @%.3f (armed for %.2f)"):format(pos, e.at))
+            e.fire()
+        elseif playing and os.clock() - e.t0 < 30 then
+            keep[#keep + 1] = e
+        else
+            trace(("armed fire dropped (anim stopped at %.3f before %.2f)"):format(pos, e.at))
+        end
+    end
+    armedFires = keep
+end
+
+-- The local player's currently playing track for an anim id (for "Anim at" with an explicit id).
+playingTrackById = function(idNum)
+    local ch = LP.Character
+    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+    local an = hum and hum:FindFirstChildOfClass("Animator")
+    if not an then return nil end
+    local ok, tracks = pcall(function() return an:GetPlayingAnimationTracks() end)
+    if not ok or not tracks then return nil end
+    for _, tr in ipairs(tracks) do
+        local a = tr.Animation
+        if a and tostring(a.AnimationId):find(idNum, 1, true) then return tr end
+    end
+    return nil
+end
+
 local function animAtLabel(trig)
     local at = tonumber(trig.animAt)
     if at and at > 0 then return string.format(" @%.2fs", at) end
@@ -986,6 +1095,11 @@ local function onAnimPlayed(track)
             if ok and full then path = full end
         end
         if path and path:lower():find("emote", 1, true) then return end
+    end
+    lastPlayed = { track = track, id = id, t = os.clock(), seq = (lastPlayed and lastPlayed.seq or 0) + 1 }
+    if Engine.traceEnabled then
+        local len = 0; pcall(function() len = track.Length end)
+        trace(("anim played %s (len %.2f)"):format(id, len or 0))
     end
     recordAnim(track, id, raw)
     if #animCaptureCbs > 0 then
@@ -1242,6 +1356,10 @@ local function serializeTrigger(trig)
 end
 local function deserializeTrigger(s)
     if not s then return nil end
+    -- a picked time wins: older saves can carry animEnd=true next to animAt
+    local animEnd = s.animEnd
+    local at = tonumber(s.animAt)
+    if at and at > 0 then animEnd = nil end
     return {
         event      = s.event,
         key        = persist.stringToKey(s.key),
@@ -1250,7 +1368,7 @@ local function deserializeTrigger(s)
         modkey     = s.modkey,
         maxRange   = s.maxRange,
         animId     = s.animId,
-        animEnd    = s.animEnd,
+        animEnd    = animEnd,
         animAt     = s.animAt,
         targetAnimId = s.targetAnimId,
         suppress   = s.suppress,
@@ -1415,6 +1533,7 @@ end
 
 function Engine.init()
     if bound then return end
+    traceReset()
     RunService:BindToRenderStep(RENDER_BIND, Enum.RenderPriority.Camera.Value + 2, renderHold)
     -- dispatch queued trigger runs from a stable thread so their Waits resume
     drainConn = RunService.Heartbeat:Connect(drainPending)
