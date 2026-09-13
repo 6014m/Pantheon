@@ -915,13 +915,8 @@ end
 -- never fires (a cancelled move shouldn't run the follow-up).
 local function armAnimFire(track, trig, fire)
     local at = tonumber(trig.animAt)
-    if trig.animEnd then
-        local conn
-        conn = track.Stopped:Connect(function()
-            if conn then conn:Disconnect(); conn = nil end
-            fire()
-        end)
-    elseif at and at > 0 then
+    -- a picked time wins over a leftover animEnd (older saves can carry both)
+    if at and at > 0 then
         task.spawn(function()
             local t0 = os.clock()
             while track.IsPlaying and track.TimePosition < at do
@@ -930,14 +925,20 @@ local function armAnimFire(track, trig, fire)
             end
             if track.TimePosition >= at then fire() end
         end)
+    elseif trig.animEnd then
+        local conn
+        conn = track.Stopped:Connect(function()
+            if conn then conn:Disconnect(); conn = nil end
+            fire()
+        end)
     else
         fire()
     end
 end
 local function animAtLabel(trig)
-    if trig.animEnd then return " @end" end
     local at = tonumber(trig.animAt)
     if at and at > 0 then return string.format(" @%.2fs", at) end
+    if trig.animEnd then return " @end" end
     return ""
 end
 

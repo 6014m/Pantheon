@@ -333,6 +333,7 @@ local function buildTechFromDraft(id)
     elseif actions[1] and CanvasUI.isHat(actions[1].type) then
         local hat = table.remove(actions, 1)
         trigger.event = eventForHat(hat)
+        for k in pairs(HAT_FIELDS) do trigger[k] = nil end   -- the hat owns these; drop stale form copies (e.g. old animEnd)
         for k, v in pairs(hat) do
             if HAT_FIELDS[k] then trigger[k] = v end
         end
@@ -501,11 +502,14 @@ local function buildAnimTimeline(parent, p, isTarget)
     ticks.Size = UDim2.new(1, -16, 0, 16); ticks.Position = UDim2.fromOffset(8, 54); ticks.BackgroundTransparency = 1; ticks.Parent = f
 
     local function curAt()
+        local at = tonumber(p.animAt) or 0
+        if at > 0 then return math.max(0, math.min(at, length > 0 and length or 1e9)) end
         if p.animEnd then return length end
-        return math.max(0, math.min(tonumber(p.animAt) or 0, length > 0 and length or 1e9))
+        return 0
     end
     local function refreshLabel()
         local at = tonumber(p.animAt) or 0
+        if at > 0 and p.animEnd then p.animEnd = nil end   -- heal saves that carry both
         local where
         if p.animEnd then where = "END"
         elseif at > 0 then where = string.format("%.2fs", at) .. (length > 0 and string.format(" of %.2fs (%d%%)", length, math.floor(at / length * 100 + 0.5)) or "")

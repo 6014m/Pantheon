@@ -322,7 +322,8 @@ do
                            ((p.event or "key") == "keyhold" and " [hold]" or "")
                 elseif t == "event_anim" or t == "event_target_anim" then
                     if not p.animId then return "(no anim set)" end
-                    local at = p.animEnd and " @end" or ((tonumber(p.animAt) and tonumber(p.animAt) > 0) and string.format(" @%.2fs", tonumber(p.animAt)) or "")
+                    local atN = tonumber(p.animAt) or 0
+                    local at = (atN > 0) and string.format(" @%.2fs", atN) or (p.animEnd and " @end" or "")
                     return (t == "event_anim" and "anim " or "target anim ") .. tostring(p.animId) .. at
                 elseif t == "event_move" then
                     -- A move trigger fires off its KEY; the name is optional. Show
