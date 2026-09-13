@@ -1523,6 +1523,11 @@ local function ensureGui()
     local right = Instance.new("Frame")
     right.Size = UDim2.new(1, -320, 1, -44); right.Position = UDim2.fromOffset(312, 36)
     right.BackgroundColor3 = theme.bgAlt; right.BorderSizePixel = 0; right.Parent = rootFrame
+    -- The preview must ALWAYS be visible, including while a config modal
+    -- (ZIndex 200) is open -- the timeline scrub is useless if the modal can
+    -- cover the rig. Sibling ZIndex: the pane and everything in it render
+    -- above any modal.
+    right.ZIndex = 300
     corner(right, 8); stroke(right)
     local rpad = Instance.new("UIPadding", right)
     rpad.PaddingTop = UDim.new(0, 8); rpad.PaddingBottom = UDim.new(0, 8); rpad.PaddingLeft = UDim.new(0, 8); rpad.PaddingRight = UDim.new(0, 8)
@@ -1530,7 +1535,7 @@ local function ensureGui()
     vpFrame = Instance.new("ViewportFrame")
     vpFrame.Size = UDim2.new(1, 0, 1, -40); vpFrame.BackgroundColor3 = theme.bgDark; vpFrame.BorderSizePixel = 0
     vpFrame.Ambient = Color3.fromRGB(190, 190, 200); vpFrame.LightColor = Color3.fromRGB(255, 255, 255)
-    vpFrame.LightDirection = Vector3.new(-0.4, -1, -0.2); vpFrame.Parent = right
+    vpFrame.LightDirection = Vector3.new(-0.4, -1, -0.2); vpFrame.ZIndex = 301; vpFrame.Parent = right
     corner(vpFrame, 8)
     worldModel = Instance.new("WorldModel"); worldModel.Parent = vpFrame
     vpCam = Instance.new("Camera"); vpCam.FieldOfView = 50; vpCam.Parent = vpFrame; vpFrame.CurrentCamera = vpCam
@@ -1538,7 +1543,7 @@ local function ensureGui()
     local playBtn = Instance.new("TextButton")
     playBtn.Size = UDim2.new(1, 0, 0, 32); playBtn.Position = UDim2.new(0, 0, 1, -32); playBtn.BackgroundColor3 = theme.accent
     playBtn.AutoButtonColor = true; playBtn.Text = "Play preview"; playBtn.TextColor3 = theme.fg; playBtn.Font = theme.fontBold
-    playBtn.TextSize = 13; playBtn.Parent = right; corner(playBtn, 6)
+    playBtn.TextSize = 13; playBtn.ZIndex = 301; playBtn.Parent = right; corner(playBtn, 6)
     playBtn.MouseButton1Click:Connect(previewDraft)
 end
 
