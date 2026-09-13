@@ -102,7 +102,7 @@ end
 local function gget(store, id) local m = store and store["tech.custom"]; return (m and m[id]~=nil) or false end
 
 local out = {}
-local function tick() for _, fn in real.ipairs(HB.fns) do fn() end end
+local function tick(dt) for _, fn in real.ipairs(HB.fns) do fn(dt) end end
 local function play(track) for _, fn in real.ipairs(AP.fns) do fn(track) end end
 local function fakeTrack(id, len)
   local T = { IsPlaying=true, TimePosition=0, Length=len, Animation={ AnimationId="rbxassetid://"..id } }
@@ -160,6 +160,21 @@ play(tr4); tick()                       -- (E2's hook + E's hook both see it; E 
 tr4.TimePosition = 0.3; tick()
 out.E2_fires_at_time_not_end = lastFired() == "hit4"
 E2.destroy()
+
+-- 4b. closest-frame prediction: with the next frame landing further past the target than we are
+--     short now, fire THIS frame (at=0.30, rate 1.0/s: pos 0.27 with dt 0.12 -> next 0.39 -> fire now)
+E.saveCustom({ id="t4b", name="Predict", scope=100, enabled=true,
+  trigger={ event="anim", animId="777", animAt=0.30, conditions={} }, actions={ { type="feature", feature="hit4b" } } })
+E.setEnabled("t2", false); E.setEnabled("t3", false)
+FIRED = {}
+local tr4b = fakeTrack("777", 1.0)
+play(tr4b)
+tr4b.TimePosition = 0.00; tick(0.15)            -- first frame: no rate yet
+tr4b.TimePosition = 0.15; tick(0.15)            -- rate = 1.0; next = 0.30 -> short 0.15 vs over 0.00 -> wait
+out.H1_no_early_fire_when_next_frame_is_exact = lastFired() ~= "hit4b"
+tr4b.TimePosition = 0.27; tick(0.12)            -- rate = 1.0; next = 0.39 -> short 0.03 <= over 0.09 -> fire now
+out.H2_fires_on_closest_frame = lastFired() == "hit4b"
+E.setEnabled("t4b", false)
 
 -- 5. "Anim at" step on an anim-triggered tech waits on the triggering track
 E.setEnabled("t2", false); E.setEnabled("t3", false)
