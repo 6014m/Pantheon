@@ -89,7 +89,7 @@ end
 
 local ENV = real.setmetatable({ Instance={new=newInstance}, Enum=Enum, game=game, workspace=SERVICES.Workspace,
   typeof=typeof, task=task, require=myrequire, os=real.os, print=real.print, warn=function() end,
-  math=real.math, string=real.string, table=real.table, pcall=real.pcall, ipairs=real.ipairs,
+  math=real.setmetatable({ clamp=function(v,lo,hi) return real.math.max(lo, real.math.min(hi, v)) end }, { __index=real.math }), string=real.string, table=real.table, pcall=real.pcall, ipairs=real.ipairs,
   pairs=real.pairs, tostring=real.tostring, tonumber=real.tonumber, type=real.type,
   setmetatable=real.setmetatable, error=real.error, assert=real.assert, select=real.select,
 }, { __index=_G })
