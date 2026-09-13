@@ -647,8 +647,10 @@ local function openHatEditor(hatBlock)
     local t, p = hatBlock.type, hatBlock.params
 
     local modal = Instance.new("Frame")
-    modal.Size = UDim2.new(0, 360, 0, 340)
-    modal.Position = UDim2.new(0.5, -180, 0.5, -170)
+    -- Docked over the LEFT (form) pane so the preview rig on the right stays
+    -- visible while scrubbing the timeline.
+    modal.Size = UDim2.new(0, 300, 1, -44)
+    modal.Position = UDim2.fromOffset(6, 36)
     modal.BackgroundColor3 = theme.bg; modal.BorderSizePixel = 0
     modal.ZIndex = 200; modal.Parent = rootFrame
     corner(modal, 8); stroke(modal, theme.accent, 2)
@@ -803,8 +805,8 @@ local function openUseMoveEditor(block)
     local p = block.params
 
     local modal = Instance.new("Frame")
-    modal.Size = UDim2.new(0, 360, 0, 300)
-    modal.Position = UDim2.new(0.5, -180, 0.5, -150)
+    modal.Size = UDim2.new(0, 300, 1, -44)
+    modal.Position = UDim2.fromOffset(6, 36)
     modal.BackgroundColor3 = theme.bg; modal.BorderSizePixel = 0
     modal.ZIndex = 200; modal.Parent = rootFrame
     corner(modal, 8); stroke(modal, theme.accent, 2)
