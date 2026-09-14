@@ -25,7 +25,8 @@ if genv.Pantheon and type(genv.Pantheon.shutdown) == "function" then
 end
 genv.Pantheon = {}
 
-log.info("booting on executor: " .. tostring(env.executor))
+-- Build tag in the log so a client log shows which bundle actually ran.
+log.info("booting on executor: " .. tostring(env.executor) .. " (build " .. tostring(rawget(_G, "PANTHEON_BUILD") or "dev") .. ")")
 
 persist.init()
 keybinds.init()
