@@ -5,7 +5,7 @@ Universal Roblox script hub with first-class game integration. Fires remotes, ho
 ## Usage
 
 ```lua
-local ok,r=pcall(function() return game:HttpGet("https://api.github.com/repos/6014m/Pantheon/commits/main") end);local sha=ok and type(r)=="string" and r:match('"sha"%s*:%s*"(%x+)"') or "main";loadstring(game:HttpGet("https://raw.githubusercontent.com/6014m/Pantheon/"..sha.."/dist/main.lua?v="..tick()))()
+local ok,r=pcall(function() return game:HttpGet("https://api.github.com/repos/6014m/Pantheon/commits/main?t="..tick()) end);local sha=ok and type(r)=="string" and r:match('"sha"%s*:%s*"(%x+)"') or "main";loadstring(game:HttpGet("https://raw.githubusercontent.com/6014m/Pantheon/"..sha.."/dist/main.lua?v="..tick()))()
 ```
 
 That one-liner asks GitHub for main's latest commit and loads the bundle **by commit SHA**.
@@ -13,6 +13,8 @@ Why: `raw.githubusercontent.com/.../main/...` is served by a CDN that caches the
 for up to 5 minutes and **ignores `?v=` query strings**, so the plain branch URL hands out the
 previous build right after a push. A SHA path is immutable and never stale. If the API call
 fails (rate limit: 60/hr unauthenticated) it falls back to the branch path.
+The `?t=` on the API call matters: Wave caches `HttpGet` responses per URL, so without it every
+reload in a session reuses the first lookup's SHA and keeps loading that build.
 
 Plain form (may be up to 5 minutes stale after a push):
 

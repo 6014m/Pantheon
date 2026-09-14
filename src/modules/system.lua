@@ -32,8 +32,11 @@ local System = {}
 local REPO_API = "https://api.github.com/repos/6014m/Pantheon/commits/main"
 local RAW_BASE = "https://raw.githubusercontent.com/6014m/Pantheon/"
 local DIST_URL = RAW_BASE .. "main/dist/main.lua"
+-- The API lookup needs its own ?t=tick() too: without it Wave hands back the
+-- CACHED commit response, so every reload re-resolves the SHA from the first
+-- lookup of the session and keeps loading that old build (GitHub ignores the param).
 local function resolveDistUrl()
-    local ok, r = pcall(function() return game:HttpGet(REPO_API) end)
+    local ok, r = pcall(function() return game:HttpGet(REPO_API .. "?t=" .. tostring(tick())) end)
     local sha = ok and type(r) == "string" and r:match('"sha"%s*:%s*"(%x+)"') or nil
     return RAW_BASE .. (sha or "main") .. "/dist/main.lua?v=" .. tostring(tick())
 end
@@ -52,7 +55,7 @@ local PAYLOAD = [[
 repeat task.wait() until game:IsLoaded()
 task.wait(2)
 pcall(function()
-    local ok, r = pcall(function() return game:HttpGet("]] .. REPO_API .. [[") end)
+    local ok, r = pcall(function() return game:HttpGet("]] .. REPO_API .. [[?t=" .. tostring(tick())) end)
     local sha = ok and type(r) == "string" and r:match('"sha"%s*:%s*"(%x+)"') or "main"
     loadstring(game:HttpGet("]] .. RAW_BASE .. [[" .. sha .. "/dist/main.lua?v=" .. tostring(tick())))()
 end)
