@@ -142,6 +142,11 @@ function module.register()
             -- Highlight all handle an NPC target the same as a player one.
             { type = "toggle", name = "Bot Mode (lock onto NPCs)", key = "bot_mode", default = false,
               onChange = function(v) state.botMode = v and true or false end },
+            -- Never target summons / pets that belong to you or a friendly. The
+            -- owner comes from an Owner/Creator/Summoner-style attribute or value,
+            -- a folder named after the player, or the player's name in the summon's name.
+            { type = "toggle", name = "Skip your + friendlies' summons", key = "skip_friendly_summons", default = true,
+              onChange = function(v) state.skipFriendlySummons = v and true or false end },
             -- Cursor targeting: pick whoever is nearest the MOUSE CURSOR (screen
             -- space) instead of nearest by world distance. Off = classic nearest.
             { type = "toggle", name = "Aim at cursor (nearest to mouse)", key = "cursor_target", default = false,

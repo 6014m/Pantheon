@@ -106,7 +106,8 @@ local function getNpcs()
                and model:FindFirstChild("HumanoidRootPart")
                and not Players:GetPlayerFromCharacter(model) then
                 seen[model] = true
-                if not state.isNpcExcluded(model) then
+                if not state.isNpcExcluded(model)
+                   and not (state.skipFriendlySummons and state.isFriendlySummon(model)) then
                     out[#out + 1] = model
                 end
             end

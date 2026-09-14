@@ -19,11 +19,10 @@ print("Lua:", rt.eval("_VERSION"))
 #   * Veil.destroy() removes the filter again.
 #   * getRankedTargets orders by distance, and cycleTarget steps forward/back with
 #     wrap-around (the scroll-wheel swap).
+#   * Summons owned by you or a friendly are skipped (owner from an attribute, a
+#     value object, a folder named after the player, or the name), enemies' are not,
+#     and the "Skip your + friendlies' summons" toggle turns it off.
 LUA = r"""
-local real = { math=math, string=string, table=table, os=os, pcall=pcall, ipairs=ipairs,
-  pairs=pairs, tostring=tostring, tonumber=tonumber, type=type, select=select, next=next,
-  setmetatable=setmetatable, rawset=rawset, rawget=rawget, assert=assert, print=print, error=error }
-
 table.clear = table.clear or function(t) for k in pairs(t) do t[k] = nil end end
 
 local Enum = setmetatable({}, { __index=function(t,c)
@@ -46,16 +45,26 @@ local clock = 100
 os.clock = function() return clock end
 
 -- Instances ---------------------------------------------------------------
+local VALUE_CLASSES = { ObjectValue=true, StringValue=true, IntValue=true, NumberValue=true }
 local INST = {}
 INST.__index = function(self, k)
   local m = rawget(INST, k); if m then return m end
   return rawget(self, "_kids")[k]
 end
-function INST:IsA(c) return self.ClassName == c end
+function INST:IsA(c)
+  if c == "ValueBase" then return VALUE_CLASSES[self.ClassName] == true end
+  return self.ClassName == c
+end
 function INST:FindFirstChild(n) return self._kids[n] end
 function INST:FindFirstChildOfClass(c)
   for _, ch in ipairs(self._list) do if ch.ClassName == c then return ch end end
 end
+function INST:FindFirstAncestorOfClass(c)
+  local p = self.Parent
+  while p do if p.ClassName == c then return p end; p = p.Parent end
+end
+function INST:GetChildren() local t = {}; for i, ch in ipairs(self._list) do t[i] = ch end; return t end
+function INST:GetAttributes() return self._attrs or {} end
 function INST:GetDescendants()
   local out = {}
   local function walk(o) for _, ch in ipairs(o._list) do out[#out+1] = ch; walk(ch) end end
@@ -72,6 +81,11 @@ local function new(cls, name, parent)
   return o
 end
 
+typeof = function(v)
+  if type(v) == "table" and (getmetatable(v) == INST or v._isPlayer) then return "Instance" end
+  return type(v)
+end
+
 local Workspace = new("Workspace", "Workspace")
 local Monsters  = new("Folder", "Monsters", Workspace)
 
@@ -83,6 +97,7 @@ local function npc(name, pos, parent, opts)
   root.Position = pos; root.Anchored = opts.anchored or false
   root.AssemblyLinearVelocity = V(0,0,0)
   if opts.prompt then new("ProximityPrompt", "Talk", root) end
+  if opts.attrs then m._attrs = opts.attrs end
   return m, root
 end
 
@@ -90,11 +105,20 @@ local me = new("Model", "Me", Workspace)
 new("Humanoid", "Humanoid", me)
 local myRoot = new("Part", "HumanoidRootPart", me); myRoot.Position = V(0,0,0)
 
-local LocalPlayer = { Character = me, UserId = 1 }
+local function player(name, id, char)
+  return { _isPlayer = true, Name = name, DisplayName = name, UserId = id, Character = char,
+           IsA = function(_, c) return c == "Player" end }
+end
+local LocalPlayer = player("Sable", 1, me)
+local Buddy       = player("Buddy", 2, nil)
+local Enemy       = player("Grifter", 3, nil)
+local ALL = { LocalPlayer, Buddy, Enemy }
 local Players = {
   LocalPlayer = LocalPlayer,
-  GetPlayers = function() return { LocalPlayer } end,
+  GetPlayers = function() return ALL end,
   GetPlayerFromCharacter = function(_, c) if c == me then return LocalPlayer end end,
+  GetPlayerByUserId = function(_, id) for _, p in ipairs(ALL) do if p.UserId == id then return p end end end,
+  FindFirstChild = function(_, n) for _, p in ipairs(ALL) do if p.Name == n then return p end end end,
 }
 local function noopSignal() return { Connect=function() return { Disconnect=function() end } end } end
 local services = {
@@ -111,7 +135,6 @@ Workspace.CurrentCamera = nil
 
 RaycastParams = { new = function() return {} end }
 _G.Enum, _G.Vector3, _G.Vector2 = Enum, Vector3, Vector2
-Enum = Enum; Vector3 = Vector3; Vector2 = Vector2
 
 -- require shim: real modules for aim + games, stubs for UI / log / signal ------
 local loaded = {}
@@ -144,10 +167,12 @@ local veil      = require("games.veil")
 local results = {}
 local function check(label, cond) results[#results+1] = (cond and "PASS " or "FAIL ") .. label end
 
-local function npcNames()
-  clock = clock + 1   -- past the 0.5 s NPC cache
+local function npcNames(filterFn)
+  clock = clock + 3   -- past the 0.5 s NPC cache and the 2 s owner cache
   local out = {}
-  for _, e in ipairs(targeting.getRankedTargets()) do out[#out+1] = e.target.Name end
+  for _, e in ipairs(targeting.getRankedTargets()) do
+    if not filterFn or filterFn(e.target.Name) then out[#out+1] = e.target.Name end
+  end
   return table.concat(out, ",")
 end
 
@@ -210,6 +235,28 @@ ts.cycleTarget(1);  check("target not in ranking: wheel down picks the best", st
 veil.destroy()
 check("destroy removes the filter", #state.npcFilters == 0)
 check("after destroy every npc is back", npcNames() == "Runner,Shopkeeper,Hiveling,Vesper,Wraith,Cambion")
+
+-- summons -------------------------------------------------------------------
+local isImp = function(n) return n:find("Imp") ~= nil or n:find("Boulder") ~= nil end
+npc("Imp", V(40,0,0), nil, { attrs = { Owner = "Sable" } })                  -- mine, by attribute (name)
+local buddyImp = npc("Imp2", V(41,0,0))                                        -- Buddy's, by ObjectValue
+local cv = new("ObjectValue", "Creator", buddyImp); cv.Value = Buddy
+local folder = new("Folder", "Grifter", Workspace)                             -- enemy's, by folder name
+npc("Boulder", V(42,0,0), folder)
+npc("Sable's Imp", V(43,0,0))                                                  -- mine, by name
+npc("ImpUid", V(44,0,0), nil, { attrs = { summoner_id = 3 } })                 -- unknown key: not an owner
+npc("ImpById", V(45,0,0), nil, { attrs = { OwnerUserId = 1 } })               -- mine, by user id
+
+names = npcNames(isImp)
+check("summons: mine hidden, not-yet-friendly Buddy's shown, enemy's shown (" .. names .. ")",
+  names == "Imp2,Boulder,ImpUid")
+state.friendlies[2] = true
+names = npcNames(isImp)
+check("summons: marking Buddy friendly hides his summon (" .. names .. ")", names == "Boulder,ImpUid")
+state.skipFriendlySummons = false
+names = npcNames(isImp)
+check("summons: toggle off shows all of them (" .. names .. ")",
+  names == "Imp,Imp2,Boulder,Sable's Imp,ImpUid,ImpById")
 
 return table.concat(results, "\n")
 """
