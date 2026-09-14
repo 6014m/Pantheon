@@ -89,6 +89,8 @@ end
 -- the living-NPC models and refresh on a 0.5s throttle. Only built while Bot Mode
 -- is on. A "real" NPC = a model with a Humanoid + HumanoidRootPart that no player
 -- owns and isn't us (HRP required so Lock-On / Rotation Lock can actually aim).
+-- Game modules can hide NPCs from Bot Mode with state.addNpcFilter (e.g. The Veil
+-- skips its Runners and townsfolk); filters run here, once per refresh.
 local npcList, npcStamp = {}, 0
 local NPC_REFRESH = 0.5
 local function getNpcs()
@@ -104,7 +106,9 @@ local function getNpcs()
                and model:FindFirstChild("HumanoidRootPart")
                and not Players:GetPlayerFromCharacter(model) then
                 seen[model] = true
-                out[#out + 1] = model
+                if not state.isNpcExcluded(model) then
+                    out[#out + 1] = model
+                end
             end
         end
     end
@@ -112,65 +116,102 @@ local function getNpcs()
     return npcList
 end
 
+-- Per-call context shared by getBestTarget and getRankedTargets.
+-- Cursor mode: score candidates by SCREEN distance to the mouse instead of
+-- world distance. GetMouseLocation includes the topbar inset; WorldToViewport
+-- excludes it, so align by subtracting the inset once here.
+local function buildContext()
+    local myRoot = rootOf(Players.LocalPlayer.Character)
+    if not myRoot then return nil end
+    local ctx = {
+        myRoot     = myRoot,
+        visCheck   = state.visibilityCheckEnabled,
+        cursorMode = state.cursorTarget,
+        cam        = Workspace.CurrentCamera,
+    }
+    if ctx.cursorMode and ctx.cam then
+        local m = UIS:GetMouseLocation()
+        local inset = GuiService:GetGuiInset()
+        ctx.mouse = Vector2.new(m.X, m.Y - inset.Y)
+    end
+    return ctx
+end
+
+-- The cheap part of a candidate's evaluation: its score (lower = better) and root,
+-- or nil when it's out of range / behind the camera in cursor mode. rangeLimit
+-- always uses WORLD distance regardless of mode.
+local function scoreOf(ctx, char)
+    local root = rootOf(char)
+    if not root then return nil end
+    local worldDist = (root.Position - ctx.myRoot.Position).Magnitude
+    if state.rangeLimit > 0 and worldDist > state.rangeLimit then return nil end
+    if ctx.cursorMode and ctx.mouse and ctx.cam then
+        local vp = ctx.cam:WorldToViewportPoint(root.Position)
+        if vp.Z <= 0 then return nil end   -- behind the camera
+        return (Vector2.new(vp.X, vp.Y) - ctx.mouse).Magnitude, root
+    end
+    return worldDist, root
+end
+
+-- The expensive part: front / alive / visibility (visibility raycasts were the
+-- crowded-server hitch, so callers run this only after the score gate).
+local function passesChecks(ctx, char, root)
+    return isInFront(root) and isAlive(char) and (not ctx.visCheck or isVisibleChar(char))
+end
+
+local function eachCandidate(fn)
+    local localPlayer = Players.LocalPlayer
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= localPlayer and not state.isFriendly(plr) then
+            fn(plr, "player", plr.Character)
+        end
+    end
+    if state.botMode then
+        for _, model in ipairs(getNpcs()) do
+            fn(model, "npc", model)
+        end
+    end
+end
+
 -- Returns (target, targetType). target is a Player when targetType=="player" and
 -- the NPC's Model when targetType=="npc". `exclude` (a Player or a Model) is
 -- skipped -- used by Swap Target to cycle to the next-best.
 function Targeting.getBestTarget(exclude)
-    local localPlayer = Players.LocalPlayer
-    local myRoot = rootOf(localPlayer.Character)
-    if not myRoot then return nil end
-
-    local visCheck = state.visibilityCheckEnabled
+    local ctx = buildContext()
+    if not ctx then return nil end
     local best, bestType, bestScore = nil, nil, math.huge
 
-    -- Cursor mode: score candidates by SCREEN distance to the mouse instead of
-    -- world distance. GetMouseLocation includes the topbar inset; WorldToViewport
-    -- excludes it, so align by subtracting the inset once here.
-    local cursorMode = state.cursorTarget
-    local cam = Workspace.CurrentCamera
-    local mouse
-    if cursorMode and cam then
-        local m = UIS:GetMouseLocation()
-        local inset = GuiService:GetGuiInset()
-        mouse = Vector2.new(m.X, m.Y - inset.Y)
-    end
-
-    -- Cheap gate FIRST, then the expensive front/alive/visibility checks
-    -- (visibility raycasts were the crowded-server hitch). Anyone with a worse
-    -- score than the current best can't win; if the best fails a check we fall
-    -- through to the next, so "closest visible" semantics hold across players AND
-    -- npcs. rangeLimit always uses WORLD distance regardless of mode.
-    local function consider(target, ttype, char)
+    -- Cheap gate FIRST, then the expensive checks. Anyone with a worse score than
+    -- the current best can't win; if the best fails a check we fall through to the
+    -- next, so "closest visible" semantics hold across players AND npcs.
+    eachCandidate(function(target, ttype, char)
         if not char or target == exclude then return end
-        local root = rootOf(char)
-        if not root then return end
-        local worldDist = (root.Position - myRoot.Position).Magnitude
-        if state.rangeLimit > 0 and worldDist > state.rangeLimit then return end
-        local score = worldDist
-        if cursorMode and mouse and cam then
-            local vp = cam:WorldToViewportPoint(root.Position)
-            if vp.Z <= 0 then return end   -- behind the camera
-            score = (Vector2.new(vp.X, vp.Y) - mouse).Magnitude
-        end
-        if score >= bestScore then return end
-        if isInFront(root) and isAlive(char) and (not visCheck or isVisibleChar(char)) then
+        local score, root = scoreOf(ctx, char)
+        if not score or score >= bestScore then return end
+        if passesChecks(ctx, char, root) then
             best, bestType, bestScore = target, ttype, score
         end
-    end
-
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= localPlayer and not state.isFriendly(plr) then
-            consider(plr, "player", plr.Character)
-        end
-    end
-
-    if state.botMode then
-        for _, model in ipairs(getNpcs()) do
-            consider(model, "npc", model)
-        end
-    end
+    end)
 
     return best, bestType
+end
+
+-- Every valid target, best first: { { target, type, score }, ... }. Same scoring
+-- and checks as getBestTarget. Used by the scroll-wheel swap to step through
+-- targets in order (called per wheel notch, not per frame).
+function Targeting.getRankedTargets()
+    local ctx = buildContext()
+    if not ctx then return {} end
+    local list = {}
+    eachCandidate(function(target, ttype, char)
+        if not char then return end
+        local score, root = scoreOf(ctx, char)
+        if score and passesChecks(ctx, char, root) then
+            list[#list + 1] = { target = target, type = ttype, score = score }
+        end
+    end)
+    table.sort(list, function(a, b) return a.score < b.score end)
+    return list
 end
 
 return Targeting

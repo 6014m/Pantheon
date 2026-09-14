@@ -130,6 +130,32 @@ function state.isFriendly(plr)
     return state.friendlies[plr.UserId] == true
 end
 
+-- Scroll wheel swap (Swap Target setting): while locked on, a wheel notch steps to
+-- the next / previous target instead of zooming the camera.
+state.scrollSwapEnabled = true
+
+-- Bot Mode NPC filters. Game modules register predicates that hide NPCs from Bot
+-- Mode (e.g. The Veil's Runners and townsfolk): fn(model) returns true to SKIP the
+-- model. addNpcFilter returns a remover for the game module's destroy().
+state.npcFilters = {}
+
+function state.addNpcFilter(fn)
+    state.npcFilters[#state.npcFilters + 1] = fn
+    return function()
+        for i, f in ipairs(state.npcFilters) do
+            if f == fn then table.remove(state.npcFilters, i); break end
+        end
+    end
+end
+
+function state.isNpcExcluded(model)
+    for _, fn in ipairs(state.npcFilters) do
+        local ok, skip = pcall(fn, model)
+        if ok and skip then return true end
+    end
+    return false
+end
+
 -- True when `character` is rigidly attached (Weld / WeldConstraint / Motor6D)
 -- to another *player's* character -- i.e. a grab move has stuck you to them.
 -- Used by shiftlock's rotation drag-protect (gated by weldSafetyEnabled) and

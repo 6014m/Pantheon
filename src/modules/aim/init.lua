@@ -218,12 +218,16 @@ function module.register()
     combat:add(feature.declare({
         id           = "aim.swap_target",
         name         = "Swap Target",
-        description  = "While Target Select has a target, press this key to cycle to the next-best target.",
+        description  = "While Target Select has a target, press this key to cycle to the next-best target. With the scroll wheel setting on, a wheel notch while Lock-On is active steps through targets in order instead of zooming: wheel down = next target out, wheel up = back in (wraps around).",
         default      = true,
         defaultKey   = Enum.KeyCode.C,
         dependencies = { "aim.target_select" },
         onToggle     = function(v) state.swap_enabled = v end,
         onKey        = function() targetSelect.swapTarget() end,
+        settings = {
+            { type = "toggle", name = "Scroll wheel swaps target (while locked on)", key = "scroll_swap", default = true,
+              onChange = function(v) targetSelect.setScrollSwap(v) end },
+        },
     }).root)
 
     -- 3. Visuals --------------------------------------------------------------

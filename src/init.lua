@@ -62,6 +62,7 @@ misc.register()
 require("games.jjs")
 require("games.evilplate")
 require("games.gakuran")
+require("games.veil")
 
 -- Per-game module (if registered for this PlaceId)
 local gameMod = registry.current()

@@ -72,6 +72,7 @@ local files = {
     { "games.jjs",                 "games/jjs.lua" },
     { "games.evilplate",           "games/evilplate.lua" },
     { "games.gakuran",             "games/gakuran.lua" },
+    { "games.veil",                "games/veil.lua" },
     { "init",                      "init.lua" },
 }
 
