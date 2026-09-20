@@ -84,7 +84,7 @@ persist.stringToKey=function(s) if s==nil then return nil end return Enum.KeyCod
 
 local cache={}
 local ENV
-local REAL={ ["ui.theme"]=true, ["ui.components"]=true, ["ui.feature"]=true, ["modules.aesthetic"]=true }
+local REAL={ ["ui.theme"]=true, ["ui.skin"]=true, ["ui.components"]=true, ["ui.feature"]=true, ["modules.aesthetic"]=true }
 local function stub(name)
   if name=="core.persist" then return persist end
   if name=="ui.hex" then return { build=function() return {} end, setColor=function() end, placed=function() return {} end } end

@@ -17,6 +17,7 @@ local window     = require("ui.window")
 local container  = require("ui.container")
 local persist    = require("core.persist")
 local notify     = require("ui.notify")
+local skin       = require("ui.skin")
 local log        = require("core.log")
 
 local Players = game:GetService("Players")
@@ -154,6 +155,31 @@ function System.register()
         settings    = {
             { type = "button", name = "Re-Execute Now", onClick = function() reexecNow() end },
             { type = "button", name = "Unload Pantheon", onClick = function() unloadPantheon() end },
+            { type = "section", name = "Interface" },
+            -- The skin's hooks run while the UI is being BUILT, so a change can
+            -- only land on a fresh instance -- hence "pick, then Re-Execute Now"
+            -- (the button is right above) rather than a live restyle.
+            -- persist = false: the choice lives in the cross-game global store,
+            -- so it follows you into every game instead of being re-picked per
+            -- GameId. See [[ui.skin]].
+            {
+                type    = "dropdown",
+                name    = "UI Skin",
+                key     = "ui_skin",
+                persist = false,
+                options = skin.list,
+                default = skin.current(),
+                onChange = function(v)
+                    -- Also fires once at boot with the current value; nothing to
+                    -- do then, and warning about a reload would be noise.
+                    if v == skin.current() then return end
+                    skin.set(v)
+                    persist.flush()   -- beat the 0.5s debounce, in case the
+                                      -- re-execute lands first
+                    notify.warn("UI skin set to " .. tostring(v)
+                        .. " - hit 'Re-Execute Now' to apply.")
+                end,
+            },
         },
     }).root)
     log.info("System module registered")

@@ -2,6 +2,7 @@
 -- Sharp angular corners — no UICorner anywhere — to match the hex/HUD theme.
 
 local theme = require("ui.theme")
+local skin  = require("ui.skin")
 
 local UIS = game:GetService("UserInputService")
 
@@ -38,6 +39,7 @@ function components.Section(parent, text)
     f.TextSize = 11
     f.TextXAlignment = Enum.TextXAlignment.Left
     f.Parent = parent
+    skin.engrave(f)
     return f
 end
 
@@ -68,6 +70,9 @@ function components.Button(parent, opts)
     if opts.onClick then
         btn.MouseButton1Click:Connect(opts.onClick)
     end
+    -- The row is the keycap, `btn` is the legend printed on it -- so the press
+    -- shifts the legend, not the cap (which would drag its own bevel with it).
+    skin.press(btn, skin.key(f), { btn })
     return f
 end
 
@@ -100,9 +105,18 @@ function components.Toggle(parent, opts)
     knob.BorderSizePixel = 0
     knob.Parent = switch
 
+    skin.face(f)
+    local sw = skin.switch(switch, knob)
+
     local function apply()
-        switch.BackgroundColor3 = state and theme.accent or theme.bgDark
+        -- A skin that paints the switch itself (hardware's recessed well +
+        -- backlight) sets ownsColor, and the flat accent/bgDark swap below
+        -- would overwrite its gradient base with a flat fill.
+        if not sw.ownsColor then
+            switch.BackgroundColor3 = state and theme.accent or theme.bgDark
+        end
         knob.Position = state and UDim2.new(1, -16, 0.5, -7) or UDim2.fromOffset(2, 2)
+        sw.set(state)
     end
     apply()
 
@@ -158,6 +172,9 @@ function components.Slider(parent, opts)
     fill.BorderSizePixel = 0
     fill.Size = UDim2.new((value - min) / (max - min), 0, 1, 0)
     fill.Parent = track
+
+    skin.face(f)
+    skin.slider(track, fill)
 
     local dragging = false
 
@@ -249,6 +266,8 @@ function components.KeybindSetter(parent, opts)
     btn.TextSize = 11
     btn.Text = keyDisplayName(current)
     btn.Parent = f
+    skin.face(f)
+    skin.readout(btn)
 
     -- Unbind button: clears the keybind in one click
     local unbind = Instance.new("TextButton")
@@ -261,6 +280,7 @@ function components.KeybindSetter(parent, opts)
     unbind.Font = theme.fontBold
     unbind.TextSize = 10
     unbind.Parent = f
+    skin.press(unbind, skin.key(unbind))
 
     btn.MouseButton1Click:Connect(function()
         if listening then return end
@@ -351,6 +371,8 @@ function components.Dropdown(parent, opts)
     cur.BackgroundColor3 = theme.bgDark; cur.AutoButtonColor = false
     cur.TextColor3 = theme.fg; cur.Font = theme.font; cur.TextSize = 11
     cur.Text = tostring(value or ""); cur.Parent = header
+    skin.face(header)
+    skin.readout(cur)
 
     local listHost = Instance.new("Frame")
     listHost.Size = UDim2.new(1, 0, 0, 0); listHost.AutomaticSize = Enum.AutomaticSize.Y
@@ -367,6 +389,7 @@ function components.Dropdown(parent, opts)
         ob.BackgroundColor3 = theme.bgAlt; ob.AutoButtonColor = true; ob.BorderSizePixel = 0
         ob.TextColor3 = theme.fgDim; ob.Font = theme.font; ob.TextSize = 11
         ob.Text = tostring(o); ob.LayoutOrder = optCount; ob.Parent = listHost
+        skin.press(ob, skin.key(ob))
         ob.MouseButton1Click:Connect(function()
             value = o; cur.Text = tostring(o); listHost.Visible = false
             if onChange then onChange(value) end
@@ -410,6 +433,8 @@ function components.TextBox(parent, opts)
     box.ClearTextOnFocus = false; box.TextXAlignment = Enum.TextXAlignment.Left
     box.Parent = f
     local pad = Instance.new("UIPadding", box); pad.PaddingLeft = UDim.new(0, 6)
+    skin.face(f)
+    skin.readout(box)
 
     box.FocusLost:Connect(function()
         if opts.onChange then opts.onChange(box.Text) end

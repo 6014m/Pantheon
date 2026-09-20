@@ -29,12 +29,37 @@ src/
   init.lua           entry point, wires modules together
   loader.lua         dev loader: HttpGets each src/*.lua live with cache-bust
   core/              env compat, signal, log, persist
-  ui/                window, components, theme, notify (rolled from scratch)
+  ui/                window, components, theme, skin, notify (rolled from scratch)
   modules/           universal features
   games/             per-PlaceId hooks (registry pattern)
 tools/build.py       concats src/*.lua -> dist/main.lua with a require shim
 dist/main.lua        the bundled output users load
 ```
+
+## UI skins
+
+`Pantheon menu -> cog -> UI Skin` picks the look, then **Re-Execute Now** applies it.
+
+* **Flat** (default) - the original hex/HUD panels. Unchanged.
+* **Hardware** - each menu becomes one physical object: a brushed faceplate
+  screwed into the chamfered bezel, with the feature rows as modules bolted to
+  it and every control as real hardware. The ON/OFF button is a latching key
+  that stays pressed in and backlit while the feature runs, the cog and "i" are
+  momentary keys that depress under the mouse, toggles are rockers in a
+  recessed well, sliders are faders riding a routed channel, and headings are
+  etched into the metal. The "P" opener becomes a round power button.
+
+`src/ui/skin.lua` is the whole implementation: a decoration layer the ui/*
+modules call at fixed points while building. Flat's hooks are no-ops, so that
+path is byte-identical to the pre-skin build; hardware's hooks add the bevels,
+screws and wells. A new component is skinned once, there, rather than in every
+module that builds one. The choice is stored in the **cross-game** settings file
+(`Pantheon/settings/global.json`) so it follows you into every game.
+
+Verify with `python tools/mocktest_skin.py` - it builds the real UI tree under
+both skins, flips every control, and checks the structural rules (no bevel
+Frames inside a UIListLayout/UIPadding parent, no doubled UIGradient, flat adds
+zero decoration instances).
 
 ## Build
 

@@ -9,6 +9,7 @@
 -- same absolute pixel height.
 
 local theme   = require("ui.theme")
+local skin    = require("ui.skin")
 local persist = require("core.persist")
 
 local UIS        = game:GetService("UserInputService")
@@ -126,7 +127,7 @@ function Container.new(parent, name)
     -- from each other and the world. Tiled, behind content (ZIndex 0), rounded
     -- so the rectangular tile doesn't poke past the chamfered edge. Skipped
     -- entirely when no texture asset is configured (theme.panelTexture == "").
-    if theme.panelTexture and theme.panelTexture ~= "" then
+    if theme.panelTexture and theme.panelTexture ~= "" and skin.usePanelTexture() then
         local carbon = Instance.new("ImageLabel")
         carbon.Name = "CarbonTexture"
         carbon.BackgroundTransparency = 1
@@ -143,6 +144,10 @@ function Container.new(parent, name)
         local cc = Instance.new("UICorner", carbon)
         cc.CornerRadius = UDim.new(0, CHAMFER)
     end
+
+    -- Skin hook: the hardware skin turns the whole container into one
+    -- machined faceplate (chassis at ZIndex 0, so it stays under every row).
+    skin.panel(container, HEADER_H, CHAMFER)
 
     -- Header text sits over the accent band. Positioned in the unpadded
     -- top region (0 .. HEADER_H) so it doesn't get shoved by UIPadding.
@@ -169,6 +174,7 @@ function Container.new(parent, name)
     headerHost.ZIndex = 4
     headerHost.Parent = container
     headerText.Parent = headerHost
+    skin.engrave(headerText)
 
     local dragHandle = Instance.new("TextButton")
     dragHandle.Size = UDim2.fromScale(1, 1)
@@ -391,10 +397,14 @@ function Container.buildNavigator(parent, title)
                 pill.TextColor3 = theme.fg
                 pill.Parent = row
 
+                skin.press(row, skin.key(row))
+                local lamp = skin.led(pill)
+
                 local function refresh()
                     local on = c:isVisible()
                     pill.Text = on and "ON" or "OFF"
                     pill.BackgroundColor3 = on and theme.on or theme.off
+                    lamp.set(on)
                 end
                 c._onVis = refresh
                 row.MouseButton1Click:Connect(function()

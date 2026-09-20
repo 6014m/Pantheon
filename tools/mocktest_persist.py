@@ -94,7 +94,7 @@ local function stub(name)
   if name=="core.log" then return { info=function() end, warn=function() end, error=function() end, debug=function() end } end
   return real.setmetatable({}, {__index=function() return function() end end})
 end
-local REAL={ ["ui.theme"]=true, ["ui.components"]=true, ["ui.feature"]=true }
+local REAL={ ["ui.theme"]=true, ["ui.skin"]=true, ["ui.components"]=true, ["ui.feature"]=true }
 local function myrequire(name)
   if cache[name]~=nil then return cache[name] end
   if REAL[name] then

@@ -14,6 +14,7 @@ local theme     = require("ui.theme")
 local hex       = require("ui.hex")
 local keybinds  = require("core.keybinds")
 local container = require("ui.container")
+local skin      = require("ui.skin")
 local persist   = require("core.persist")
 
 local UIS          = game:GetService("UserInputService")
@@ -212,16 +213,17 @@ local function buildHexButton(sg)
     host.ZIndex = 10
     host.Parent = sg
 
-    if theme.panelTexture and theme.panelTexture ~= "" then
+    local hexHost
+    if theme.panelTexture and theme.panelTexture ~= "" and skin.usePanelTexture() then
         -- Same carbon-fiber treatment as the panels, over the accent base.
-        hex.build(host, 46, 40, theme.headerBand, 10, {
+        hexHost = hex.build(host, 46, 40, theme.headerBand, 10, {
             image        = theme.panelTexture,
             src          = theme.panelTextureSrc or 128,
             transparency = theme.panelTextureTransparency,
             tint         = theme.panelTextureTint,
         })
     else
-        hex.build(host, 46, 40, theme.headerBand, 10)
+        hexHost = hex.build(host, 46, 40, theme.headerBand, 10)
     end
 
     local label = Instance.new("TextLabel")
@@ -239,6 +241,10 @@ local function buildHexButton(sg)
     labelStroke.Thickness = theme.logoStrokeThickness or 1.5
     labelStroke.Color     = theme.logoStroke or theme.fg
     labelStroke.Parent    = label
+
+    -- Skin hook: the hardware skin swaps the hexagon for a round power button
+    -- in the same 46x40 footprint, so drag/spin/clamp logic below is untouched.
+    skin.logo(host, hexHost, label)
 
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.fromScale(1, 1)

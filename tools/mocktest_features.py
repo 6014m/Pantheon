@@ -144,7 +144,7 @@ function task.spawn(fn,...) local ok,e=real.pcall(fn,...); if not ok then ERRORS
 function task.delay(t,fn,...) return end
 function task.wait(t) return t or 0 end
 
-local REAL={ ["core.signal"]=true, ["ui.theme"]=true, ["ui.components"]=true, ["ui.container"]=true,
+local REAL={ ["core.signal"]=true, ["ui.theme"]=true, ["ui.skin"]=true, ["ui.components"]=true, ["ui.container"]=true,
   ["modules.aim.state"]=true, ["modules.aim.targeting"]=true, ["modules.aim.highlight"]=true,
   ["modules.friendlies"]=true }
 local cache={}

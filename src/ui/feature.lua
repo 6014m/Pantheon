@@ -20,6 +20,7 @@
 
 local theme      = require("ui.theme")
 local hex        = require("ui.hex")
+local skin       = require("ui.skin")
 local keybinds   = require("core.keybinds")
 local components = require("ui.components")
 local persist    = require("core.persist")
@@ -98,6 +99,7 @@ function Feature.declare(def)
     row.BorderSizePixel = 0
     row.LayoutOrder = 1
     row.Parent = root
+    skin.face(row)
 
     local nameLabel = Instance.new("TextLabel")
     nameLabel.Position = UDim2.fromOffset(8, 0)
@@ -114,21 +116,32 @@ function Feature.declare(def)
         hexButton(row, 40, 22, theme.off, "OFF", theme.fontBold, 10)
     indicatorHost.Position = UDim2.new(1, hasDesc and -104 or -76, 0.5, 0)
     indicatorHost.AnchorPoint = Vector2.new(0, 0.5)
+    -- latching: this key stays pressed + backlit while the feature is on,
+    -- unlike the momentary "i" and cog keys beside it.
+    local indicatorKey = skin.hexKey(indicatorHost, indicatorHex, indicatorLabel, {
+        onColor = theme.on, offColor = theme.off,
+        onText  = "ON",     offText  = "OFF",
+        latching = true,
+    })
 
-    local infoHex, infoBtn
+    local infoBtn, infoKey
     if hasDesc then
-        local _, hx, _, b = hexButton(row, 22, 18, theme.bgDark, "i", theme.fontBold, 12)
+        local _, hx, hl, b = hexButton(row, 22, 18, theme.bgDark, "i", theme.fontBold, 12)
         local infoHost = b.Parent
         infoHost.Position = UDim2.new(1, -54, 0.5, 0)
         infoHost.AnchorPoint = Vector2.new(0, 0.5)
-        infoHex, infoBtn = hx, b
+        infoBtn = b
+        infoKey = skin.hexKey(infoHost, hx, hl, { onColor = theme.accent, offColor = theme.bgDark })
     end
 
-    local _, cogHex, _, cogBtn =
+    local _, cogHex, cogLabel, cogBtn =
         hexButton(row, 22, 18, theme.bgDark, "\u{2699}", theme.font, 14)
     local cogHost = cogBtn.Parent
     cogHost.Position = UDim2.new(1, -28, 0.5, 0)
     cogHost.AnchorPoint = Vector2.new(0, 0.5)
+    local cogKey = skin.hexKey(cogHost, cogHex, cogLabel, {
+        onColor = theme.accent, offColor = theme.bgDark,
+    })
 
     local desc
     if hasDesc then
@@ -148,6 +161,8 @@ function Feature.declare(def)
         desc.LayoutOrder = 2
         desc.Parent = root
 
+        skin.readout(desc)
+
         local pad = Instance.new("UIPadding", desc)
         pad.PaddingTop    = UDim.new(0, 6)
         pad.PaddingBottom = UDim.new(0, 6)
@@ -163,6 +178,7 @@ function Feature.declare(def)
     panel.Visible = false
     panel.LayoutOrder = 3
     panel.Parent = root
+    skin.readout(panel)
 
     local panelPad = Instance.new("UIPadding", panel)
     panelPad.PaddingTop    = UDim.new(0, 4)
@@ -180,8 +196,7 @@ function Feature.declare(def)
     local enabled = false
 
     local function applyToggle()
-        hex.setColor(indicatorHex, enabled and theme.on or theme.off)
-        indicatorLabel.Text = enabled and "ON" or "OFF"
+        indicatorKey.set(enabled)
         nameLabel.TextColor3 = enabled and theme.fg or theme.fgDim
         if def.onToggle then
             local ok, err = pcall(def.onToggle, enabled)
@@ -233,7 +248,7 @@ function Feature.declare(def)
     cogBtn.MouseButton1Click:Connect(function()
         panelOpen = not panelOpen
         panel.Visible = panelOpen
-        hex.setColor(cogHex, panelOpen and theme.accent or theme.bgDark)
+        cogKey.set(panelOpen)
     end)
 
     if infoBtn then
@@ -241,7 +256,7 @@ function Feature.declare(def)
         infoBtn.MouseButton1Click:Connect(function()
             descOpen = not descOpen
             desc.Visible = descOpen
-            hex.setColor(infoHex, descOpen and theme.accent or theme.bgDark)
+            infoKey.set(descOpen)
         end)
     end
 
@@ -283,6 +298,7 @@ function Feature.declare(def)
         sep.BackgroundColor3 = theme.border
         sep.BorderSizePixel = 0
         sep.Parent = panel
+        skin.separator(sep)
 
         for _, opt in ipairs(def.settings) do
             -- Settings persist under "<id>.<opt.key or slug(opt.name)>".
@@ -333,14 +349,19 @@ function Feature.declare(def)
                 end
 
             elseif opt.type == "dropdown" then
-                local saved     = persist.get(saveKey)
-                local effective = resolveSaved(saved, opt.default)
+                -- opt.persist = false: this dropdown's value lives somewhere
+                -- else entirely (the UI skin is in the cross-game global store).
+                -- Without the opt-out the per-game copy fights the real one and
+                -- the boot-time onChange replay writes a stale value back over it.
+                local usePersist = opt.persist ~= false
+                local saved      = usePersist and persist.get(saveKey) or nil
+                local effective  = resolveSaved(saved, opt.default)
                 local dh = components.Dropdown(panel, {
                     label    = opt.name,
                     options  = opt.options,
                     default  = effective,
                     onChange = function(v)
-                        persist.set(saveKey, v)
+                        if usePersist then persist.set(saveKey, v) end
                         if opt.onChange then opt.onChange(v) end
                     end,
                 })
