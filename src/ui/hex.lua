@@ -13,7 +13,10 @@
 
 local hex = {}
 
-function hex.build(parent, w, h, color, zIndex, texture)
+function hex.build(parent, w, h, color, zIndex, texture, colorBottom)
+    -- colorBottom (optional): shades the rows from `color` at the top to
+    -- `colorBottom` at the bottom, which is what turns a flat hexagon into a
+    -- lit keycap for [[ui.skin]]'s hardware skin.
     -- texture (optional): { image, src, transparency, tint }. When given, each
     -- row becomes an ImageLabel showing its horizontal band of `image` (assumed
     -- `src` px square) over the base `color`, so the picture fills the hex
@@ -25,6 +28,7 @@ function hex.build(parent, w, h, color, zIndex, texture)
     local src  = texture and (texture.src or 128) or nil
 
     local host = Instance.new("Frame")
+    host.Name = "Hex"
     host.Size = UDim2.fromOffset(w, h)
     host.BackgroundTransparency = 1
     host.ZIndex = zIndex or 1
@@ -36,13 +40,15 @@ function hex.build(parent, w, h, color, zIndex, texture)
         local rowW = w - distFromMid * w / h
         if rowW < 1 then rowW = 1 end
 
+        local rowColor = colorBottom and color:Lerp(colorBottom, (i + 0.5) / rows) or color
+
         local row
         if texture then
             -- Sample the sub-rect of the image that lines up with this row so
             -- the whole picture is reconstructed inside the hex outline.
             local left = w / 2 - rowW / 2
             row = Instance.new("ImageLabel")
-            row.BackgroundColor3 = color           -- base tints through the texture
+            row.BackgroundColor3 = rowColor        -- base tints through the texture
             row.Image = texture.image
             row.ScaleType = Enum.ScaleType.Stretch
             row.ImageRectOffset = Vector2.new(left / w * src, (yCenter - rowH / 2) / h * src)
@@ -51,7 +57,7 @@ function hex.build(parent, w, h, color, zIndex, texture)
             if texture.tint then row.ImageColor3 = texture.tint end
         else
             row = Instance.new("Frame")
-            row.BackgroundColor3 = color
+            row.BackgroundColor3 = rowColor
         end
         -- +1 on height so adjacent rows overlap by ~1px, hiding gaps.
         row.Size = UDim2.fromOffset(rowW, rowH + 1)
@@ -80,6 +86,18 @@ function hex.setColor(hexHost, color)
         if child:IsA("Frame") then
             child.BackgroundColor3 = color
         end
+    end
+end
+
+-- Re-shade an existing hex top-to-bottom (the setColor of hex.build's
+-- colorBottom). Touches ImageLabel rows too -- on a textured hex the row color
+-- is the base the picture tints through, so shading it still lights the shape.
+function hex.setShade(hexHost, top, bottom)
+    local rows = hexHost:GetChildren()
+    local n = #rows
+    if n == 0 then return end
+    for i, child in ipairs(rows) do
+        child.BackgroundColor3 = bottom and top:Lerp(bottom, (i - 0.5) / n) or top
     end
 end
 

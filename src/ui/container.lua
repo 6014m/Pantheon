@@ -145,10 +145,6 @@ function Container.new(parent, name)
         cc.CornerRadius = UDim.new(0, CHAMFER)
     end
 
-    -- Skin hook: the hardware skin turns the whole container into one
-    -- machined faceplate (chassis at ZIndex 0, so it stays under every row).
-    skin.panel(container, HEADER_H, CHAMFER)
-
     -- Header text sits over the accent band. Positioned in the unpadded
     -- top region (0 .. HEADER_H) so it doesn't get shoved by UIPadding.
     local headerText = Instance.new("TextLabel")
@@ -168,6 +164,7 @@ function Container.new(parent, name)
     -- text under a child Frame that bypasses the padding by anchoring outside
     -- the padded area.
     local headerHost = Instance.new("Frame")
+    headerHost.Name = "Header"
     headerHost.Size = UDim2.new(1, 12, 0, HEADER_H)        -- +12 to undo the -6 left + -6 right padding
     headerHost.Position = UDim2.fromOffset(-6, -HEADER_H)   -- undo PaddingLeft (-6) and PaddingTop (-HEADER_H)
     headerHost.BackgroundTransparency = 1
@@ -183,6 +180,12 @@ function Container.new(parent, name)
     dragHandle.AutoButtonColor = false
     dragHandle.ZIndex = 8
     dragHandle.Parent = headerHost
+
+    -- Skin hook: machines the panel into a faceplate. It gets headerHost rather
+    -- than the container because headerHost's bottom edge IS the top of the
+    -- container's content box -- furniture parented there can't feed the
+    -- container's AutomaticSize.Y and stretch the panel down the screen.
+    skin.panel(container, headerHost, HEADER_H, CHAMFER)
 
     -- Features: stacked inside the padded body area. UIListLayout owns the
     -- height; AutomaticSize on the container propagates up.

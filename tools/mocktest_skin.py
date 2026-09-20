@@ -7,9 +7,13 @@ a feature row with one of every setting type, and each bare component, then
 flips every state (toggle on/off, cog open, info open, slider set, dropdown
 pick) -- once as "Flat", once as "Hardware" -- and reports anything that threw.
 
-It also asserts the structural rules the hardware skin depends on:
-  * flat must add NO instances the old build didn't have (parity check: the
-    flat instance count is the baseline, hardware is allowed to exceed it)
+It also asserts the structural rules the hardware skin lives by:
+  * a container is AutomaticSize.Y, so the skin must add NO direct child to one
+    -- a full-bleed background child is what stretched every menu to the bottom
+    of the screen in the first cut. Panel furniture goes in the header host,
+    whose extent is fixed.
+  * the hexagons stay: no Hex may be hidden, and hardware must add more of them
+    (shadows, lamps, bolt heads) rather than replacing them with rectangles
   * bevel Frames must never land inside a UIListLayout/UIPadding parent
   * every latching indicator must end up reflecting its feature's state
 
@@ -343,9 +347,33 @@ local function pass(choice)
   r.bevels_in_layout = #bad
   r.bevels_in_layout_where = real.table.concat(bad, ", ")
 
-  r.screws   = #findAll(function(o) return o.Name=="Screw" end)
-  r.chassis  = #findAll(function(o) return o.Name=="Chassis" end)
   r.faders   = #findAll(function(o) return o.Name=="FaderCap" end)
+
+  -- The panel-height regression: a container grows to fit its children, so a
+  -- child the skin adds can push it down the screen. Hardware must add none.
+  local cchild = 0
+  for _,c in real.ipairs(findAll(function(o)
+      return real.type(o.Name)=="string" and o.Name:sub(1,10)=="Container_" end)) do
+    for _,ch in real.ipairs(c._children) do
+      -- UIStroke/UICorner/UIGradient/UIPadding/UIListLayout are not GuiObjects
+      -- and take no part in the parent's automatic size.
+      if ch.ClassName:sub(1,2)~="UI" then cchild = cchild + 1 end
+    end
+  end
+  r.container_children = cchild
+  -- Panel furniture belongs in the header host instead, where it cannot.
+  local hchild = 0
+  for _,c in real.ipairs(findAll(function(o) return o.Name=="Header" end)) do
+    hchild = hchild + #c._children
+  end
+  r.header_children = hchild
+
+  -- "Hex" is a hexagon carrying a control; the skin's own decoration hexes are
+  -- named (HexShadow / Lamp / Bolt), so the two are counted apart.
+  r.hexes = #findAll(function(o) return o.Name=="Hex" end)
+  r.hexes_hidden = #findAll(function(o) return o.Name=="Hex" and o._props.Visible==false end)
+  r.hex_decor = #findAll(function(o)
+    return o.Name=="HexShadow" or o.Name=="Lamp" or o.Name=="Bolt" end)
   r.etches   = #findAll(function(o) return o.Name=="Etch" end)
   r.gradients= #findAll(function(o) return o.ClassName=="UIGradient" end)
 
@@ -396,11 +424,23 @@ check("flat builds clean",       flatR.error_count==0, flatR.error_count.." erro
 check("hardware builds clean",   hwR.error_count==0,   hwR.error_count.." errors")
 -- Flat must stay a true no-op layer: not one instance of skin furniture.
 check("flat adds no decoration",
-  flatR.bevels==0 and flatR.screws==0 and flatR.chassis==0 and flatR.etches==0 and flatR.faders==0)
+  flatR.bevels==0 and flatR.etches==0 and flatR.faders==0)
 check("hardware decorates",
-  hwR.bevels>0 and hwR.screws>0 and hwR.chassis>0 and hwR.faders>0,
-  hwR.bevels.." bevels, "..hwR.screws.." screws, "..hwR.chassis.." chassis")
-check("one chassis per container", hwR.chassis==2, hwR.chassis)
+  hwR.bevels>0 and hwR.etches>0 and hwR.faders>0,
+  hwR.bevels.." bevels, "..hwR.etches.." etches, "..hwR.faders.." faders")
+-- The panel-height regression guard.
+check("hardware adds no child to an AutomaticSize container",
+  hwR.container_children==flatR.container_children,
+  hwR.container_children.." vs flat "..flatR.container_children)
+check("panel furniture goes in the header host",
+  hwR.header_children>flatR.header_children,
+  hwR.header_children.." vs flat "..flatR.header_children)
+check("hexagons kept, none hidden, none swapped for a rectangle",
+  hwR.hexes==flatR.hexes and hwR.hexes_hidden==0,
+  hwR.hexes.." control hexes vs flat "..flatR.hexes..", "..hwR.hexes_hidden.." hidden")
+check("hardware builds ON the hexagons",
+  hwR.hex_decor>0 and flatR.hex_decor==0,
+  hwR.hex_decor.." shadow/lamp/bolt hexes")
 check("no bevel inside a layout/padding parent",
   hwR.bevels_in_layout==0, hwR.bevels_in_layout_where)
 check("no double UIGradient", hwR.double_gradients==0 and flatR.double_gradients==0)

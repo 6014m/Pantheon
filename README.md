@@ -41,13 +41,20 @@ dist/main.lua        the bundled output users load
 `Pantheon menu -> cog -> UI Skin` picks the look, then **Re-Execute Now** applies it.
 
 * **Flat** (default) - the original hex/HUD panels. Unchanged.
-* **Hardware** - each menu becomes one physical object: a brushed faceplate
-  screwed into the chamfered bezel, with the feature rows as modules bolted to
-  it and every control as real hardware. The ON/OFF button is a latching key
-  that stays pressed in and backlit while the feature runs, the cog and "i" are
-  momentary keys that depress under the mouse, toggles are rockers in a
-  recessed well, sliders are faders riding a routed channel, and headings are
-  etched into the metal. The "P" opener becomes a round power button.
+* **Hardware** - the same panels, machined. Pantheon's chamfered 9-slice IS the
+  faceplate (the skin just repaints its gradient in metal), the header bar gains
+  a milled rim, a groove and a lit lip, and hex bolt heads hold it down. The
+  hexagons stay hexagons and gain depth instead: each one sits on a black
+  hexagon one pixel low, so it stands proud of the plate, and its face is shaded
+  top-lit rather than filled flat. ON/OFF is a latching hex key that drops onto
+  its own shadow and backlights with a hex lamp; the cog and "i" are momentary
+  keys. Toggles are rockers in a recessed well, sliders are faders riding a
+  routed channel, readouts are inset, and headings are etched into the metal.
+
+  Note for anyone extending it: a container is `AutomaticSize.Y`, so the panel
+  hook must not add a child sized to the whole panel - that stretches every menu
+  to the bottom of the screen. Panel furniture is parented into the header host,
+  whose extent is fixed. `mocktest_skin.py` guards this.
 
 `src/ui/skin.lua` is the whole implementation: a decoration layer the ui/*
 modules call at fixed points while building. Flat's hooks are no-ops, so that
@@ -57,9 +64,10 @@ module that builds one. The choice is stored in the **cross-game** settings file
 (`Pantheon/settings/global.json`) so it follows you into every game.
 
 Verify with `python tools/mocktest_skin.py` - it builds the real UI tree under
-both skins, flips every control, and checks the structural rules (no bevel
-Frames inside a UIListLayout/UIPadding parent, no doubled UIGradient, flat adds
-zero decoration instances).
+both skins, flips every control, and checks the structural rules: no child added
+to an AutomaticSize container, no hexagon hidden or swapped for a rectangle, no
+bevel Frames inside a UIListLayout/UIPadding parent, no doubled UIGradient, and
+flat adding zero decoration instances.
 
 ## Build
 

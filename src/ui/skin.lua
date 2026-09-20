@@ -84,18 +84,18 @@ local hw = {}
 -- Faceplate / key / well palette. Kept local (not in theme) because these are
 -- lighting values for the bevel maths, not user-facing colors.
 local C = {
-    bezel    = Color3.fromRGB(10, 11, 13),   -- the chamfered rim around the plate
-    faceTop  = Color3.fromRGB(44, 47, 52),   -- faceplate, lit streak
-    faceBot  = Color3.fromRGB(28, 30, 34),   -- faceplate, shadowed streak
-    bandTop  = Color3.fromRGB(58, 62, 69),   -- header bar, lit edge
-    bandBot  = Color3.fromRGB(36, 39, 44),
-    keyTop   = Color3.fromRGB(62, 66, 73),   -- raised keycap
-    keyBot   = Color3.fromRGB(40, 43, 48),
-    wellTop  = Color3.fromRGB(13, 14, 16),   -- recessed well (shadowed at top)
+    rim      = Color3.fromRGB(122, 129, 139),  -- milled edge around the chamfer
+    band     = Color3.fromRGB(52, 56, 62),     -- header bar
+    plate    = Color3.fromRGB(26, 28, 32),     -- faceplate body
+    faceTop  = Color3.fromRGB(46, 50, 56),     -- row face, lit edge
+    faceBot  = Color3.fromRGB(32, 35, 39),     -- row face, shadowed edge
+    keyTop   = Color3.fromRGB(70, 75, 83),     -- raised keycap
+    keyBot   = Color3.fromRGB(42, 45, 51),
+    wellTop  = Color3.fromRGB(13, 14, 16),     -- recessed well (shadowed at top)
     wellBot  = Color3.fromRGB(26, 28, 32),
-    screw    = Color3.fromRGB(96, 101, 110),
-    screwDk  = Color3.fromRGB(24, 26, 29),
-    etch     = Color3.fromRGB(150, 156, 166),
+    bolt     = Color3.fromRGB(118, 125, 135),  -- hex bolt head
+    boltDk   = Color3.fromRGB(38, 41, 46),
+    etch     = Color3.fromRGB(158, 164, 174),
 }
 
 -- Bevel edge transparencies. The lit edge is subtle; the shadow does most of
@@ -163,190 +163,77 @@ local function bevel(frame, mode, thickness, z)
     return host
 end
 
--- A screw head: bright ring, dark recess, crossed slots. Sized to whatever `d`
--- you pass; used at the faceplate corners.
-local function screw(parent, d, position, anchor, z)
-    local host = Instance.new("Frame")
-    host.Name = "Screw"
-    host.Size = UDim2.fromOffset(d, d)
-    host.Position = position
-    host.AnchorPoint = anchor or Vector2.new(0, 0)
-    host.BackgroundColor3 = C.screw
-    host.BorderSizePixel = 0
-    host.ZIndex = z or 4
-    host.Parent = parent
-    corner(host, d)                          -- radius >= d/2 rounds to a circle
-    gradient(host, C.screw, C.screwDk)
-    stroke(host, BLACK, 0.35, 1)
-
-    local function slot(size)
-        local f = Instance.new("Frame")
-        f.AnchorPoint = Vector2.new(0.5, 0.5)
-        f.Position = UDim2.fromScale(0.5, 0.5)
-        f.Size = size
-        f.BackgroundColor3 = C.screwDk
-        f.BackgroundTransparency = 0.15
-        f.BorderSizePixel = 0
-        f.ZIndex = (z or 4) + 1
-        f.Parent = host
-    end
-    slot(UDim2.new(0.7, 0, 0, 1))
-    slot(UDim2.new(0, 1, 0.7, 0))
-    return host
-end
-
 -- ---- hooks ----------------------------------------------------------------
 
 -- Repaint the shared theme for the hardware skin. Runs once, at skin load,
 -- BEFORE any UI is constructed (every ui/* module reads theme.* at build time,
 -- not at require time), so there is nothing to refresh afterwards.
 function hw.applyTheme(t)
-    -- The container's chamfered 9-slice is tinted by a headerBand -> bg
-    -- gradient. Hardware draws its own header band on the chassis, so both
-    -- stops collapse to the bezel color and the 9-slice becomes a plain rim
-    -- around the faceplate.
-    t.headerBand = C.bezel
-    t.bg         = C.bezel
+    -- The container's chamfered 9-slice is already tinted by a headerBand -> bg
+    -- gradient with a sharp seam at the header height. That IS a faceplate with
+    -- a header bar, so the hardware skin repaints those two stops in metal and
+    -- keeps the silhouette Pantheon has always had.
+    t.headerBand = C.band
+    t.bg         = C.plate
     t.bgAlt      = C.faceBot
     t.bgDark     = C.wellTop
-    t.accent     = Color3.fromRGB(138, 146, 158)   -- brushed steel
+    t.accent     = Color3.fromRGB(142, 150, 162)   -- brushed steel
     t.border     = Color3.fromRGB(12, 13, 15)
-    t.fg         = Color3.fromRGB(226, 230, 238)
-    t.fgDim      = Color3.fromRGB(138, 144, 154)
-    t.logoStroke = Color3.fromRGB(226, 230, 238)
-    -- Feature rows become keycaps; a key needs a little more height to read as
-    -- one, and the gap between them is what stops neighbours fusing into a slab.
+    t.fg         = Color3.fromRGB(228, 232, 240)
+    t.fgDim      = Color3.fromRGB(140, 146, 156)
+    t.logoStroke = Color3.fromRGB(228, 232, 240)
+    -- Rows become keycaps; a key needs a little more height to read as one.
     t.featureHeight = 32
     t.rowHeight     = 32
 end
 
--- The carbon-fiber tile is the flat skin's way of keeping near-black panels
--- distinct. Hardware has its own faceplate treatment and the two fight, so it
--- tells container.lua to skip the overlay.
-function hw.usePanelTexture() return false end
+-- Keep the carbon tile: on a metal plate it reads as the surface grain, and it
+-- is what gives the "P" hexagon its texture too.
+function hw.usePanelTexture() return true end
 
--- The faceplate itself. `container` is the chamfered ImageLabel; it carries a
--- UIPadding (top = headerH, bottom = chamferH + 4, sides = 6) that we counter
--- the same way the carbon overlay does, then inset by INSET so the 9-slice rim
--- shows as a machined bezel around the plate.
-function hw.panel(container, headerH, chamferH)
-    local INSET = 3
+-- Machine the panel. Deliberately does NOT add a full-bleed background child:
+-- the container is AutomaticSize.Y, and a child sized to the whole panel is
+-- exactly what stretched every menu to the bottom of the screen the first time
+-- round. The 9-slice the container already draws IS the plate (applyTheme
+-- repainted its gradient) -- all this adds is the milled rim plus the hardware
+-- bolted across the header bar, parented into headerHost, whose extent is fixed.
+function hw.panel(container, headerHost, headerH, chamferH)
+    -- UIStroke on an ImageLabel follows the image alpha, so the rim traces the
+    -- chamfered outline instead of boxing it in.
+    stroke(container, C.rim, 0.45, 1)
 
-    local chassis = Instance.new("Frame")
-    chassis.Name = "Chassis"
-    chassis.BackgroundColor3 = C.faceBot
-    chassis.BorderSizePixel = 0
-    chassis.Size = UDim2.new(1, 12 - INSET * 2, 1, headerH + chamferH + 4 - INSET * 2)
-    chassis.Position = UDim2.fromOffset(-6 + INSET, -headerH + INSET)
-    chassis.ZIndex = 0
-    chassis.Parent = container
-    corner(chassis, 16)
-
-    -- Brushed metal: alternating light/dark stops at rotation 0 give vertical
-    -- hairline streaks for the price of one instance. (ColorSequence caps at 20
-    -- keypoints, hence the 19 below.)
-    do
-        local stops, n = {}, 18
-        for i = 0, n do
-            stops[#stops + 1] = ColorSequenceKeypoint.new(
-                i / n, (i % 2 == 0) and C.faceTop or C.faceBot)
-        end
-        local g = Instance.new("UIGradient")
-        g.Rotation = 0
-        g.Color = ColorSequence.new(stops)
-        g.Parent = chassis
+    -- Top highlight along the bar, then the groove + lit lip that separates the
+    -- bar from the plate.
+    local function line(y, color, tr, z)
+        local f = Instance.new("Frame")
+        f.Size = UDim2.new(1, 0, 0, 1)
+        f.Position = UDim2.new(0, 0, 0, y)
+        f.BackgroundColor3 = color
+        f.BackgroundTransparency = tr
+        f.BorderSizePixel = 0
+        f.ZIndex = z or 3
+        f.Parent = headerHost
+        return f
     end
+    line(1,           WHITE, 0.82)
+    line(headerH - 1, BLACK, 0.25)
+    line(headerH,     WHITE, 0.88)
 
-    -- Second pass: the top-down light falloff the chassis gradient can't also
-    -- carry. Black, faded to nearly nothing at the top.
-    local shade = Instance.new("Frame")
-    shade.Name = "Shade"
-    shade.Size = UDim2.fromScale(1, 1)
-    shade.BackgroundColor3 = BLACK
-    shade.BorderSizePixel = 0
-    shade.ZIndex = 1
-    shade.Parent = chassis
-    corner(shade, 16)
-    do
-        local g = Instance.new("UIGradient")
-        g.Rotation = 90
-        g.Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0.92),
-            NumberSequenceKeypoint.new(1, 0.45),
-        })
-        g.Parent = shade
+    -- Hex bolt heads holding the bar down: hexagons, because that is the shape
+    -- this hub is built out of -- and because a real bolt head is one.
+    local function bolt(position)
+        local b = hex.build(headerHost, 11, 10, C.bolt, 6, nil, C.boltDk)
+        b.Name = "Bolt"
+        b.AnchorPoint = Vector2.new(0.5, 0.5)
+        b.Position = position
+        local core = hex.build(b, 5, 4, C.boltDk, 7)
+        core.Name = "BoltCore"
+        core.AnchorPoint = Vector2.new(0.5, 0.5)
+        core.Position = UDim2.fromScale(0.5, 0.5)
+        return b
     end
-
-    -- Header bar: a raised strip across the top of the plate, seamed off from
-    -- the body by a dark groove with a lit lip under it.
-    local band = Instance.new("Frame")
-    band.Name = "HeaderBand"
-    band.Size = UDim2.new(1, 0, 0, headerH - INSET)
-    band.BackgroundColor3 = C.bandBot
-    band.BorderSizePixel = 0
-    band.ZIndex = 2
-    band.Parent = chassis
-    corner(band, 14)
-    gradient(band, C.bandTop, C.bandBot)
-
-    -- band's UICorner rounds its BOTTOM corners too, which would show the
-    -- faceplate through them. A square patch over the lower half hides that
-    -- without needing a second image.
-    local footH = math.floor((headerH - INSET) / 2)
-    local bandFoot = Instance.new("Frame")
-    bandFoot.Name = "BandFoot"
-    bandFoot.Size = UDim2.new(1, 0, 0, footH)
-    bandFoot.Position = UDim2.new(0, 0, 1, -footH)
-    bandFoot.BackgroundColor3 = C.bandBot
-    bandFoot.BorderSizePixel = 0
-    bandFoot.ZIndex = 2
-    bandFoot.Parent = band
-
-    local groove = Instance.new("Frame")
-    groove.Name = "Groove"
-    groove.Size = UDim2.new(1, 0, 0, 1)
-    groove.Position = UDim2.new(0, 0, 0, headerH - INSET)
-    groove.BackgroundColor3 = BLACK
-    groove.BackgroundTransparency = 0.25
-    groove.BorderSizePixel = 0
-    groove.ZIndex = 3
-    groove.Parent = chassis
-
-    local lip = Instance.new("Frame")
-    lip.Name = "GrooveLip"
-    lip.Size = UDim2.new(1, 0, 0, 1)
-    lip.Position = UDim2.new(0, 0, 0, headerH - INSET + 1)
-    lip.BackgroundColor3 = WHITE
-    lip.BackgroundTransparency = 0.86
-    lip.BorderSizePixel = 0
-    lip.ZIndex = 3
-    lip.Parent = chassis
-
-    bevel(chassis, "raised", 1, 4)
-
-    -- Four corner screws holding the plate to the bezel.
-    local m, a = 9, Vector2.new(0.5, 0.5)
-    screw(chassis, 7, UDim2.fromOffset(m, m),  a, 5)
-    screw(chassis, 7, UDim2.new(1, -m, 0, m),  a, 5)
-    screw(chassis, 7, UDim2.new(0, m, 1, -m),  a, 5)
-    screw(chassis, 7, UDim2.new(1, -m, 1, -m), a, 5)
-
-    -- Vent grille in the dead space below the last row (the container reserves
-    -- chamferH + 4 px there for the bottom corners).
-    for i = 0, 2 do
-        local slat = Instance.new("Frame")
-        slat.Name = "Vent"
-        slat.Size = UDim2.new(0, 46, 0, 2)
-        slat.AnchorPoint = Vector2.new(0.5, 1)
-        slat.Position = UDim2.new(0.5, 0, 1, -(8 + i * 5))
-        slat.BackgroundColor3 = BLACK
-        slat.BackgroundTransparency = 0.45
-        slat.BorderSizePixel = 0
-        slat.ZIndex = 5
-        slat.Parent = chassis
-    end
-
-    return chassis
+    bolt(UDim2.new(0, 13, 0.5, 0))
+    bolt(UDim2.new(1, -13, 0.5, 0))
 end
 
 -- A raised keycap: the thing you press. Returns both bevel hosts so press()
@@ -459,66 +346,55 @@ function hw.press(btn, caps, shift)
     btn.MouseLeave:Connect(up)
 end
 
--- Feature-row indicator / "i" / cog. The flat skin's hexagons are hidden and
--- replaced by a key in the same footprint, so nothing around them has to move.
+-- Feature-row indicator / "i" / cog. These stay HEXAGONS -- they are the hub's
+-- signature shape. What the skin adds is depth: a black hexagon one pixel low
+-- behind the face makes the key stand proud of the plate, and the face itself
+-- is shaded top-lit instead of filled flat. Turning it on drops the face onto
+-- its shadow, the way a key that is pressed in sits.
 -- opts.latching adds the lamp + backlight (the ON/OFF switch); momentary keys
 -- (cog, info) just light their face while active.
 function hw.hexKey(host, hexHost, label, opts)
     opts = opts or {}
-    hexHost.Visible = false
+    local w = (host.Size and host.Size.X.Offset) or 22
+    local h = (host.Size and host.Size.Y.Offset) or 18
 
-    local face = Instance.new("Frame")
-    face.Name = "KeyFace"
-    face.Size = UDim2.fromScale(1, 1)
-    face.BackgroundColor3 = C.keyBot
-    face.BorderSizePixel = 0
-    face.ZIndex = 2
-    face.Parent = host
-    corner(face, 3)
-    local g = gradient(face, C.keyTop, C.keyBot)
-    local raised   = bevel(face, "raised", 1, 3)
-    local recessed = bevel(face, "recessed", 1, 3)
-    recessed.Visible = false
+    -- Behind the face hexagon, which feature.lua built at ZIndex 2.
+    local shadow = hex.build(host, w, h, BLACK, 1)
+    shadow.Name = "HexShadow"
+    shadow.Position = UDim2.fromOffset(0, 1)
 
-    -- Indicator lamp, lit only in the ON state. Sits left of the label inside
-    -- the same footprint the hex occupied.
     local lamp
     if opts.latching then
-        lamp = Instance.new("Frame")
+        -- A hex lamp, not a round LED: same reason as the bolts.
+        lamp = hex.build(host, 6, 5, opts.onColor or theme.on, 6)
         lamp.Name = "Lamp"
-        lamp.Size = UDim2.fromOffset(4, 4)
         lamp.AnchorPoint = Vector2.new(0, 0.5)
-        lamp.Position = UDim2.new(0, 4, 0.5, 0)
-        lamp.BackgroundColor3 = opts.onColor or theme.on
-        lamp.BorderSizePixel = 0
-        lamp.ZIndex = 6
+        lamp.Position = UDim2.new(0, 3, 0.5, 0)
         lamp.Visible = false
-        lamp.Parent = host
-        corner(lamp, 4)
     end
 
     label.ZIndex = 5
     local labelHome = label.Position
+    local hexHome   = hexHost.Position
 
     return {
         set = function(on)
             if on then
-                -- Pressed in and backlit: the cap darkens TOWARD the lamp color,
-                -- because a lit key glows through the cap rather than being
-                -- painted on top of it.
+                -- A lit key glows THROUGH the cap, so the face shades toward the
+                -- lamp color rather than being painted over in it.
                 local lit = opts.onColor or theme.accent
-                g.Color = ColorSequence.new(lit:Lerp(BLACK, 0.55), lit:Lerp(BLACK, 0.75))
-                raised.Visible   = false
-                recessed.Visible = true
+                hex.setShade(hexHost, lit:Lerp(BLACK, 0.35), lit:Lerp(BLACK, 0.62))
+                hexHost.Position = hexHome + UDim2.fromOffset(0, 1)
                 label.Position   = labelHome + UDim2.fromOffset(0, 1)
-                label.TextColor3 = lit:Lerp(WHITE, 0.45)
+                label.TextColor3 = lit:Lerp(WHITE, 0.55)
+                shadow.Visible   = false
                 if lamp then lamp.Visible = true end
             else
-                g.Color = ColorSequence.new(C.keyTop, C.keyBot)
-                raised.Visible   = true
-                recessed.Visible = false
+                hex.setShade(hexHost, C.keyTop, C.keyBot)
+                hexHost.Position = hexHome
                 label.Position   = labelHome
                 label.TextColor3 = opts.latching and theme.fgDim or theme.fg
+                shadow.Visible   = true
                 if lamp then lamp.Visible = false end
             end
             if opts.onText or opts.offText then
@@ -634,41 +510,22 @@ function hw.led(frame)
     return { set = function() end }
 end
 
--- The floating "P" opener becomes a chunky round power button in a collar.
+-- The floating "P" opener stays the hexagon it has always been. It just gains a
+-- shadow hex underneath and a shaded, top-lit face, so it reads as a physical
+-- key sitting on the screen rather than a flat badge.
 function hw.logo(host, hexHost, label)
-    hexHost.Visible = false
-    local d = math.min(host.Size.X.Offset, host.Size.Y.Offset)
+    local w = (host.Size and host.Size.X.Offset) or 46
+    local h = (host.Size and host.Size.Y.Offset) or 40
 
-    local collar = Instance.new("Frame")
-    collar.Name = "Collar"
-    collar.Size = UDim2.fromOffset(d, d)
-    collar.AnchorPoint = Vector2.new(0.5, 0.5)
-    collar.Position = UDim2.fromScale(0.5, 0.5)
-    collar.BackgroundColor3 = C.bezel
-    collar.BorderSizePixel = 0
-    collar.ZIndex = 10
-    collar.Parent = host
-    corner(collar, d)
-    gradient(collar, C.faceTop, C.bezel)
-    stroke(collar, BLACK, 0.2, 1)
+    local shadow = hex.build(host, w, h, BLACK, 9)
+    shadow.Name = "HexShadow"
+    shadow.Position = UDim2.fromOffset(0, 2)
 
-    local cap = Instance.new("Frame")
-    cap.Name = "Cap"
-    cap.Size = UDim2.fromOffset(d - 8, d - 8)
-    cap.AnchorPoint = Vector2.new(0.5, 0.5)
-    cap.Position = UDim2.fromScale(0.5, 0.5)
-    cap.BackgroundColor3 = C.keyBot
-    cap.BorderSizePixel = 0
-    cap.ZIndex = 11
-    cap.Parent = host
-    corner(cap, d)
-    gradient(cap, C.keyTop, C.keyBot)
-    bevel(cap, "raised", 1, 12)
-
-    label.ZIndex = 14
+    hex.setShade(hexHost, C.keyTop, C.keyBot)
     label.TextColor3 = C.etch
-    return cap
+    return hexHost
 end
+
 
 -- ---------------------------------------------------------------------------
 -- Selection + dispatch
@@ -715,7 +572,7 @@ function skin.isHardware() return skin.name == "hardware" end
 -- a metatable) so a typo at a call site is a nil-call error here instead of a
 -- silent no-op somewhere out in the UI.
 function skin.usePanelTexture()               return active.usePanelTexture() end
-function skin.panel(c, hh, ch)                return active.panel(c, hh, ch) end
+function skin.panel(c, hdr, hh, ch)           return active.panel(c, hdr, hh, ch) end
 function skin.key(f, r)                       return active.key(f, r) end
 function skin.well(f, r)                      return active.well(f, r) end
 function skin.face(f, r)                      return active.face(f, r) end
