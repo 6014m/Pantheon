@@ -222,6 +222,12 @@ function state.summonOwner(model)
         if p then return p end
         anc = anc.Parent
     end
+    -- some games name a pet after its owner's UserId (The Veil: workspace.Monsters.<UserId>)
+    local asId = tonumber(model.Name)
+    if asId then
+        local p = Players:GetPlayerByUserId(asId)
+        if p then return p end
+    end
     local lname = string.lower(model.Name)
     for _, plr in ipairs(Players:GetPlayers()) do
         local un, dn = string.lower(plr.Name), string.lower(plr.DisplayName)
