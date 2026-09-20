@@ -161,7 +161,7 @@ function Feature.declare(def)
         desc.LayoutOrder = 2
         desc.Parent = root
 
-        skin.readout(desc)
+        skin.tray(desc)
 
         local pad = Instance.new("UIPadding", desc)
         pad.PaddingTop    = UDim.new(0, 6)
@@ -178,7 +178,7 @@ function Feature.declare(def)
     panel.Visible = false
     panel.LayoutOrder = 3
     panel.Parent = root
-    skin.readout(panel)
+    skin.tray(panel)
 
     local panelPad = Instance.new("UIPadding", panel)
     panelPad.PaddingTop    = UDim.new(0, 4)

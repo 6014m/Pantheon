@@ -14,7 +14,8 @@ It also asserts the structural rules the hardware skin lives by:
     whose extent is fixed.
   * the hexagons stay: no Hex may be hidden, and hardware must add more of them
     (shadows, lamps, bolt heads) rather than replacing them with rectangles
-  * bevel Frames must never land inside a UIListLayout/UIPadding parent
+  * socket parts (Cap/Lip/Foot/SocketShade) must never land inside a
+    UIListLayout parent (they would become list items) or a UIPadding one
   * every latching indicator must end up reflecting its feature's state
 
 Run: python tools/mocktest_skin.py
@@ -328,12 +329,12 @@ local function pass(choice)
   -- ---- structural assertions ----
   r.instances = #findAll(function() return true end)
 
-  -- Bevel frames must never land in a layout/padding parent: they'd become
+  -- Socket parts must never land in a layout/padding parent: they'd become
   -- list items or get inset, which is how a "physical" skin quietly breaks
   -- every panel it touches.
+  local DECOR={Cap=true,Lip=true,Foot=true,SocketShade=true,WellShade=true,WellLip=true}
   local bad = {}
-  for _,o in real.ipairs(findAll(function(o)
-      return o.Name=="BevelRaised" or o.Name=="BevelRecessed" end)) do
+  for _,o in real.ipairs(findAll(function(o) return DECOR[o.Name]==true end)) do
     local p = o._props.Parent
     if p then
       for _,c in real.ipairs(p._children) do
@@ -343,9 +344,9 @@ local function pass(choice)
       end
     end
   end
-  r.bevels = #findAll(function(o) return o.Name=="BevelRaised" or o.Name=="BevelRecessed" end)
-  r.bevels_in_layout = #bad
-  r.bevels_in_layout_where = real.table.concat(bad, ", ")
+  r.caps = #findAll(function(o) return o.Name=="Cap" end)
+  r.decor_in_layout = #bad
+  r.decor_in_layout_where = real.table.concat(bad, ", ")
 
   r.faders   = #findAll(function(o) return o.Name=="FaderCap" end)
 
@@ -373,7 +374,8 @@ local function pass(choice)
   r.hexes = #findAll(function(o) return o.Name=="Hex" end)
   r.hexes_hidden = #findAll(function(o) return o.Name=="Hex" and o._props.Visible==false end)
   r.hex_decor = #findAll(function(o)
-    return o.Name=="HexShadow" or o.Name=="Lamp" or o.Name=="Bolt" end)
+    return o.Name=="HexShadow" or o.Name=="HexSocket"
+        or o.Name=="Lamp" or o.Name=="Bolt" end)
   r.etches   = #findAll(function(o) return o.Name=="Etch" end)
   r.gradients= #findAll(function(o) return o.ClassName=="UIGradient" end)
 
@@ -424,10 +426,10 @@ check("flat builds clean",       flatR.error_count==0, flatR.error_count.." erro
 check("hardware builds clean",   hwR.error_count==0,   hwR.error_count.." errors")
 -- Flat must stay a true no-op layer: not one instance of skin furniture.
 check("flat adds no decoration",
-  flatR.bevels==0 and flatR.etches==0 and flatR.faders==0)
-check("hardware decorates",
-  hwR.bevels>0 and hwR.etches>0 and hwR.faders>0,
-  hwR.bevels.." bevels, "..hwR.etches.." etches, "..hwR.faders.." faders")
+  flatR.caps==0 and flatR.etches==0 and flatR.faders==0)
+check("hardware sinks its controls into sockets",
+  hwR.caps>0 and hwR.etches>0 and hwR.faders>0,
+  hwR.caps.." caps, "..hwR.etches.." etches, "..hwR.faders.." faders")
 -- The panel-height regression guard.
 check("hardware adds no child to an AutomaticSize container",
   hwR.container_children==flatR.container_children,
@@ -441,8 +443,8 @@ check("hexagons kept, none hidden, none swapped for a rectangle",
 check("hardware builds ON the hexagons",
   hwR.hex_decor>0 and flatR.hex_decor==0,
   hwR.hex_decor.." shadow/lamp/bolt hexes")
-check("no bevel inside a layout/padding parent",
-  hwR.bevels_in_layout==0, hwR.bevels_in_layout_where)
+check("no socket part inside a layout/padding parent",
+  hwR.decor_in_layout==0, hwR.decor_in_layout_where)
 check("no double UIGradient", hwR.double_gradients==0 and flatR.double_gradients==0)
 check("indicator legends track state",
   flatR.legends==hwR.legends and flatR.legends=="ON,OFF", hwR.legends)

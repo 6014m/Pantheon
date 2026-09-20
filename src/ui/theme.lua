@@ -48,6 +48,10 @@ local theme = {
     gridSize       = 48,   -- drag-snap grid (px) for containers + the P button
     featureHeight  = 30,
     rowHeight      = 30,
+    -- Gap between feature rows. 1px here (rows read as a stacked list); a skin
+    -- that cuts its controls into a faceplate raises it, because the gap is
+    -- where the plate shows through. See [[ui.skin]].
+    rowGap         = 1,
     cornerRadius   = UDim.new(0, 0),
     padding        = 6,
 

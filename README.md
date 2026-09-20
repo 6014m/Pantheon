@@ -41,20 +41,31 @@ dist/main.lua        the bundled output users load
 `Pantheon menu -> cog -> UI Skin` picks the look, then **Re-Execute Now** applies it.
 
 * **Flat** (default) - the original hex/HUD panels. Unchanged.
-* **Hardware** - the same panels, machined. Pantheon's chamfered 9-slice IS the
-  faceplate (the skin just repaints its gradient in metal), the header bar gains
-  a milled rim, a groove and a lit lip, and hex bolt heads hold it down. The
-  hexagons stay hexagons and gain depth instead: each one sits on a black
-  hexagon one pixel low, so it stands proud of the plate, and its face is shaded
-  top-lit rather than filled flat. ON/OFF is a latching hex key that drops onto
-  its own shadow and backlights with a hex lamp; the cog and "i" are momentary
-  keys. Toggles are rockers in a recessed well, sliders are faders riding a
-  routed channel, readouts are inset, and headings are etched into the metal.
+* **Hardware** - one moulded faceplate with the controls sunk into it.
+  Pantheon's chamfered 9-slice IS the plate (the skin repaints its gradient in
+  metal), the header rail gains a milled rim, a groove, a lit lip and hex bolt
+  heads. Feature rows are not cards: they are stretches of that same plate,
+  divided by hairline seams. What gets sunk in is the hardware - the hexagons
+  stay hexagons and sit in hex-shaped cutouts, ON/OFF is a latching key that
+  drops to the bottom of its cut and backlights through a hex lamp, toggles are
+  rockers in a slot, sliders are faders on a routed channel, readouts are
+  windows cut through, the settings tray is a compartment, and headings are
+  etched.
 
-  Note for anyone extending it: a container is `AutomaticSize.Y`, so the panel
-  hook must not add a child sized to the whole panel - that stretches every menu
-  to the bottom of the screen. Panel furniture is parented into the header host,
-  whose extent is fixed. `mocktest_skin.py` guards this.
+  Three things it took three attempts to get right, worth knowing before
+  editing it:
+
+  1. **A `UIGradient` multiplies `BackgroundColor3`, it does not replace it.**
+     Grey gradient over grey background squares down to near-black - which is
+     why the first two cuts looked like unlit slabs. `gradient()` sets the base
+     white unless you ask for the multiply.
+  2. **Depth is lighting, and lighting needs value range.** The plate is a real
+     mid grey (Pantheon's own header-band grey), cuts go to 13 and caps to 104.
+     A 1px white lip on a near-black panel is invisible.
+  3. **A container is `AutomaticSize.Y`**, so the panel hook must not add a
+     child sized to the whole panel - that stretches every menu to the bottom of
+     the screen. Panel furniture is parented into the header host, whose extent
+     is fixed. `mocktest_skin.py` guards this.
 
 `src/ui/skin.lua` is the whole implementation: a decoration layer the ui/*
 modules call at fixed points while building. Flat's hooks are no-ops, so that
@@ -63,11 +74,18 @@ screws and wells. A new component is skinned once, there, rather than in every
 module that builds one. The choice is stored in the **cross-game** settings file
 (`Pantheon/settings/global.json`) so it follows you into every game.
 
-Verify with `python tools/mocktest_skin.py` - it builds the real UI tree under
-both skins, flips every control, and checks the structural rules: no child added
-to an AutomaticSize container, no hexagon hidden or swapped for a rectangle, no
-bevel Frames inside a UIListLayout/UIPadding parent, no doubled UIGradient, and
-flat adding zero decoration instances.
+Two tools cover it:
+
+* `python tools/mocktest_skin.py` builds the real UI tree under both skins,
+  flips every control, and checks the structural rules: no child added to an
+  AutomaticSize container, no hexagon hidden or swapped for a rectangle, no
+  socket part inside a UIListLayout/UIPadding parent, no doubled UIGradient,
+  and flat adding zero decoration instances.
+* `python tools/preview_skin.py` **renders** that tree to
+  `scratch/preview_<skin>.png` (3x, nearest-neighbour). A skin is entirely
+  about how it looks, and the mocktest cannot see that - the preview caught the
+  gradient-multiply bug, section headings rendering twice, and button legends
+  being swallowed by their own key caps, all without a reload.
 
 ## Build
 

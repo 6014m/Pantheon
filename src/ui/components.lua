@@ -72,7 +72,7 @@ function components.Button(parent, opts)
     end
     -- The row is the keycap, `btn` is the legend printed on it -- so the press
     -- shifts the legend, not the cap (which would drag its own bevel with it).
-    skin.press(btn, skin.key(f), { btn })
+    skin.press(btn, skin.key(f, { legend = btn }), { btn })
     return f
 end
 
@@ -280,7 +280,7 @@ function components.KeybindSetter(parent, opts)
     unbind.Font = theme.fontBold
     unbind.TextSize = 10
     unbind.Parent = f
-    skin.press(unbind, skin.key(unbind))
+    skin.press(unbind, skin.key(unbind, { tint = theme.danger, legend = unbind }))
 
     btn.MouseButton1Click:Connect(function()
         if listening then return end
@@ -389,7 +389,7 @@ function components.Dropdown(parent, opts)
         ob.BackgroundColor3 = theme.bgAlt; ob.AutoButtonColor = true; ob.BorderSizePixel = 0
         ob.TextColor3 = theme.fgDim; ob.Font = theme.font; ob.TextSize = 11
         ob.Text = tostring(o); ob.LayoutOrder = optCount; ob.Parent = listHost
-        skin.press(ob, skin.key(ob))
+        skin.press(ob, skin.key(ob, { legend = ob }))
         ob.MouseButton1Click:Connect(function()
             value = o; cur.Text = tostring(o); listHost.Visible = false
             if onChange then onChange(value) end

@@ -203,7 +203,7 @@ function Container.new(parent, name)
 
     local featuresList = Instance.new("UIListLayout", features)
     featuresList.SortOrder = Enum.SortOrder.LayoutOrder
-    featuresList.Padding = UDim.new(0, 1)
+    featuresList.Padding = UDim.new(0, theme.rowGap or 1)
 
     -- Body height = content height, capped to the viewport so a tall panel scrolls
     -- instead of running off-screen. (AutomaticSize on a ScrollingFrame fights
@@ -400,7 +400,7 @@ function Container.buildNavigator(parent, title)
                 pill.TextColor3 = theme.fg
                 pill.Parent = row
 
-                skin.press(row, skin.key(row))
+                skin.press(row, skin.key(row, { legend = row }))
                 local lamp = skin.led(pill)
 
                 local function refresh()
