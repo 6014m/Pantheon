@@ -431,8 +431,10 @@ check("hardware sinks its controls into sockets",
   hwR.caps>0 and hwR.etches>0 and hwR.faders>0,
   hwR.caps.." caps, "..hwR.etches.." etches, "..hwR.faders.." faders")
 -- The panel-height regression guard.
+-- "no MORE than flat", not "the same as flat": hardware drops the carbon tile,
+-- so it legitimately has one child fewer per container. Adding is the failure.
 check("hardware adds no child to an AutomaticSize container",
-  hwR.container_children==flatR.container_children,
+  hwR.container_children<=flatR.container_children,
   hwR.container_children.." vs flat "..flatR.container_children)
 check("panel furniture goes in the header host",
   hwR.header_children>flatR.header_children,

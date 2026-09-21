@@ -27,7 +27,16 @@ from PIL import Image, ImageDraw, ImageFont
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.abspath(os.path.join(HERE, "..", "src"))
 OUT = os.path.abspath(os.path.join(HERE, "..", "scratch"))
+ASSETS = os.path.abspath(os.path.join(HERE, "..", "assets"))
 SCALE = 3
+
+# Roblox asset ids mapped back to the source art in assets/, so a tiled overlay
+# renders as the real weave. Without this the preview silently dropped the
+# carbon texture -- and a texture that is invisible here but shouting in game is
+# exactly the kind of thing this tool exists to catch.
+ASSET_FILES = {
+    "rbxassetid://83752823743620": "carbon_fiber.png",
+}
 
 
 def read_file(rel):
@@ -479,7 +488,36 @@ def paint(img, records, font, font_bold):
         scale_name = str(scale_type["_name"]) if scale_type is not None else ""
         if cls == "ImageLabel" and prop(inst, "Image"):
             if scale_name == "Tile":
-                continue    # carbon weave: see NOTE in main()
+                src = ASSET_FILES.get(str(prop(inst, "Image", "")))
+                path = os.path.join(ASSETS, src) if src else None
+                if not path or not os.path.exists(path):
+                    continue
+                tsz = prop(inst, "TileSize")
+                tw = int(tsz["X"]["Offset"]) if tsz is not None else 96
+                th = int(tsz["Y"]["Offset"]) if tsz is not None else 96
+                tex = Image.open(path).convert("RGBA").resize((max(1, tw), max(1, th)))
+                tint = rgb(prop(inst, "ImageColor3"), (255, 255, 255))
+                if tint != (255, 255, 255):
+                    px = tex.load()
+                    for yy in range(tex.height):
+                        for xx in range(tex.width):
+                            r, g, b, a = px[xx, yy]
+                            px[xx, yy] = (r * tint[0] // 255, g * tint[1] // 255,
+                                          b * tint[2] // 255, a)
+                sheet = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+                for oy in range(0, h, tex.height):
+                    for ox in range(0, w, tex.width):
+                        sheet.paste(tex, (ox, oy))
+                ia = 1.0 - float(prop(inst, "ImageTransparency", 0))
+                sheet.putalpha(sheet.getchannel("A").point(lambda v: int(v * ia)))
+                corner = child_of_class(inst, "UICorner")
+                radius = udim_offset(prop(corner, "CornerRadius")) if corner else 0
+                if radius:
+                    sheet.putalpha(Image.composite(sheet.getchannel("A"),
+                                                   Image.new("L", (w, h), 0),
+                                                   rounded_mask((w, h), min(radius, w // 2, h // 2))))
+                img.alpha_composite(sheet, (x, y))
+                continue
             # A 9-sliced chamfered panel, drawn as a rounded rect in its own
             # gradient. Corner shape differs (round vs chamfer); value does not,
             # and value is what this preview exists to judge.
@@ -616,8 +654,6 @@ def render(choice, path):
 
 def main():
     os.makedirs(OUT, exist_ok=True)
-    # NOTE: the tiled carbon overlay is skipped -- a flat fill would misstate a
-    # weave. Everything else (plate, sockets, caps, lips, hexes, text) is drawn.
     choices = sys.argv[1:] or ["Flat", "Hardware"]
     for c in choices:
         render(c.capitalize(), os.path.join(OUT, "preview_%s.png" % c.lower()))

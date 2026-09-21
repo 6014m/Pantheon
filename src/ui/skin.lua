@@ -107,12 +107,11 @@ local C = {
     plateDim = Color3.fromRGB(41, 44, 50),     -- plate falling into shadow
     band     = Color3.fromRGB(86, 91, 100),    -- header rail, the top face
     bandDim  = Color3.fromRGB(62, 66, 74),
-    slot     = Color3.fromRGB(13, 14, 16),     -- a cut through the plate
+    slot     = Color3.fromRGB(22, 24, 28),     -- a cut through the plate
     capTop   = Color3.fromRGB(104, 110, 121),  -- key cap, lit edge
     capBot   = Color3.fromRGB(68, 72, 80),     -- key cap, shadowed edge
     bolt     = Color3.fromRGB(186, 193, 204),  -- hex bolt head
     boltDk   = Color3.fromRGB(44, 47, 53),
-    rim      = Color3.fromRGB(138, 145, 156),  -- milled edge around the chamfer
     etch     = Color3.fromRGB(180, 186, 196),  -- lettering cut into the metal
     legend   = Color3.fromRGB(26, 28, 33),     -- lettering printed ON a key cap
 }
@@ -180,7 +179,7 @@ end
 -- items) or a UIPadding (they'd be inset by it). Those take readout() instead.
 local function socket(frame, opts)
     opts = opts or {}
-    local inset  = opts.inset or 3
+    local inset  = opts.inset or 2
     local radius = opts.radius or 3
     local top    = opts.top or C.capTop
     local bottom = opts.bottom or C.capBot
@@ -271,10 +270,6 @@ function hw.applyTheme(t)
     t.fg         = Color3.fromRGB(240, 243, 248)
     t.fgDim      = Color3.fromRGB(176, 182, 192)
     t.logoStroke = Color3.fromRGB(20, 21, 24)
-    -- The carbon weave is the plate's grain. At the flat skin's 0.82 it is
-    -- invisible on a lit surface, so bring it up until you can feel it.
-    t.panelTextureTransparency = 0.55
-    t.panelTextureTile         = 72
     -- A cap needs height to read as one, and the gap between rows is where the
     -- plate shows through -- without it the sockets fuse into one dark band.
     t.featureHeight = 32
@@ -282,9 +277,14 @@ function hw.applyTheme(t)
     t.rowGap        = 0
 end
 
--- The carbon tile is the plate's grain, and it is what gives the "P" hex its
--- texture too.
-function hw.usePanelTexture() return true end
+-- No carbon tile. The weave is the flat skin's way of keeping near-black panels
+-- apart, and at 0.82 over near-black it is barely there -- but over a lit mid
+-- grey plate it reads as dithering ("weirdly pixelated") and competes with the
+-- 1px lips and shadows this whole skin is built out of. A machined plate is
+-- smooth, and the plate's own lighting separates the panels now.
+-- preview_skin.py renders the real tile, so flipping this back to true is a
+-- one-line experiment you can look at before reloading.
+function hw.usePanelTexture() return false end
 
 -- Machine the panel.
 --
@@ -295,10 +295,10 @@ function hw.usePanelTexture() return true end
 -- and the hardware across the header rail, parented into headerHost, whose
 -- extent is fixed.
 function hw.panel(container, headerHost, headerH, chamferH)
-    -- UIStroke on an ImageLabel follows the image alpha, so the rim traces the
-    -- chamfered outline instead of boxing it in.
-    stroke(container, C.rim, 0.55, 1)
-
+    -- No rim stroke. A UIStroke on the 9-slice does NOT trace the chamfer -- it
+    -- draws a square box round the panel's rect, corners poking out past the
+    -- chamfered silhouette. That square was the outline around everything. The
+    -- rail's own light line is the edge.
     local W = UDim2.new(1, 0, 0, 1)
     -- Light along the top edge of the rail, then the groove and its lit lip
     -- where the rail meets the plate.

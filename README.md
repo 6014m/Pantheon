@@ -82,10 +82,12 @@ Two tools cover it:
   socket part inside a UIListLayout/UIPadding parent, no doubled UIGradient,
   and flat adding zero decoration instances.
 * `python tools/preview_skin.py` **renders** that tree to
-  `scratch/preview_<skin>.png` (3x, nearest-neighbour). A skin is entirely
-  about how it looks, and the mocktest cannot see that - the preview caught the
-  gradient-multiply bug, section headings rendering twice, and button legends
-  being swallowed by their own key caps, all without a reload.
+  `scratch/preview_<skin>.png` (3x, nearest-neighbour), tiled textures included
+  from `assets/`. A skin is entirely about how it looks, and the mocktest
+  cannot see that - the preview caught the gradient-multiply bug, section
+  headings rendering twice, button legends being swallowed by their own key
+  caps, the carbon weave reading as dithering, and a rim stroke boxing the
+  chamfered panel in a square, all without a reload.
 
 ## Build
 
