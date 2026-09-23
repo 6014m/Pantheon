@@ -75,8 +75,6 @@ local files = {
     { "games.evilplate",           "games/evilplate.lua" },
     { "games.gakuran",             "games/gakuran.lua" },
     { "games.veil",                "games/veil.lua" },
-    { "games.dodgeordie_ballreaction", "games/dodgeordie_ballreaction.lua" },
-    { "games.dodgeordie",          "games/dodgeordie.lua" },
     { "init",                      "init.lua" },
 }
 

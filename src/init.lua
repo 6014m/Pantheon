@@ -64,7 +64,6 @@ require("games.jjs")
 require("games.evilplate")
 require("games.gakuran")
 require("games.veil")
-require("games.dodgeordie")
 
 -- Per-game module (if registered for this PlaceId)
 local gameMod = registry.current()

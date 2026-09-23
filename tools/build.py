@@ -52,8 +52,6 @@ BUILD_ORDER = [
     "games/evilplate",
     "games/gakuran",
     "games/veil",
-    "games/dodgeordie_ballreaction",
-    "games/dodgeordie",
     "init",
 ]
 
