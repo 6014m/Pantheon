@@ -51,6 +51,7 @@ BUILD_ORDER = [
     "games/jjs",
     "games/evilplate",
     "games/gakuran",
+    "games/veil_weave",
     "games/veil",
     "init",
 ]

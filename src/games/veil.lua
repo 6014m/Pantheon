@@ -32,6 +32,8 @@ local container = require("ui.container")
 local feature   = require("ui.feature")
 local state     = require("modules.aim.state")
 local log       = require("core.log")
+local persist   = require("core.persist")
+local weave     = require("games.veil_weave")
 
 local Workspace = game:GetService("Workspace")
 
@@ -210,12 +212,16 @@ function Veil.register()
         },
     }).root)
 
-    log.info("The Veil module registered -- Bot Mode filter: summons, loot, Runners, idle NPCs")
+    weave.loadSaved(persist)
+    box:add(feature.declare(weave.feature()).root)
+
+    log.info("The Veil module registered -- Bot Mode filter + Auto Weave")
 end
 
 -- Called by init.lua's shutdown (re-execute / Auto Re-Execute): drop the filter so
 -- it doesn't stack across boots or linger in another game.
 function Veil.destroy()
+    pcall(weave.stop)
     if removeFilter then
         pcall(removeFilter)
         removeFilter = nil
