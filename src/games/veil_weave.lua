@@ -9,8 +9,10 @@
 --   * Melee is server-side: no hitbox part ever shows up before a swing lands, so swings
 --     are timed from the mob's attack animation. Most mobs share one swing anim
 --     (107426583476702) whose damage lands a steady 0.58 s after it starts.
---   * Projectiles (Ichor, ~24 stud/s, used by half the bestiary; GreenBeam; SentryLaser)
---     and a few AoE parts DO exist client-side, so those are tracked directly.
+--   * Projectiles (GreenBeam, SentryLaser, ShatterProjectile) and a few AoE parts DO exist
+--     client-side, so those are tracked directly. Only KNOWN hostile names by default:
+--     Ichor (~24 stud/s, dropped by half the bestiary) homes straight into you and looked
+--     exactly like a projectile, but it is a pickup (user, live test 2026-09-25).
 --   * Several "hitboxes" near you are your own (Aegis Banner's BannerExplode, FlowerExplode,
 --     summon bursts, your sprint part) or mob limbs; those are ignored.
 -- Undodgeable attacks are out of scope on purpose.
@@ -40,6 +42,7 @@ local CFG = {
     melee        = true,
     projectiles  = true,
     projMiss     = 4,       -- a projectile passing closer than this counts as a hit
+    anyProj      = false,   -- also weave unknown fast parts (off: pickups home in on you too)
     hitboxes     = true,
     hitboxDelay  = 0.3,     -- static AoE hitboxes: seconds after they cover you before weaving
     verbose      = false,   -- print every weave and its reason to the console
@@ -62,12 +65,13 @@ local extra = {}   -- user-added "id=seconds" pairs from the settings textbox
 local HOSTILE_PARTS = {
     DeathExplosionHitbox = true, PoisonSmoke = true, IceSurge = true, LightningStrike = true,
     Bladey = true, Blade = true, BlackFlash = true, BlackSpikePart = true, Spike = true,
-    ShatterProjectile = true, GreenBeam = true, SentryLaser = true, Ichor = true,
+    ShatterProjectile = true, GreenBeam = true, SentryLaser = true,
 }
 -- yours or harmless: never weave for these
 local IGNORE_PARTS = {
     BannerExplode = true, FlowerExplode = true, WhiteBurstSummonEffect = true, SummonEffect = true,
     SuperRunPart = true, VeilFollowerPart = true, PotionModel = true, Glade = true,
+    Ichor = true,   -- the orb mobs drop that flies INTO you (pickup), not an attack
 }
 
 --------------------------------------------------------------------- state
@@ -238,7 +242,8 @@ local function step()
                     local vel = (pos - rec.pos) / dt
                     rec.pos, rec.t = pos, t
                     local speed = vel.Magnitude
-                    if CFG.projectiles and speed > 15 and age > 0.03 then
+                    if CFG.projectiles and speed > 15 and age > 0.03
+                       and (CFG.anyProj or HOSTILE_PARTS[part.Name]) then
                         local rel = me - pos
                         local eta = rel:Dot(vel) / (speed * speed)
                         if eta > 0 then
@@ -318,7 +323,7 @@ function Weave.feature()
     return {
         id          = "veil.auto_weave",
         name        = "Auto Weave",
-        description = "Presses your weave key so its i-frames cover incoming hits. Melee swings are timed from the mob's attack animation (the game's melee has no visible hitbox), projectiles like Ichor are tracked until they are about to reach you, and enemy AoE hitboxes that cover you trigger a weave too. Your own Aegis Banner / flower / summon effects are ignored. Respects the ~0.5 s weave cooldown and skips a weave when one already covers the hit. Timings come from recorded fights at ~46 ms ping; raise 'Press before impact' if hits still land right after the weave, lower it if they land before it.",
+        description = "Presses your weave key so its i-frames cover incoming hits. Melee swings are timed from the mob's attack animation (the game's melee has no visible hitbox), known enemy projectiles are tracked until they are about to reach you, and enemy AoE hitboxes that cover you trigger a weave too. Your own Aegis Banner / flower / summon effects are ignored. Respects the ~0.5 s weave cooldown and skips a weave when one already covers the hit. Timings come from recorded fights at ~46 ms ping; raise 'Press before impact' if hits still land right after the weave, lower it if they land before it.",
         default     = false,
         onToggle    = function(v)
             CFG.enabled = v and true or false
@@ -336,6 +341,8 @@ function Weave.feature()
               default = 12, onChange = function(v) CFG.meleeRange = v end },
             { type = "toggle", name = "Projectiles", key = "projectiles", default = true,
               onChange = function(v) CFG.projectiles = v and true or false end },
+            { type = "toggle", name = "Unknown projectiles too", key = "any_proj", default = false,
+              onChange = function(v) CFG.anyProj = v and true or false end },
             { type = "toggle", name = "Enemy AoE hitboxes", key = "hitboxes", default = true,
               onChange = function(v) CFG.hitboxes = v and true or false end },
             { type = "slider", name = "AoE: wait before weaving (s)", key = "hitbox_delay", min = 0, max = 1, step = 0.05,
