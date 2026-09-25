@@ -275,6 +275,15 @@ local function isMine(part, rec)
     return false
 end
 
+local OWN_RADIUS = 7   -- parts spawning closer than this to you are treated as yours
+
+-- the mob model a part sits inside, if any
+local function owner_of(part)
+    local m = insideHumanoidModel(part)
+    if m and not isFriendlyModel(m) then return m end
+    return nil
+end
+
 local looked, lookedAt = 0, 0
 local function onPart(part)
     if not (running and CFG.enabled) or not part:IsA("BasePart") then return end
@@ -308,7 +317,12 @@ local function step()
             elseif not rec.checked then
                 -- a frame late on purpose: parts get moved into place after being parented
                 rec.checked = true
-                if isMine(part, rec) or closerToFriendly(part.Position) and (part.Position - me).Magnitude > 8 then
+                -- Only parts that provably come from a MOB are trusted: inside a mob model, or
+                -- spawned away from you and nearer a mob than any player / summon. Anything that
+                -- spawns on you (your dashes, your weapon, your banners) is never a trigger.
+                local fromMob = (owner_of(part) ~= nil)
+                    or ((part.Position - me).Magnitude >= OWN_RADIUS and not closerToFriendly(part.Position))
+                if isMine(part, rec) or not fromMob then
                     rec.fired = true   -- ignore it for good
                     if CFG.verbose then log.info("[Weave] ignoring own/friendly part " .. part.Name) end
                 end
