@@ -500,9 +500,10 @@ end
 
 local MOVE_KEYS = { Enum.KeyCode.W, Enum.KeyCode.A, Enum.KeyCode.S, Enum.KeyCode.D }
 
--- Dash direction: if you're already holding a movement key, the dash goes where you're
--- going. Otherwise hold the camera-relative key pointing away from the attack (or sideways
--- to it) for the press.
+-- Dash direction (user): Q alone dashes straight forward; W/A/S/D + Q dashes that way,
+-- camera-relative. If you're already holding a movement key, the dash goes where you're
+-- going. Otherwise the camera-relative key pointing away from the attack (or sideways to
+-- it, or toward it for gas balls you dash THROUGH) is held for the press.
 local function dashKeyFor(threat, mode)
     for _, k in ipairs(MOVE_KEYS) do
         if UIS:IsKeyDown(k) then return nil end
@@ -518,6 +519,7 @@ local function dashKeyFor(threat, mode)
         away = -Vector3.new(lv.X, 0, lv.Z)
     end
     if mode == "Sideways" then away = Vector3.new(-away.Z, 0, away.X) end
+    if mode == "Toward the attack" then away = -away end
     local f = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z)
     local rt = Vector3.new(cam.CFrame.RightVector.X, 0, cam.CFrame.RightVector.Z)
     local df, dr = away:Dot(f.Unit), away:Dot(rt.Unit)
@@ -1721,7 +1723,7 @@ local function step()
                             rec.fired = true
                             impacts[#impacts + 1] = { t = t + DASH.lead, reason = "gas ball (RotOrb) touching you",
                                                       kind = "melee", from = pos, key = "RotOrb", unweavable = true,
-                                                      dashDir = "Where you're moving only" }
+                                                      dashDir = "Toward the attack" }
                             dlog("ROTORB %.1f studs, closing %.0f -> dash", gap, closing)
                         end
                     elseif rec.proximity then
