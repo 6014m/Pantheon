@@ -23,6 +23,7 @@ local conns = {}
 local running = false
 local realHeld = false        -- is YOUR finger on W
 local fakeDowns, fakeUps = 0, 0
+local fakeAt = 0              -- when we last injected; stale counts are dropped (see fakeEvent)
 local lastTrigger = 0
 
 local function sprintValue()
@@ -39,63 +40,66 @@ local function isSprinting()
     return v ~= nil and v.Value == true
 end
 
-local function fakeUp()
-    fakeUps += 1
-    pcall(function() VIM:SendKeyEvent(false, W, false, game) end)
+-- Is this W event one of ours? Injected events are counted, but a count can go stale (a
+-- key-up sent while the key was already up fires nothing), and a stale count would eat your
+-- REAL release and keep W "held" forever -- so counts older than 0.3 s are forgotten.
+local function fakeEvent(isDown)
+    if os.clock() - fakeAt > 0.3 then fakeDowns, fakeUps = 0, 0 end
+    if isDown and fakeDowns > 0 then fakeDowns -= 1; return true end
+    if not isDown and fakeUps > 0 then fakeUps -= 1; return true end
+    return false
 end
 
-local function fakeDown()
-    if not realHeld then return end          -- you already let go: never press W for you
-    fakeDowns += 1
-    pcall(function() VIM:SendKeyEvent(true, W, false, game) end)
+local function send(down)
+    fakeAt = os.clock()
+    if down then fakeDowns += 1 else fakeUps += 1 end
+    pcall(function() VIM:SendKeyEvent(down, W, false, game) end)
 end
 
--- release + re-press right after your real press -> the game sees a double tap
+-- The double tap: release + re-press in ONE go, no waits in between. With a gap, letting go
+-- of W inside it was invisible to the game (the key was already "up"), so the re-press
+-- stayed down forever. Back-to-back, your real release can only land before (-> we don't
+-- press) or after (-> it releases the re-press normally).
+local function burst(taps)
+    if not (realHeld and UIS:IsKeyDown(W)) then return end
+    for _ = 1, taps do
+        send(false)
+        send(true)
+    end
+end
+
 local function doubleTap()
     local t = os.clock()
     if t - lastTrigger < 0.35 then return end
     lastTrigger = t
-    task.spawn(function()
-        task.wait(0.04)
-        if not realHeld then return end
-        fakeUp()
-        task.wait(0.06)
-        fakeDown()
-    end)
+    task.delay(0.04, function() burst(1) end)
 end
 
 function Sprint.start()
     Sprint.stop()
     running = true
     realHeld = UIS:IsKeyDown(W)
+    fakeDowns, fakeUps = 0, 0
     conns[#conns + 1] = UIS.InputBegan:Connect(function(input, gp)
-        if input.KeyCode ~= W then return end
-        if fakeDowns > 0 then fakeDowns -= 1; return end    -- ours
+        if input.KeyCode ~= W or fakeEvent(true) then return end
         realHeld = true
         if not CFG.enabled or gp or UIS:GetFocusedTextBox() then return end
         if not isSprinting() then doubleTap() end
     end)
     conns[#conns + 1] = UIS.InputEnded:Connect(function(input)
-        if input.KeyCode ~= W then return end
-        if fakeUps > 0 then fakeUps -= 1; return end        -- ours
+        if input.KeyCode ~= W or fakeEvent(false) then return end
         realHeld = false
     end)
     task.spawn(function()
         while running do
-            task.wait(0.2)
+            task.wait(0.15)
             -- safety net: the game thinks W is down but you aren't holding it -> let go
-            if not realHeld and UIS:IsKeyDown(W) then
-                fakeUps += 1
-                pcall(function() VIM:SendKeyEvent(false, W, false, game) end)
-            end
+            if not realHeld and UIS:IsKeyDown(W) then send(false) end
             -- sprint dropped while you're still holding W -> double tap again
             if realHeld and not UIS:GetFocusedTextBox() and not isSprinting()
                and os.clock() - lastTrigger > 0.6 then
                 lastTrigger = os.clock()
-                fakeUp(); task.wait(0.03)
-                fakeDown(); task.wait(0.04)
-                fakeUp(); task.wait(0.06)
-                fakeDown()
+                burst(2)
             end
         end
     end)
@@ -104,6 +108,9 @@ end
 
 function Sprint.stop()
     running = false
+    if not realHeld and UIS:IsKeyDown(W) then       -- never leave W held when turned off
+        pcall(function() VIM:SendKeyEvent(false, W, false, game) end)
+    end
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     table.clear(conns)
 end
