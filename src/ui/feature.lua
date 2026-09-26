@@ -111,6 +111,7 @@ function Feature.declare(def)
     nameLabel.TextSize = 13
     nameLabel.TextXAlignment = Enum.TextXAlignment.Left
     nameLabel.Parent = row
+    components.marquee(nameLabel)   -- long names slide instead of running under the ON key
 
     local indicatorHost, indicatorHex, indicatorLabel, indicatorBtn =
         hexButton(row, 40, 22, theme.off, "OFF", theme.fontBold, 10)

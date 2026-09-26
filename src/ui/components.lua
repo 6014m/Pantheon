@@ -20,6 +20,83 @@ local conns = {}   -- [conn] = true
 local function trackConn(c) conns[c] = true; return c end
 local function untrackConn(c) conns[c] = nil end
 
+-- ---- marquee: labels that don't fit slide sideways instead of overlapping ----------
+-- A label longer than its space used to run underneath the switch / box / dropdown next
+-- to it. components.marquee(label) clips it to its own space; if the text still doesn't
+-- fit it pauses, glides left to show the end, pauses, and glides back -- same text size,
+-- nothing overlaps. Labels that fit are left exactly as they were.
+local RunService = game:GetService("RunService")
+local marquees = setmetatable({}, { __mode = "k" })   -- inner label -> state
+local marqueeConn = nil
+local MARQUEE_SPEED = 28   -- px / s
+local MARQUEE_PAUSE = 1.4  -- s at each end
+
+local function stepMarquees(dt)
+    local any = false
+    for inner, st in pairs(marquees) do
+        local clip = st.clip
+        if not clip.Parent or not inner.Parent then
+            marquees[inner] = nil
+        else
+            any = true
+            local over = inner.AbsoluteSize.X - clip.AbsoluteSize.X
+            if over <= 1 or not clip.Visible then
+                -- fits: sit where the original alignment would put it
+                local x = 0
+                if st.align == Enum.TextXAlignment.Center then x = math.max(0, -over) / 2
+                elseif st.align == Enum.TextXAlignment.Right then x = math.max(0, -over) end
+                inner.Position = UDim2.new(0, x, 0, 0)
+                st.offset, st.dir, st.wait = 0, 1, MARQUEE_PAUSE
+            else
+                if st.wait > 0 then
+                    st.wait -= dt
+                else
+                    st.offset += st.dir * MARQUEE_SPEED * dt
+                    if st.offset >= over then st.offset, st.dir, st.wait = over, -1, MARQUEE_PAUSE end
+                    if st.offset <= 0 then st.offset, st.dir, st.wait = 0, 1, MARQUEE_PAUSE end
+                end
+                inner.Position = UDim2.new(0, -math.floor(st.offset + 0.5), 0, 0)
+            end
+        end
+    end
+    if not any and marqueeConn then marqueeConn:Disconnect(); marqueeConn = nil end
+end
+
+function components.marquee(label)
+    if not label or not label.Parent or marquees[label] then return label end
+    local clip = Instance.new("Frame")
+    clip.Name = "MarqueeClip"
+    clip.BackgroundTransparency = 1
+    clip.BorderSizePixel = 0
+    clip.ClipsDescendants = true
+    clip.Size = label.Size
+    clip.Position = label.Position
+    clip.AnchorPoint = label.AnchorPoint
+    clip.ZIndex = label.ZIndex
+    clip.LayoutOrder = label.LayoutOrder
+    clip.Parent = label.Parent
+    local align = label.TextXAlignment
+    label.Parent = clip
+    label.AnchorPoint = Vector2.zero
+    label.Position = UDim2.new(0, 0, 0, 0)
+    label.Size = UDim2.new(0, 0, 1, 0)
+    label.AutomaticSize = Enum.AutomaticSize.X     -- as wide as its text
+    label.TextWrapped = false
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    marquees[label] = { clip = clip, align = align, offset = 0, dir = 1, wait = MARQUEE_PAUSE }
+    if not marqueeConn then
+        marqueeConn = RunService.Heartbeat:Connect(stepMarquees)
+    end
+    return label
+end
+
+-- text boxes / dropdown values: clip and end with "..." instead of spilling out
+local function clipText(obj)
+    obj.ClipsDescendants = true
+    pcall(function() obj.TextTruncate = Enum.TextTruncate.AtEnd end)
+end
+components.clipText = clipText
+
 local function baseRow(parent, height)
     local f = Instance.new("Frame")
     f.Size = UDim2.new(1, 0, 0, height or theme.rowHeight)
@@ -91,6 +168,7 @@ function components.Toggle(parent, opts)
     label.TextSize = 12
     label.TextXAlignment = Enum.TextXAlignment.Left
     label.Parent = f
+    components.marquee(label)
 
     local switch = Instance.new("TextButton")
     switch.Size = UDim2.fromOffset(36, 18)
@@ -159,6 +237,7 @@ function components.Slider(parent, opts)
     label.TextXAlignment = Enum.TextXAlignment.Left
     label.Text = string.format("%s: %s", opts.text or "Slider", tostring(value))
     label.Parent = f
+    components.marquee(label)
 
     local track = Instance.new("Frame")
     track.Size = UDim2.new(1, -20, 0, 6)
@@ -254,6 +333,7 @@ function components.KeybindSetter(parent, opts)
     label.TextSize = 12
     label.TextXAlignment = Enum.TextXAlignment.Left
     label.Parent = f
+    components.marquee(label)
 
     -- Setter button (click to enter listen mode, then press any key to bind)
     local btn = Instance.new("TextButton")
@@ -365,12 +445,14 @@ function components.Dropdown(parent, opts)
     label.BackgroundTransparency = 1; label.Text = opts.label or "Select"
     label.TextColor3 = theme.fg; label.Font = theme.font; label.TextSize = 12
     label.TextXAlignment = Enum.TextXAlignment.Left; label.Parent = header
+    components.marquee(label)
 
     local cur = Instance.new("TextButton")
     cur.Position = UDim2.new(0.5, 4, 0.5, -10); cur.Size = UDim2.new(0.5, -14, 0, 20)
     cur.BackgroundColor3 = theme.bgDark; cur.AutoButtonColor = false
     cur.TextColor3 = theme.fg; cur.Font = theme.font; cur.TextSize = 11
     cur.Text = tostring(value or ""); cur.Parent = header
+    clipText(cur)
     skin.face(header)
     skin.readout(cur)
 
@@ -423,6 +505,7 @@ function components.TextBox(parent, opts)
     label.BackgroundTransparency = 1; label.Text = opts.label or "Name"
     label.TextColor3 = theme.fg; label.Font = theme.font; label.TextSize = 12
     label.TextXAlignment = Enum.TextXAlignment.Left; label.Parent = f
+    components.marquee(label)
 
     local box = Instance.new("TextBox")
     box.Position = UDim2.new(0.4, 4, 0.5, -10); box.Size = UDim2.new(0.6, -14, 0, 20)
@@ -432,6 +515,7 @@ function components.TextBox(parent, opts)
     box.Text = opts.default or ""; box.PlaceholderText = opts.placeholder or ""
     box.ClearTextOnFocus = false; box.TextXAlignment = Enum.TextXAlignment.Left
     box.Parent = f
+    clipText(box)
     local pad = Instance.new("UIPadding", box); pad.PaddingLeft = UDim.new(0, 6)
     skin.face(f)
     skin.readout(box)
@@ -453,6 +537,8 @@ end
 function components.destroy()
     for c in pairs(conns) do pcall(function() c:Disconnect() end) end
     conns = {}
+    if marqueeConn then marqueeConn:Disconnect(); marqueeConn = nil end
+    table.clear(marquees)
 end
 
 return components
