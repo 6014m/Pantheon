@@ -49,6 +49,7 @@ local CFG = {
     dash         = true,    -- dash (i-frames too) when a weave can't cover a hit
     dashKey      = Enum.KeyCode.Q,
     dashReserve  = 0,       -- stamina to leave for yourself
+    dashBackup   = true,    -- also dash when a weave can't make it (only with a spare dash banked)
     dashDir      = "Away from the attack",
 }
 
@@ -200,9 +201,12 @@ local function sendKey()
     task.delay(0.03, function() pcall(function() VIM:SendKeyEvent(false, CFG.key, false, game) end) end)
 end
 
+local watchCovered   -- set below: registers the hits a confirmed weave is expected to cover
+
 local function confirmWeave(t)
     done[#done + 1] = t
     if #done > 8 then table.remove(done, 1) end
+    if watchCovered then watchCovered(t) end
     if attempt then
         weaves += 1
         if CFG.verbose then
@@ -348,10 +352,77 @@ local REATTACK = {
     ["85194526199823"]  = 4.05,   -- Imp fireball cast
 }
 
+-- ---- unweavables --------------------------------------------------------------
+-- Dashes are for attacks a weave can't stop (user's rule; double jumps come later for the
+-- ones a dash can't). None showed up in the recordings (every attack type with a weave in
+-- its window was dodged 95-100%), so they're LEARNED live: an attack that hits you through
+-- a correctly timed weave at least twice, and at least half the time, becomes unweavable.
+-- The settings box adds attacks by hand (anim ids or names like Bomb / Hellfire / ImpFireball).
+local manualUnweavable = {}
+local learned = {}            -- key -> true
+local verdict = {}            -- key -> { fail, ok }
+local watching = {}           -- weaved hits waiting for a verdict: { key, t, kind, done }
+
+local function isUnweavable(key)
+    return key ~= nil and (manualUnweavable[key] or learned[key]) or false
+end
+
+local function parseUnweavable(text)
+    table.clear(manualUnweavable)
+    for word in string.gmatch(text or "", "[^,%s]+") do manualUnweavable[word] = true end
+end
+
+local function judge(key, failed)
+    local v = verdict[key] or { fail = 0, ok = 0 }
+    verdict[key] = v
+    if failed then v.fail += 1 else v.ok += 1 end
+    if not learned[key] and v.fail >= 2 and v.fail / (v.fail + v.ok) >= 0.5 then
+        learned[key] = true
+        log.info(string.format("[Weave] learned: %s goes through weaves (%d of %d) -- dashing it from now on",
+            key, v.fail, v.fail + v.ok))
+    end
+end
+
+-- you lost HP: blame any weaved hit that was due right now
+local function onMyDamage(amount)
+    if amount < 5 then return end   -- DoT ticks
+    local t = now()
+    for _, w in ipairs(watching) do
+        if not w.done then
+            local d = t - w.t
+            local due
+            if w.kind == "land" then due = d >= -0.05 and d <= 0.3 else due = math.abs(d) <= 0.15 end
+            if due then w.done = true; judge(w.key, true) end
+        end
+    end
+end
+
+local function settleWatching(t)
+    for i = #watching, 1, -1 do
+        local w = watching[i]
+        if w.done then
+            table.remove(watching, i)
+        elseif t > w.t + 0.35 then
+            table.remove(watching, i)
+            judge(w.key, false)
+        end
+    end
+end
+
 local function covered(h)
-    for _, p in ipairs(done) do if coversHit(p, h) then return true end end
+    if not isUnweavable(h.key) then
+        for _, p in ipairs(done) do if coversHit(p, h) then return true end end
+    end
     for _, p in ipairs(dashes) do if dashCovers(p, h) then return true end end
     return protectedAt(h.t)
+end
+
+watchCovered = function(p)
+    for _, h in ipairs(impacts) do
+        if h.key and not isUnweavable(h.key) and coversHit(p, h) then
+            watching[#watching + 1] = { key = h.key, t = h.t, kind = h.kind }
+        end
+    end
 end
 
 -- handled = a weave covers it, or the one being pressed right now will
@@ -359,18 +430,22 @@ local function handled(h)
     if covered(h) then return true end
     if not attempt then return false end
     if attempt.dash then return dashCovers(attempt.started, h) end
-    return coversHit(attempt.started, h)
+    return not isUnweavable(h.key) and coversHit(attempt.started, h)
 end
 
 -- kind: "melee" (timed from an animation) or "land" (projectile / bomb / explosion)
-local function want(impact, reason, kind, from)
-    impacts[#impacts + 1] = { t = impact, reason = reason, kind = kind or "melee", from = from }
+local function want(impact, reason, kind, from, key)
+    impacts[#impacts + 1] = { t = impact, reason = reason, kind = kind or "melee", from = from, key = key }
 end
 
 -- Dash for hit h if a weave can't: returns true when a dash will take care of it (now or
 -- later this frame loop), false when even a dash can't make it.
-local function tryDash(t, h)
-    if not CFG.dash or stamina() < DASH.cost + CFG.dashReserve then return false end
+-- primary = an unweavable: may spend your last dash. Otherwise (a weave just can't make
+-- it in time) only dash while a spare dash stays banked for unweavables.
+local function tryDash(t, h, primary)
+    if not CFG.dash then return false end
+    if not primary and not CFG.dashBackup then return false end
+    if stamina() < DASH.cost + CFG.dashReserve + (primary and 0 or DASH.cost) then return false end
     local pe = pingExtra()
     local earliest = math.max(t, (dashes[#dashes] or -math.huge) + DASH.cooldown,
                               (done[#done] or -math.huge) + DASH.afterWeave)
@@ -399,6 +474,7 @@ local function reflex(t, reason)
 end
 
 local function plan(t)
+    settleWatching(t)
     -- drop past and covered hits
     for i = #impacts, 1, -1 do
         local h = impacts[i]
@@ -420,6 +496,14 @@ local function plan(t)
     end
     if #open == 0 then return end
     table.sort(open, function(a, b) return a.t < b.t end)
+
+    -- unweavable: dash it (if even a dash can't, a weave is still better than nothing)
+    for _, h in ipairs(open) do
+        if isUnweavable(h.key) and h.t - t < 0.6 then
+            if tryDash(t, h, true) then return end
+            break
+        end
+    end
 
     local lastDone = done[#done] or -math.huge
     local cdEnd = lastDone + CFG.cooldown
@@ -513,7 +597,7 @@ local function onMobAnim(model, mroot, track)
         impact = impact + (mroot.Position - r.Position).Magnitude * ranged.perStud
     end
     want(t0 + impact, string.format("%s %s %s (+%.2fs)", model.Name, ranged and "shot" or "swing", id, impact),
-        ranged and ranged.kind or "melee", mroot.Position)
+        ranged and ranged.kind or "melee", mroot.Position, id)
     -- its next swing can't land before this (the mob's attack rhythm)
     preds[model] = { t = t0 + (REATTACK[id] or 1.28) + impact, root = mroot,
                      kind = ranged and ranged.kind or "melee", range = range + 6 }
@@ -702,7 +786,7 @@ local function trackBomb(part)
             local r = root()
             local radius = b.giant and GIANT_RADIUS or BOMB_RADIUS
             if r and (part.Position - r.Position).Magnitude <= radius then
-                want(now() + 0.15, "bomb went off", "land", part.Position)
+                want(now() + 0.15, "bomb went off", "land", part.Position, b.giant and "Giant bomb" or "Bomb")
             end
         end
     end)
@@ -719,7 +803,8 @@ local function stepBombs(t, me)
                 local d = (part.Position - me).Magnitude
                 if d <= radius then
                     b.queued = true
-                    want(impact, string.format("%sbomb fuse (%.0f studs)", b.giant and "giant " or "", d), "land", part.Position)
+                    want(impact, string.format("%sbomb fuse (%.0f studs)", b.giant and "giant " or "", d), "land", part.Position,
+                        b.giant and "Giant bomb" or "Bomb")
                 end
             elseif t > impact + 1 then
                 b.queued = true   -- a long-fuse bomb: only the "went off" fallback is left
@@ -795,7 +880,7 @@ local function step()
                         rec.fallbackAt = rec.first + timed.hold + d / timed.speed
                     elseif d <= timed.maxDist then
                         want(rec.first + timed.hold + d / timed.speed, string.format("%s (%.0f studs)", part.Name, d),
-                            "land", part.Position)
+                            "land", part.Position, part.Name)
                     end
                 elseif isMine(part, rec) or (src ~= "mob" and src ~= "hostile") then
                     rec.fired = true   -- ignore it for good
@@ -821,13 +906,13 @@ local function step()
                                 rec.fired = true
                                 local eta = closing > 1 and math.max(gap, 0) / closing or 0
                                 want(t + math.max(eta, WINDOWS.land.lead), string.format("%s %.1f studs away", part.Name, gap),
-                                    "land", pos)
+                                    "land", pos, "Hellfire")
                             end
                         elseif rec.fallbackAt and age > 0.6 and t >= rec.fallbackAt - 0.4 then
                             -- (age > 0.6: give it time to start flying before assuming it never will)
                             -- never seen moving: fall back on the flight-time guess
                             rec.fired = true
-                            want(rec.fallbackAt, part.Name .. " (flight-time guess)", "land", pos)
+                            want(rec.fallbackAt, part.Name .. " (flight-time guess)", "land", pos, "Hellfire")
                         end
                     elseif CFG.projectiles and speed > 15 and age > 0.03 and not PROJ_IGNORE[part.Name] then
                         local rel = me - pos
@@ -837,13 +922,13 @@ local function step()
                             if miss <= CFG.projMiss + math.max(part.Size.X, part.Size.Y, part.Size.Z) * 0.5
                                and eta <= 0.8 then
                                 rec.fired = true
-                                want(t + eta, string.format("projectile %s eta %.2fs miss %.1f", part.Name, eta, miss), "land", pos)
+                                want(t + eta, string.format("projectile %s eta %.2fs miss %.1f", part.Name, eta, miss), "land", pos, part.Name)
                             end
                         end
                     elseif CFG.hitboxes and rec.pvp and speed <= 15 and coversMe(part, me, 1.5) then
                         -- enemy PLAYERS' AoE only (their hitboxes can have any name)
                         rec.fired = true
-                        want(t + CFG.hitboxDelay, "enemy player hitbox " .. part.Name, "land", part.Position)
+                        want(t + CFG.hitboxDelay, "enemy player hitbox " .. part.Name, "land", part.Position, "player:" .. part.Name)
                     end
                 end
             end
@@ -887,6 +972,11 @@ function Weave.start()
             local n = (a and a.Name ~= "Animation" and a.Name) or tr.Name
             if string.find(n, "Weave") then confirmWeave(now()) end
         end)
+        local lastHp = hum.Health
+        conns[#conns + 1] = hum.HealthChanged:Connect(function(v)
+            if v < lastHp then onMyDamage(lastHp - v) end
+            lastHp = v
+        end)
         conns[#conns + 1] = char:GetAttributeChangedSignal("DodgeUntil"):Connect(function()
             if char:GetAttribute("DodgeUntil") ~= nil then confirmDash(now()) end
         end)
@@ -926,6 +1016,7 @@ function Weave.stop()
     table.clear(bombs)
     table.clear(preds)
     table.clear(done)
+    table.clear(watching)
     table.clear(dashes)
     attempt = nil
     animHooked = false
@@ -956,8 +1047,13 @@ function Weave.feature()
               onChange = function(v) CFG.key = Enum.KeyCode[v] or Enum.KeyCode.F end },
             { type = "slider", name = "Press before impact (s)", key = "lead", min = 0.1, max = 0.45, step = 0.01,
               default = 0.25, onChange = function(v) CFG.lead = v end },
-            { type = "toggle", name = "Dash when a weave can't cover it", key = "dash", default = true,
+            { type = "toggle", name = "Dash unweavable attacks", key = "dash", default = true,
               onChange = function(v) CFG.dash = v and true or false end },
+            { type = "toggle", name = "Also dash when a weave is on cooldown (keeps a dash spare)", key = "dash_backup",
+              default = true, onChange = function(v) CFG.dashBackup = v and true or false end },
+            { type = "textbox", name = "Unweavable attacks (anim ids / Bomb / Hellfire / ...)", key = "unweavable",
+              placeholder = "Bomb, 107426583476702", default = "",
+              onChange = function(v) parseUnweavable(v) end },
             { type = "dropdown", name = "Dash key", key = "dash_key", options = { "Q", "E", "R", "F", "G", "LeftControl" },
               default = "Q", onChange = function(v) CFG.dashKey = Enum.KeyCode[v] or Enum.KeyCode.Q end },
             { type = "dropdown", name = "Dash direction (when you're not moving)", key = "dash_dir",
@@ -990,6 +1086,8 @@ end
 
 -- textbox values are not replayed at boot by feature.lua, so load the saved one here
 function Weave.loadSaved(persist)
+    local okU, u = pcall(function() return persist.get("veil.auto_weave.unweavable") end)
+    if okU and type(u) == "string" then parseUnweavable(u) end
     local ok, v = pcall(function() return persist.get("veil.auto_weave.extra") end)
     if ok and type(v) == "string" then parseExtra(v) end
 end
