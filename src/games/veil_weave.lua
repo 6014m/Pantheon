@@ -63,8 +63,60 @@ local ATTACKS = {
     -- (Imp 85194526199823 is its fireball CAST, not a swing: the fireball is timed instead)
     ["127688919744763"] = 0.50,  -- Runner / Cambion
     ["74743744689930"]  = 0.65,  -- Runner
+    ["117802002100480"] = 0.77,  -- Minotaur big swing (0.74 / 0.80 recorded, 32-37 dmg)
 }
 local extra = {}   -- user-added "id=seconds" pairs from the settings textbox
+
+-- ---- learning new attacks ----------------------------------------------------------
+-- There will always be mobs nobody has recorded yet (the Minotaur went through untouched).
+-- So: when a mob close to you and facing you starts an attack animation that isn't in the
+-- table, it's remembered for 1.5 s; if a real hit (>= 5 dmg) lands on you in that time,
+-- the delay is a sample for that animation. Two samples within 0.15 s of each other and
+-- it joins the table (saved, so it survives re-executes).
+local learnedAttacks = {}     -- anim id -> seconds (persisted)
+local attackSamples = {}      -- anim id -> { delays }
+local unknownSeen = {}        -- recent unknown attack anims: { id, t, root, label }
+local persistRef = nil
+
+local function saveLearned()
+    if not persistRef then return end
+    local parts = {}
+    for id, sec in pairs(learnedAttacks) do parts[#parts + 1] = id .. "=" .. string.format("%.2f", sec) end
+    pcall(persistRef.set, "veil.auto_weave.learned_attacks", table.concat(parts, ","))
+end
+
+local function sampleUnknown(tHit)
+    local r = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if not r then return end
+    local best, bestD
+    for i = #unknownSeen, 1, -1 do
+        local u = unknownSeen[i]
+        local dt = tHit - u.t
+        if dt > 1.5 then
+            table.remove(unknownSeen, i)
+        elseif dt >= 0.1 and u.root.Parent then
+            local d = (u.root.Position - r.Position).Magnitude
+            if not bestD or d < bestD then best, bestD = u, d end
+        end
+    end
+    if not best or bestD > 15 then return end
+    local list = attackSamples[best.id] or {}
+    attackSamples[best.id] = list
+    list[#list + 1] = tHit - best.t
+    if #list >= 2 then
+        table.sort(list)
+        for i = 1, #list - 1 do
+            if list[i + 1] - list[i] <= 0.15 then
+                local sec = (list[i] + list[i + 1]) / 2
+                learnedAttacks[best.id] = sec
+                log.info(string.format("[Weave] learned attack %s (%s): hits %.2f s after it starts", best.id, best.label, sec))
+                saveLearned()
+                attackSamples[best.id] = nil
+                break
+            end
+        end
+    end
+end
 
 -- aimed ranged attacks timed from the shooting animation: hit lands `impact` s after it
 -- starts, from any distance up to `range`, only when the shooter is aiming at you
@@ -384,9 +436,19 @@ local function judge(key, failed)
 end
 
 -- you lost HP: blame any weaved hit that was due right now
+local sampleUnknownRef   -- set once the learner exists (defined with the attack tables)
+
 local function onMyDamage(amount)
     if amount < 5 then return end   -- DoT ticks
     local t = now()
+    local explained = false
+    for _, h in ipairs(impacts) do
+        if math.abs(h.t - t) <= 0.3 then explained = true; break end
+    end
+    for _, w in ipairs(watching) do   -- a known, weaved hit that got through
+        if math.abs(w.t - t) <= 0.3 then explained = true; break end
+    end
+    if not explained and sampleUnknownRef then pcall(sampleUnknownRef, t) end
     for _, w in ipairs(watching) do
         if not w.done then
             local d = t - w.t
@@ -578,6 +640,8 @@ local function facingDeg(cf, pos)
     return math.deg(math.acos(math.clamp(look.Unit:Dot(to.Unit), -1, 1)))
 end
 
+sampleUnknownRef = sampleUnknown
+
 local function onMobAnim(model, mroot, track)
     if not (running and CFG.enabled and CFG.melee) then return end
     if isSummon(model) and classify(model) == "friendly" then return end
@@ -585,8 +649,21 @@ local function onMobAnim(model, mroot, track)
     local id = anim and string.match(anim.AnimationId, "%d+")
     if not id then return end
     local ranged = RANGED[id]
-    local impact = extra[id] or ATTACKS[id] or (ranged and ranged.impact)
-    if not impact then return end
+    local impact = extra[id] or ATTACKS[id] or learnedAttacks[id] or (ranged and ranged.impact)
+    if not impact then
+        -- unknown: remember it in case it hits you (learning), if it looks like an attack
+        local pr = track.Priority
+        if not (track.Looped and (pr == Enum.AnimationPriority.Core or pr == Enum.AnimationPriority.Idle
+                or pr == Enum.AnimationPriority.Movement)) then
+            local r0 = root()
+            if r0 and mroot.Parent and (mroot.Position - r0.Position).Magnitude <= 15
+               and facingDeg(mroot.CFrame, r0.Position) <= 80 then
+                unknownSeen[#unknownSeen + 1] = { id = id, t = now(), root = mroot, label = model.Name }
+                if #unknownSeen > 30 then table.remove(unknownSeen, 1) end
+            end
+        end
+        return
+    end
     local r = root()
     if not r or not mroot.Parent then return end
     local range = ranged and ranged.range or CFG.meleeRange
@@ -1016,6 +1093,7 @@ function Weave.stop()
     table.clear(bombs)
     table.clear(preds)
     table.clear(done)
+    table.clear(unknownSeen)
     table.clear(watching)
     table.clear(dashes)
     attempt = nil
@@ -1086,6 +1164,11 @@ end
 
 -- textbox values are not replayed at boot by feature.lua, so load the saved one here
 function Weave.loadSaved(persist)
+    persistRef = persist
+    local okL, l = pcall(function() return persist.get("veil.auto_weave.learned_attacks") end)
+    if okL and type(l) == "string" then
+        for id, sec in string.gmatch(l, "(%d+)=([%d%.]+)") do learnedAttacks[id] = tonumber(sec) end
+    end
     local okU, u = pcall(function() return persist.get("veil.auto_weave.unweavable") end)
     if okU and type(u) == "string" then parseUnweavable(u) end
     local ok, v = pcall(function() return persist.get("veil.auto_weave.extra") end)
