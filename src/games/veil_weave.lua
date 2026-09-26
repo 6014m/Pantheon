@@ -507,8 +507,13 @@ local MOVE_KEYS = { Enum.KeyCode.W, Enum.KeyCode.A, Enum.KeyCode.S, Enum.KeyCode
 -- going. Otherwise the camera-relative key pointing away from the attack (or sideways to
 -- it, or toward it for gas balls you dash THROUGH) is held for the press.
 local function dashKeyFor(threat, mode)
-    for _, k in ipairs(MOVE_KEYS) do
-        if UIS:IsKeyDown(k) then return nil end
+    -- an attack that asks for a specific direction (get-away moves) overrides the keys you're
+    -- holding (Auto Sprint keeps W held -> every escape dash went FORWARD into the boss);
+    -- otherwise a held movement key wins
+    if not mode then
+        for _, k in ipairs(MOVE_KEYS) do
+            if UIS:IsKeyDown(k) then return nil end
+        end
     end
     mode = mode or CFG.dashDir
     if mode == "Where you're moving only" then return nil end
@@ -534,7 +539,16 @@ end
 local function sendDash(threat, mode)
     local dir = dashKeyFor(threat, mode)
     lastInject = now()
+    -- let go of held movement keys for the dash so ONLY the chosen direction counts, then put
+    -- them back (direction keys are camera-relative, picked from the camera at this moment)
+    local held = {}
+    if dir then
+        for _, k in ipairs(MOVE_KEYS) do
+            if UIS:IsKeyDown(k) and k ~= dir then held[#held + 1] = k end
+        end
+    end
     pcall(function()
+        for _, k in ipairs(held) do VIM:SendKeyEvent(false, k, false, game) end
         if dir then VIM:SendKeyEvent(true, dir, false, game) end
         VIM:SendKeyEvent(true, CFG.dashKey, false, game)
     end)
@@ -542,6 +556,10 @@ local function sendDash(threat, mode)
         pcall(function()
             VIM:SendKeyEvent(false, CFG.dashKey, false, game)
             if dir then VIM:SendKeyEvent(false, dir, false, game) end
+        end)
+        task.wait(0.05)
+        pcall(function()
+            for _, k in ipairs(held) do VIM:SendKeyEvent(true, k, false, game) end
         end)
     end)
 end
