@@ -228,6 +228,17 @@ local CHANNELS = {
 local JUMP_ATTACKS = {
     -- 2nd recorded fight: the slam's 47 dmg landed 1.34-1.60 s in (8 hits) -> 1.45
     ["80778819711637"] = { impacts = { 1.45 }, range = 90, name = "Festering Wound jump slam" },
+    -- Smelter Demon two-stage (user: "a horizontal attack into a vertical"; horizontal = jump
+    -- over it). Horizontal 81155999312581 lands ~0.38 s (0.35-0.44), and ~1.9 s later he often
+    -- chains the vertical leap slam 130122482089218 (DASH_ATTACKS).
+    ["81155999312581"] = { impacts = { 0.38 }, range = 55, name = "Smelter Demon horizontal swing" },
+}
+-- DASH_ATTACKS: always dashed (never weaved), timed from the anim. Smelter Demon vertical
+-- leap slam 130122482089218 (user: "for the second swing it's a dodge"): 36.75 at 0.67-0.80
+-- s; weaves whiffed on it and dashes timed for 0.76 registered right as it hit (5 hits in
+-- fight 3), so it's planned for 0.66 -> i-frames cover ~0.5-1.0 s.
+local DASH_ATTACKS = {
+    ["130122482089218"] = { impact = 0.66, range = 50, name = "Smelter Demon vertical leap slam" },
 }
 local extra = {}   -- user-added "id=seconds" pairs from the settings textbox
 
@@ -1285,6 +1296,16 @@ local function onMobAnim(model, mroot, track)
                     mroot.Position, "jump:" .. id)
                 impacts[#impacts].jump = true
             end
+        end
+        return
+    end
+    local dashAtk = DASH_ATTACKS[id]
+    if dashAtk then
+        local r0 = root()
+        if r0 and mroot.Parent and (mroot.Position - r0.Position).Magnitude <= dashAtk.range then
+            impacts[#impacts + 1] = { t = now() + dashAtk.impact, reason = dashAtk.name, kind = "melee",
+                                      from = mroot.Position, key = "dash:" .. id, unweavable = true,
+                                      dashDir = "Away from the attack" }
         end
         return
     end
