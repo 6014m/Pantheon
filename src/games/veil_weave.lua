@@ -107,11 +107,31 @@ local PROJ_IGNORE = { Bomb = true, Circle = true, Plane = true, Ichor = true }
 -- Projectiles that never visibly move on your client (the flight is drawn locally): timed
 -- from spawn instead. ImpFireball, recorded: damage lands ~0.12 s + distance / 59 after it
 -- appears (16 of 19 hits inside the weave window); beyond ~34 studs it lands where you WERE.
+-- Cambion hellfire: an invisible 2.5-stud cube named "Main" (72 of 80 were followed by a
+-- HellfireBulletExplosionHitbox; it lingers ~3 s after exploding). Flight to the explosion
+-- ~0.49 s + distance / 68.4 -- but it HOMES and is slow, so it lands anywhere from 0.3 s
+-- early to 0.55 s late: it prefers a DASH (0.4 s of cover) over a weave (0.2 s).
+local HELLFIRE = { hold = 0.49, speed = 68.4, maxDist = 90, preferDash = true }
+
 local TIMED_PROJ = {
     -- flight to the explosion: 0.076 s + distance / 54.4 (fit on 131 fireballs that landed on
     -- you). They HOME: 8 of 13 fired from 35-79 studs still landed on you.
     ImpFireball = { hold = 0.076, speed = 54.4, maxDist = 90 },
 }
+
+-- which timing rule (if any) a freshly spawned part follows
+local function timedFor(part)
+    local t = TIMED_PROJ[part.Name]
+    if t then return t end
+    if part.Name == "Main" then
+        local sz = part.Size
+        if math.abs(sz.X - 2.5) < 0.3 and math.abs(sz.Y - 2.5) < 0.3 and math.abs(sz.Z - 2.5) < 0.3 then
+            return HELLFIRE
+        end
+    end
+    return nil
+end
+
 -- yours or harmless: never weave for these
 local IGNORE_PARTS = {
     BannerExplode = true, FlowerExplode = true, WhiteBurstSummonEffect = true, SummonEffect = true,
@@ -396,6 +416,9 @@ local function plan(t)
     end
     if #open == 0 then return end
     table.sort(open, function(a, b) return a.t < b.t end)
+
+    -- a hit with loose timing (homing hellfire) goes to a dash first when stamina allows
+    if open[1].preferDash and tryDash(t, open[1]) then return end
 
     local lastDone = done[#done] or -math.huge
     local cdEnd = lastDone + CFG.cooldown
@@ -719,7 +742,7 @@ local function onPart(part)
     local t = now()
     if t - lookedAt >= 1 then looked, lookedAt = 0, t end
     looked += 1
-    if looked > 150 and not TIMED_PROJ[part.Name] and not REFLEX[part.Name] then return end
+    if looked > 150 and not TIMED_PROJ[part.Name] and not REFLEX[part.Name] and part.Name ~= "Main" then return end
     -- inside you / party / friends / their summons: never. Inside a mob or an enemy player
     -- only named hostile parts count (limbs, accessories and tools are not attacks)
     local owner = insideHumanoidModel(part)
@@ -751,11 +774,11 @@ local function step()
                 local inside = insideHumanoidModel(part)
                 local src = inside and classify(inside)
                 -- timed projectiles spawn at the caster's hand: a close Imp is still a mob
-                if not src and ((part.Position - me).Magnitude >= OWN_RADIUS or TIMED_PROJ[part.Name]) then
-                    src = nearestSource(part.Position, TIMED_PROJ[part.Name] ~= nil)
+                local timed = timedFor(part)
+                if not src and ((part.Position - me).Magnitude >= OWN_RADIUS or timed) then
+                    src = nearestSource(part.Position, timed ~= nil)
                 end
                 rec.pvp = (src == "hostile")
-                local timed = TIMED_PROJ[part.Name]
                 if REFLEX[part.Name] and not isMine(part, rec) and coversMe(part, me, 1.5) then
                     rec.fired = true
                     reflex(t, part.Name)
@@ -763,9 +786,13 @@ local function step()
                 end
                 if timed and CFG.projectiles and (src == "mob" or src == "hostile") then
                     local d = (part.Position - me).Magnitude
-                    rec.fired = true
+                    -- keep tracking it: if it DOES visibly fly on your client, the projectile
+                    -- branch below takes over with an exact ETA
+                    rec.timed = true
                     if d <= timed.maxDist then
-                        want(rec.first + timed.hold + d / timed.speed, string.format("%s (%.0f studs)", part.Name, d), "land", part.Position)
+                        want(rec.first + timed.hold + d / timed.speed, string.format("%s (%.0f studs)", part.Name, d),
+                            "land", part.Position)
+                        if timed.preferDash then impacts[#impacts].preferDash = true end
                     end
                 elseif isMine(part, rec) or (src ~= "mob" and src ~= "hostile") then
                     rec.fired = true   -- ignore it for good
