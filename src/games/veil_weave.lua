@@ -2056,8 +2056,12 @@ end
 -- on the marker only moved the target (user: "sorta worked but not as intended"). Instead,
 -- once the beam itself spawns (its position is known then, ~0.45 s before the first tick),
 -- push straight out of it, and keep pushing while you're inside any live one.
-local PILLAR = { clear = 12, speed = 48 }
-local pillars = {}               -- live BigBeam hitboxes
+-- Centre = the 20-wide ground ring (BigBeam.FX), NOT BigBeam.Hitbox: in the live fight the
+-- Hitbox read 0.0-2.5 studs from you while the ring (where the damage went) was 7-13 away,
+-- so pushing "out of the Hitbox" shoved you back into the ring (died to it).
+local PILLAR = { clear = 12.5, speed = 48 }
+local pillars = {}               -- live BigBeam ground rings
+local pillarLogAt = 0
 
 local function flatDist(a, b) return Vector3.new(a.X - b.X, 0, a.Z - b.Z) end
 
@@ -2085,6 +2089,10 @@ local function pillarStep(dt)
         end
     end
     if worst <= 0 or push.Magnitude < 0.01 then return end
+    if now() - (pillarLogAt or 0) > 0.2 then
+        pillarLogAt = now()
+        dlog("PILLAR inside by %.1f -> pushing", worst)
+    end
     local dir = push.Unit
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Exclude
@@ -2103,10 +2111,12 @@ local function pillarStep(dt)
 end
 
 local function onPillarPart(part)
-    if not (part.Name == "Hitbox" and part.Parent and part.Parent.Name == "BigBeam") then return end
+    if not (part.Name == "FX" and part.Parent and part.Parent.Name == "BigBeam") then return end
     pillars[#pillars + 1] = part
     local r = root()
-    dlog("PILLAR spawned %.1f studs from you", r and flatDist(r.Position, part.Position).Magnitude or -1)
+    local hb = part.Parent:FindFirstChild("Hitbox")
+    dlog("PILLAR ring %.1f studs from you (hitbox %.1f)", r and flatDist(r.Position, part.Position).Magnitude or -1,
+        (r and hb) and flatDist(r.Position, hb.Position).Magnitude or -1)
     if CFG.verbose then log.info("[Weave] rot pillar -> moving out") end
 end
 
