@@ -92,6 +92,10 @@ local RHYTHM = {
     ["87947721952194"] = { hit = 0.04, burst = 0.21, cycle = 2.23, range = 35, facing = 30 },
 }
 local lastShot = setmetatable({}, { __mode = "k" })   -- model -> time of its last shot
+local channelUntil = setmetatable({}, { __mode = "k" })  -- model -> end of its channel (charge)
+local mobRoots = setmetatable({}, { __mode = "k" })      -- hooked mob -> its root part
+local rushQueued = setmetatable({}, { __mode = "k" })    -- model -> last time a rush was queued
+local rushImpact = setmetatable({}, { __mode = "k" })    -- model -> its queued impact (kept up to date)
 
 -- CHANNELS: long attacks you can't weave (you're hit a little no matter what). Answer:
 -- dash AWAY the moment it starts, keep attacking while you back off (user's call).
@@ -713,6 +717,7 @@ local function onMobAnim(model, mroot, track)
         local r0 = root()
         if r0 and mroot.Parent and (mroot.Position - r0.Position).Magnitude <= channel.range then
             -- an unweavable hit "now": the planner dashes it straight away, away from the mob
+            channelUntil[model] = now() + 3.2
             impacts[#impacts + 1] = { t = now() + DASH.lead, reason = channel.name, kind = "melee",
                                       from = mroot.Position, key = channel.name, unweavable = true }
         end
@@ -764,6 +769,7 @@ local function hookMob(model)
     if not (hum and mroot and animator) then return end   -- retried on the next scan
     local list = {}
     mobConns[model] = list
+    mobRoots[model] = mroot
     list[#list + 1] = animator.AnimationPlayed:Connect(function(tr)
         local ok, err = pcall(onMobAnim, model, mroot, tr)
         if not ok and CFG.verbose then log.warn("[Weave] anim: " .. tostring(err)) end
@@ -989,6 +995,45 @@ local function onPart(part)
 end
 
 -- per frame: projectile ETA and hitbox coverage for tracked parts, then due weaves
+-- ---- mobs rushing through you ---------------------------------------------------------
+-- Enchanted Sword's second attack is a dash straight through you at ~100 stud/s (its
+-- afterimage trail closes 32 -> 24 -> 14 -> 8 -> 3 studs, then the hit): 5 of its 8 hits
+-- in a recorded fight. Any mob flying at you faster than RUSH_SPEED on a line that passes
+-- within RUSH_MISS studs is timed like a projectile: the weave lands as it passes through.
+local RUSH_SPEED = 40
+local RUSH_MISS = 6
+
+local function stepRushes(t, me)
+    if not CFG.melee then return end
+    for model, mroot in pairs(mobRoots) do
+        local fresh = t - (rushQueued[model] or -math.huge) <= 0.8
+        if mroot.Parent and not (channelUntil[model] and t < channelUntil[model]) then
+            local pos = mroot.Position
+            local rel = me - pos
+            if rel.Magnitude < 70 then
+                local vel = mroot.AssemblyLinearVelocity
+                local speed = vel.Magnitude
+                if speed >= RUSH_SPEED and rel.Magnitude > 0.5 and vel:Dot(rel.Unit) >= RUSH_SPEED * 0.8 then
+                    local eta = rel:Dot(vel) / (speed * speed)
+                    local miss = (rel - vel * eta).Magnitude
+                    if eta > 0 and eta <= 0.7 and miss <= RUSH_MISS and classify(model) ~= "friendly" then
+                        local h = rushImpact[model]
+                        if fresh and h and h.t > t then
+                            -- same rush, still accelerating: keep the arrival time current
+                            h.t = t + eta
+                        elseif not fresh then
+                            rushQueued[model] = t
+                            want(t + eta, string.format("%s rushing through you (%.0f stud/s)", model.Name, speed),
+                                "melee", pos, "rush:" .. model.Name)
+                            rushImpact[model] = impacts[#impacts]
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
 local function step()
     if not (running and CFG.enabled) then return end
     local t = now()
@@ -996,6 +1041,7 @@ local function step()
     if r then
         local me = r.Position
         stepBombs(t, me)
+        stepRushes(t, me)
         for part, rec in pairs(tracked) do
             local age = t - rec.first
             if not part.Parent or age > 4 or rec.fired then
