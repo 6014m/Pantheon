@@ -45,7 +45,8 @@ local CFG = {
     projMiss     = 4,       -- a projectile passing closer than this counts as a hit
     hitboxes     = true,
     hitboxDelay  = 0.3,     -- static AoE hitboxes: seconds after they cover you before weaving
-    pvp          = true,    -- other players outside your party (and their summons) are enemies
+    pvp          = true,
+    reflex       = true,    -- weave the moment a mob explosion lands on you, if nothing else is planned    -- other players outside your party (and their summons) are enemies
     verbose      = false,   -- print every weave and its reason to the console
 }
 
@@ -74,6 +75,17 @@ local HOSTILE_PARTS = {
 -- the projectile in flight, the bomb fuse, the fireball timing, the melee animation.
 -- ShatterStab / ShatterProjectile are the user's own Shatterpoint rapier (only an enemy
 -- player's count, via the player rules).
+
+-- Mob explosions. Their damage lands on the frame they appear, so the planner can't use
+-- them -- but the user believes a weave pressed the moment one lands still dodges it
+-- (untested: nobody ever weaved that late in the recordings). So they get a REFLEX weave:
+-- only when nothing is planned and the weave is off cooldown, so it can never cost a
+-- planned dodge. The recorder will show whether these reflex weaves actually dodge.
+local REFLEX = {
+    BombExplosionHitbox = true, ImpFireballExplosion = true, GiantExplosionHitbox = true,
+    MourningWakeExplosionHitbox = true, LightningStrike = true, BlackFlash = true,
+    SmashHitbox = true, DeathExplosionHitbox = true,
+}
 
 -- loose flying parts that are NOT attacks (bomb bits are handled by the fuse, Ichor is a pickup)
 local PROJ_IGNORE = { Bomb = true, Circle = true, Plane = true, Ichor = true }
@@ -195,6 +207,20 @@ end
 
 local function want(impact, reason)
     impacts[#impacts + 1] = { t = impact, reason = reason }
+end
+
+local function reflex(t, reason)
+    if attempt or not CFG.reflex then return end
+    local lastDone = done[#done] or -math.huge
+    if t < lastDone + CFG.cooldown then return end
+    for _, h in ipairs(impacts) do
+        if h.t - t < 0.9 and not covered(h.t) then return end   -- the planner has something coming
+    end
+    if UIS:GetFocusedTextBox() or not alive() then return end
+    attempt = { first = t, last = t, started = t, lastPress = t, deadline = t + 0.12,
+                reason = "reflex: " .. reason }
+    sendKey()
+    if not animHooked then confirmWeave(t) end
 end
 
 local function plan(t)
@@ -513,7 +539,7 @@ local function onPart(part)
     local t = now()
     if t - lookedAt >= 1 then looked, lookedAt = 0, t end
     looked += 1
-    if looked > 150 and not TIMED_PROJ[part.Name] then return end
+    if looked > 150 and not TIMED_PROJ[part.Name] and not REFLEX[part.Name] then return end
     -- inside you / party / friends / their summons: never. Inside a mob or an enemy player
     -- only named hostile parts count (limbs, accessories and tools are not attacks)
     local owner = insideHumanoidModel(part)
@@ -549,6 +575,11 @@ local function step()
                 end
                 rec.pvp = (src == "hostile")
                 local timed = TIMED_PROJ[part.Name]
+                if REFLEX[part.Name] and not isMine(part, rec) and coversMe(part, me, 1.5) then
+                    rec.fired = true
+                    reflex(t, part.Name)
+                    timed = nil
+                end
                 if timed and CFG.projectiles and (src == "mob" or src == "hostile") and not isMine(part, rec) then
                     local d = (part.Position - me).Magnitude
                     rec.fired = true
@@ -703,6 +734,8 @@ function Weave.feature()
             { type = "textbox", name = "Extra attacks (animId=seconds, ...)", key = "extra",
               placeholder = "117802002100480=0.74", default = "",
               onChange = function(v) parseExtra(v) end },
+            { type = "toggle", name = "Reflex weave when an explosion lands on you", key = "reflex", default = true,
+              onChange = function(v) CFG.reflex = v and true or false end },
             { type = "toggle", name = "Log every weave to console", key = "verbose", default = false,
               onChange = function(v) CFG.verbose = v and true or false end },
         },
