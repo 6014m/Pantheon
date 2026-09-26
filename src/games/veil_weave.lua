@@ -203,7 +203,7 @@ local CHANNELS = {
     ["83727072964250"] = { name = "Minotaur charge", range = 20 },
     -- Festering Wound ground strikes 80778819711637 (after wind-up 106952798050011):
     -- TripleSmashEffects ~1.2 s in (user: get away or lose ~90% HP) -> dash away at once.
-    ["80778819711637"] = { name = "Festering Wound ground strikes", range = 45 },
+    ["80778819711637"] = { name = "Festering Wound ground strikes", range = 45, sword = true },
 }
 
 -- JUMP_ATTACKS: undashable + unweavable -> be in the air when it lands (double jump).
@@ -561,9 +561,10 @@ end
 
 -- ---- Enchanted Sword mobility (optional) ---------------------------------------------
 -- The user's Enchanted Sword is an Elite "cast weapon" Tool (IsCastWeapon, its own
--- _ConsumableActivator script) that moves you for ~0 stamina; left click uses it. Not
--- everyone owns one, so it's optional: when a dash is needed but can't go (stamina /
--- cooldown), swap to the sword, activate it, and swap back to what you were holding.
+-- _ConsumableActivator script) that launches you forward for ~0 stamina; left click uses
+-- it. It has NO i-frames (user), so it never stands in for a dash -- it's only for GET-AWAY
+-- moves (e.g. the Festering Wound's rapid ground punches), where distance is what saves you.
+-- Not everyone owns one, so it's an optional toggle.
 local SWORD_NAME = "Enchanted Sword"
 local SWORD_COOLDOWN = 3.0     -- guess until the logs show its real cooldown
 local lastSword = -math.huge
@@ -575,7 +576,38 @@ local function findSword()
     return (c and c:FindFirstChild(SWORD_NAME)) or (bp and bp:FindFirstChild(SWORD_NAME))
 end
 
-local function useSword(reason)
+-- The sword launches you straight FORWARD, so for a get-away the camera and your character
+-- are turned to face directly away from the threat for a moment (RenderStep after the
+-- camera scripts -- the same trick as Pantheon's lock-on), the sword fires, and control is
+-- handed back (your camera / lock-on resume from where they were).
+local RunServiceRS = game:GetService("RunService")
+local function faceAwayFor(from, seconds)
+    local r = root()
+    if not (from and r) then return end
+    local d = Vector3.new(r.Position.X - from.X, 0, r.Position.Z - from.Z)
+    if d.Magnitude < 0.1 then return end
+    d = d.Unit
+    local name = "PantheonWeaveFaceAway"
+    local untilT = now() + seconds
+    pcall(function() RunServiceRS:UnbindFromRenderStep(name) end)
+    RunServiceRS:BindToRenderStep(name, Enum.RenderPriority.Camera.Value + 2, function()
+        local rr = root()
+        local cam = Workspace.CurrentCamera
+        if now() > untilT or not rr then
+            pcall(function() RunServiceRS:UnbindFromRenderStep(name) end)
+            return
+        end
+        pcall(function()
+            rr.CFrame = CFrame.lookAt(rr.Position, rr.Position + d)
+            if cam then
+                local eye = rr.Position - d * 12 + Vector3.new(0, 5, 0)
+                cam.CFrame = CFrame.lookAt(eye, rr.Position + d * 30)
+            end
+        end)
+    end)
+end
+
+local function useSword(reason, awayFrom)
     if not CFG.swordMobility or swording or now() - lastSword < SWORD_COOLDOWN then return false end
     local sword = findSword()
     local c = LP.Character
@@ -584,10 +616,11 @@ local function useSword(reason)
     swording = true
     lastSword = now()
     local held = c:FindFirstChildOfClass("Tool")
+    if awayFrom then faceAwayFor(awayFrom, 0.3) end
     task.spawn(function()
         pcall(function()
             if held ~= sword then hum:EquipTool(sword) end
-            task.wait(0.05)
+            task.wait(0.06)                       -- let the turn land before firing
             sword:Activate()                      -- = left click
             task.wait(0.2)
             if held and held ~= sword and held.Parent then
@@ -779,11 +812,6 @@ local function tryDash(t, h, primary)
     if st < DASH.cost + CFG.dashReserve + (primary and 0 or DASH.cost) then
         if primary then
             dlog("NODASH %s (stamina %.0f)", h.reason, st)
-            -- out of stamina: the Enchanted Sword costs ~0
-            if h.t - t <= 0.35 and useSword(h.reason) then
-                dashes[#dashes + 1] = t   -- assume it covers like a dash (verify in the logs)
-                return true
-            end
         end
         return false
     end
@@ -794,11 +822,6 @@ local function tryDash(t, h, primary)
     local lo, hi = h.t - DASH.to - pe, h.t - DASH.from - pe
     local loNow = math.max(lo, earliest)
     if loNow > hi then
-        -- dash on cooldown: the Enchanted Sword, if enabled
-        if primary and h.t - t <= 0.35 and useSword(h.reason .. " (dash on cooldown)") then
-            dashes[#dashes + 1] = t
-            return true
-        end
         return false
     end
     if t >= math.clamp(h.t - DASH.lead - pe, loNow, hi) then
@@ -1043,6 +1066,8 @@ local function onMobAnim(model, mroot, track)
         local r0 = root()
         if r0 and mroot.Parent and (mroot.Position - r0.Position).Magnitude <= channel.range then
             channelUntil[model] = now() + 3.2
+            -- get-away moves (user): the Enchanted Sword first, launched straight away from it
+            if channel.sword and useSword(channel.name, mroot.Position) then return end
             impacts[#impacts + 1] = { t = now() + DASH.lead, reason = channel.name, kind = "melee",
                                       from = mroot.Position, key = channel.name, unweavable = true }
             for _, dt in ipairs(channel.strikes or {}) do
@@ -1871,7 +1896,7 @@ function Weave.feature()
     return {
         id          = "veil.auto_weave",
         name        = "Auto Weave",
-        description = "Presses your weave key so the weave is already active when a hit lands (it dodges everything landing while it's active). Melee swings are timed from the mob's attack animation, projectiles a mob launches are tracked until they're about to reach you (Imp fireballs are timed from when they appear), and the Puppeteer's bombs from their 4 s fuse. Explosions themselves are ignored: their damage lands on the frame they appear, too late to react to. Plans around the ~0.5 s cooldown so staggered hits from several mobs get covered, and retries while you're busy or stunned. Never reacts to your own or your party's stuff; players outside your party count as enemies. Raise 'Press before impact' if hits land right after a weave, lower it if they land before it. SETTINGS: Press before impact = how early a weave goes out (raise if hits land right after it, lower if before). Dash unweavables = dash attacks a weave can't stop (learned in play, or listed under Unweavables). Backup dash = also dash when a weave is on cooldown, only while a spare dash's worth of stamina is left. Unweavables = extra attacks to always dash (anim ids, or Bomb / Giant bomb / Hellfire / ImpFireball). Dash direction = where a dash goes when you aren't holding a movement key. Stamina reserve = stamina Auto Weave leaves for you. Enemy players = players outside your party (and their summons) count as enemies. Bombs & player AoE = Puppeteer bomb fuses and enemy players' area attacks. Player AoE delay = how long an enemy player's AoE takes to land after it appears. Extra attacks = add attack timings by hand as animId=seconds. Enchanted Sword mobility = when a dash is needed but you are out of stamina or it is on cooldown, swap to your Enchanted Sword (if you own one), use it and swap back. Reflex weave = weave the moment an explosion lands on you (tested: usually too late). Console log = print every weave and its reason to the console (a decision log is always written to workspace/Veil_Combat).",
+        description = "Presses your weave key so the weave is already active when a hit lands (it dodges everything landing while it's active). Melee swings are timed from the mob's attack animation, projectiles a mob launches are tracked until they're about to reach you (Imp fireballs are timed from when they appear), and the Puppeteer's bombs from their 4 s fuse. Explosions themselves are ignored: their damage lands on the frame they appear, too late to react to. Plans around the ~0.5 s cooldown so staggered hits from several mobs get covered, and retries while you're busy or stunned. Never reacts to your own or your party's stuff; players outside your party count as enemies. Raise 'Press before impact' if hits land right after a weave, lower it if they land before it. SETTINGS: Press before impact = how early a weave goes out (raise if hits land right after it, lower if before). Dash unweavables = dash attacks a weave can't stop (learned in play, or listed under Unweavables). Backup dash = also dash when a weave is on cooldown, only while a spare dash's worth of stamina is left. Unweavables = extra attacks to always dash (anim ids, or Bomb / Giant bomb / Hellfire / ImpFireball). Dash direction = where a dash goes when you aren't holding a movement key. Stamina reserve = stamina Auto Weave leaves for you. Enemy players = players outside your party (and their summons) count as enemies. Bombs & player AoE = Puppeteer bomb fuses and enemy players' area attacks. Player AoE delay = how long an enemy player's AoE takes to land after it appears. Extra attacks = add attack timings by hand as animId=seconds. Enchanted Sword mobility = for get-away moves (e.g. the Festering Wound's rapid ground punches) swap to your Enchanted Sword (if you own one), face away from the boss, launch, and swap back; it has no i-frames, so it never replaces a dash. Reflex weave = weave the moment an explosion lands on you (tested: usually too late). Console log = print every weave and its reason to the console (a decision log is always written to workspace/Veil_Combat).",
         default     = false,
         onToggle    = function(v)
             CFG.enabled = v and true or false
