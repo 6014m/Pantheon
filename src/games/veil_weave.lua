@@ -66,6 +66,7 @@ local ATTACKS = {
     ["117802002100480"] = 0.80,  -- Minotaur big swing (0.74-0.88 recorded, 32-240 dmg)
     ["131201775492062"] = 0.91,  -- Enchanted Sword slash (0.89 / 0.92 / 0.93, from up to 19 studs)
     ["120338508145604"] = 0.42,  -- Cursed Hammer smash, 1st hit (2nd below)
+    ["115142136659049"] = 1.03,  -- Starving Warrior lunging slash (1.02-1.05, 32 dmg, from 11-19 studs)
 }
 
 -- attacks that land more than once: extra hits (seconds after the anim starts)
@@ -86,6 +87,7 @@ local ATTACK_RANGE = {
     ["117802002100480"] = 18,    -- Minotaur swing starts 11-14 studs out, closing ~15 stud/s
     ["131201775492062"] = 20,    -- Enchanted Sword slash reached 19 studs
     ["120338508145604"] = 14,    -- Cursed Hammer smash lunges in (closing ~15 stud/s)
+    ["115142136659049"] = 21,    -- Starving Warrior slash reached 19 studs
 }
 
 -- RHYTHM: instant attacks (damage lands with the animation) that can only be dodged by
@@ -107,6 +109,22 @@ local rushImpact = setmetatable({}, { __mode = "k" })    -- model -> its queued 
 local WINDUPS = {
     ["90831939847969"] = { delay = 2.75, speed = 100, range = 75 },   -- predicted vs real hits: -0.13..+0.08 s
 }
+
+-- VOLLEYS: one cast, several strikes at fixed times. The strike appears on the frame it
+-- damages, so it's timed from the cast. Starving Warrior void pierce 108816257830139:
+-- VoidPierceProjectile at +0.70 / +1.17 / +1.65 s every time; they landed on the user
+-- when standing still and mostly missed while moving -- and a whiff locks weaving ~1.4 s,
+-- so the volley is only woven while you're nearly still.
+local VOLLEYS = {
+    ["108816257830139"] = { times = { 0.70, 1.17, 1.65 }, range = 80, facing = 30, stillBelow = 6 },
+}
+
+local function myHorizontalSpeed()
+    local r = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if not r then return 0 end
+    local v = r.AssemblyLinearVelocity
+    return Vector3.new(v.X, 0, v.Z).Magnitude
+end
 
 -- CHANNELS: long attacks you can't weave (you're hit a little no matter what). Answer:
 -- dash AWAY the moment it starts, keep attacking while you back off (user's call).
@@ -624,7 +642,7 @@ local function plan(t)
     end
     local open = {}
     for _, h in ipairs(impacts) do
-        if not handled(h) then open[#open + 1] = h end
+        if not handled(h) and (not h.cond or h.cond()) then open[#open + 1] = h end
     end
     if #open == 0 then return end
     table.sort(open, function(a, b) return a.t < b.t end)
@@ -729,6 +747,21 @@ local function onMobAnim(model, mroot, track)
     local id = anim and string.match(anim.AnimationId, "%d+")
     if not id then return end
     if SKIP_ATTACK_FOR[id] and SKIP_ATTACK_FOR[id][model.Name] then return end
+    local volley = VOLLEYS[id]
+    if volley then
+        local r0 = root()
+        if r0 and mroot.Parent and (mroot.Position - r0.Position).Magnitude <= volley.range
+           and facingDeg(mroot.CFrame, r0.Position) <= volley.facing then
+            local t0 = now()
+            for i, dt in ipairs(volley.times) do
+                want(t0 + dt, string.format("%s volley %d/%d", model.Name, i, #volley.times), "land", mroot.Position, id)
+                local h = impacts[#impacts]
+                h.root, h.range = mroot, volley.range + 15
+                h.cond = function() return myHorizontalSpeed() < volley.stillBelow end
+            end
+        end
+        return
+    end
     local windup = WINDUPS[id]
     if windup then
         local r0 = root()
