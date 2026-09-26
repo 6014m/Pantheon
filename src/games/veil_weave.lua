@@ -241,6 +241,9 @@ local JUMP_ATTACKS = {
 -- fight 3), so it's planned for 0.66 -> i-frames cover ~0.5-1.0 s.
 local DASH_ATTACKS = {
     ["130122482089218"] = { impact = 0.66, range = 50, name = "Smelter Demon vertical leap slam" },
+    -- Smelter fire burst (80-stud cube, 55-57.75 dmg at ~1.6 s): dashed 13/13 while it was
+    -- learned unweavable; once that learning reset it was treated as weavable -> CANT + 2 hits
+    ["91349317972378"]  = { impact = 1.60, range = 45, name = "Smelter Demon fire burst" },
 }
 local extra = {}   -- user-added "id=seconds" pairs from the settings textbox
 
