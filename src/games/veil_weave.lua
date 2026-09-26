@@ -43,7 +43,6 @@ local CFG = {
     melee        = true,
     projectiles  = true,
     projMiss     = 4,       -- a projectile passing closer than this counts as a hit
-    anyProj      = false,   -- also weave unknown fast parts (off: pickups home in on you too)
     hitboxes     = true,
     hitboxDelay  = 0.3,     -- static AoE hitboxes: seconds after they cover you before weaving
     pvp          = true,    -- other players outside your party (and their summons) are enemies
@@ -63,11 +62,27 @@ local ATTACKS = {
 }
 local extra = {}   -- user-added "id=seconds" pairs from the settings textbox
 
--- enemy AoE / hitbox parts that covered you before damage landed
+-- Parts a mob carries INSIDE its own model that are attacks (everything else inside a
+-- mob -- limbs, accessories -- is ignored). Loose parts a mob launches don't need a name.
 local HOSTILE_PARTS = {
-    DeathExplosionHitbox = true, PoisonSmoke = true, IceSurge = true, LightningStrike = true,
-    Bladey = true, Blade = true, BlackFlash = true, BlackSpikePart = true, Spike = true,
-    ShatterProjectile = true, GreenBeam = true, SentryLaser = true,
+    Bladey = true, Blade = true, BlackSpikePart = true, Spike = true, GreenBeam = true, SentryLaser = true,
+}
+-- NOT used as triggers any more: explosion hitboxes (BombExplosionHitbox, ImpFireballExplosion,
+-- GiantExplosionHitbox, LightningStrike, BlackFlash, SmashHitbox...) appear on the SAME frame
+-- the damage lands (recorded lead -0.14..+0.05 s), so a weave started from them is always
+-- late and only burns the cooldown before the next hit. Attacks are caught earlier instead:
+-- the projectile in flight, the bomb fuse, the fireball timing, the melee animation.
+-- ShatterStab / ShatterProjectile are the user's own Shatterpoint rapier (only an enemy
+-- player's count, via the player rules).
+
+-- loose flying parts that are NOT attacks (bomb bits are handled by the fuse, Ichor is a pickup)
+local PROJ_IGNORE = { Bomb = true, Circle = true, Plane = true, Ichor = true }
+
+-- Projectiles that never visibly move on your client (the flight is drawn locally): timed
+-- from spawn instead. ImpFireball, recorded: damage lands ~0.12 s + distance / 59 after it
+-- appears (16 of 19 hits inside the weave window); beyond ~34 studs it lands where you WERE.
+local TIMED_PROJ = {
+    ImpFireball = { hold = 0.12, speed = 59, maxDist = 34 },
 }
 -- yours or harmless: never weave for these
 local IGNORE_PARTS = {
@@ -498,7 +513,7 @@ local function onPart(part)
     local t = now()
     if t - lookedAt >= 1 then looked, lookedAt = 0, t end
     looked += 1
-    if looked > 150 then return end
+    if looked > 150 and not TIMED_PROJ[part.Name] then return end
     -- inside you / party / friends / their summons: never. Inside a mob or an enemy player
     -- only named hostile parts count (limbs, accessories and tools are not attacks)
     local owner = insideHumanoidModel(part)
@@ -533,7 +548,14 @@ local function step()
                     src = nearestSource(part.Position)
                 end
                 rec.pvp = (src == "hostile")
-                if isMine(part, rec) or (src ~= "mob" and src ~= "hostile") then
+                local timed = TIMED_PROJ[part.Name]
+                if timed and CFG.projectiles and (src == "mob" or src == "hostile") and not isMine(part, rec) then
+                    local d = (part.Position - me).Magnitude
+                    rec.fired = true
+                    if d <= timed.maxDist then
+                        want(rec.first + timed.hold + d / timed.speed, string.format("%s (%.0f studs)", part.Name, d))
+                    end
+                elseif isMine(part, rec) or (src ~= "mob" and src ~= "hostile") then
                     rec.fired = true   -- ignore it for good
                     if CFG.verbose then log.info("[Weave] ignoring own/friendly part " .. part.Name) end
                 end
@@ -545,8 +567,7 @@ local function step()
                     local vel = (pos - rec.pos) / dt
                     rec.pos, rec.t = pos, t
                     local speed = vel.Magnitude
-                    if CFG.projectiles and speed > 15 and age > 0.03
-                       and (CFG.anyProj or rec.pvp or HOSTILE_PARTS[part.Name]) then
+                    if CFG.projectiles and speed > 15 and age > 0.03 and not PROJ_IGNORE[part.Name] then
                         local rel = me - pos
                         local eta = rel:Dot(vel) / (speed * speed)
                         if eta > 0 then
@@ -557,7 +578,8 @@ local function step()
                                 want(t + eta, string.format("projectile %s eta %.2fs miss %.1f", part.Name, eta, miss))
                             end
                         end
-                    elseif CFG.hitboxes and (rec.pvp or HOSTILE_PARTS[part.Name]) and speed <= 15 and coversMe(part, me, 1.5) then
+                    elseif CFG.hitboxes and rec.pvp and speed <= 15 and coversMe(part, me, 1.5) then
+                        -- enemy PLAYERS' AoE only (their hitboxes can have any name)
                         rec.fired = true
                         want(t + CFG.hitboxDelay + leadNow(), "hitbox " .. part.Name)
                     end
@@ -654,7 +676,7 @@ function Weave.feature()
     return {
         id          = "veil.auto_weave",
         name        = "Auto Weave",
-        description = "Presses your weave key so its i-frames cover incoming hits. Melee swings are timed from the mob's attack animation (the game's melee has no visible hitbox), known enemy projectiles are tracked until they are about to reach you, and enemy AoE hitboxes that cover you trigger a weave too. Your own Aegis Banner / flower / summon effects are ignored. Respects the ~0.5 s weave cooldown and skips a weave when one already covers the hit. Timings come from recorded fights at ~46 ms ping; raise 'Press before impact' if hits still land right after the weave, lower it if they land before it.",
+        description = "Presses your weave key so the weave is already active when a hit lands (it dodges everything landing while it's active). Melee swings are timed from the mob's attack animation, projectiles a mob launches are tracked until they're about to reach you (Imp fireballs are timed from when they appear), and the Puppeteer's bombs from their 4 s fuse. Explosions themselves are ignored: their damage lands on the frame they appear, too late to react to. Plans around the ~0.5 s cooldown so staggered hits from several mobs get covered, and retries while you're busy or stunned. Never reacts to your own or your party's stuff; players outside your party count as enemies. Raise 'Press before impact' if hits land right after a weave, lower it if they land before it.",
         default     = false,
         onToggle    = function(v)
             CFG.enabled = v and true or false
@@ -672,13 +694,11 @@ function Weave.feature()
               default = 12, onChange = function(v) CFG.meleeRange = v end },
             { type = "toggle", name = "Projectiles", key = "projectiles", default = true,
               onChange = function(v) CFG.projectiles = v and true or false end },
-            { type = "toggle", name = "Unknown projectiles too", key = "any_proj", default = false,
-              onChange = function(v) CFG.anyProj = v and true or false end },
             { type = "toggle", name = "React to players outside your party", key = "pvp", default = true,
               onChange = function(v) CFG.pvp = v and true or false end },
-            { type = "toggle", name = "Enemy AoE hitboxes", key = "hitboxes", default = true,
+            { type = "toggle", name = "Bombs + enemy players' AoE", key = "hitboxes", default = true,
               onChange = function(v) CFG.hitboxes = v and true or false end },
-            { type = "slider", name = "AoE: wait before weaving (s)", key = "hitbox_delay", min = 0, max = 1, step = 0.05,
+            { type = "slider", name = "Enemy player AoE: wait before weaving (s)", key = "hitbox_delay", min = 0, max = 1, step = 0.05,
               default = 0.3, onChange = function(v) CFG.hitboxDelay = v end },
             { type = "textbox", name = "Extra attacks (animId=seconds, ...)", key = "extra",
               placeholder = "117802002100480=0.74", default = "",
