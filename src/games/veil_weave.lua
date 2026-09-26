@@ -1088,9 +1088,19 @@ local function teamOf(model)
     return (v and v:IsA("StringValue")) and v.Value or nil
 end
 
+-- Safe zones: the server announces zone changes with NotifyCardEvent(title, text, kind, n,
+-- "combat-zone"): "Safe Zone" (other players cannot hurt you), "PVP Zone", "PVP Friendly
+-- Zone" (PvP on, nothing counts). In a Safe Zone other players and their summons are
+-- harmless, so they're not dodged. Only zone CHANGES are announced, so the last one is kept
+-- in getgenv() and survives Pantheon re-executes (until you rejoin).
+local GENV = (getgenv and getgenv()) or _G
+local zone = GENV.PantheonVeilZone
+local function inSafeZone() return zone == "Safe Zone" end
+
 local function hostilePlayer(pl)
     if not pl or pl == LP then return false end
     if not CFG.pvp then return false end
+    if inSafeZone() then return false end
     local okF, friendly = pcall(state.isFriendly, pl)
     if okF and friendly then return false end
     local mine, theirs = teamOf(LP.Character), teamOf(pl.Character)
@@ -1425,6 +1435,17 @@ function Weave.start()
         local re = RS:FindFirstChild("WeaveBuffEvent", true) or RS:WaitForChild("Remotes", 10)
         if re and not re:IsA("RemoteEvent") then re = re:FindFirstChild("WeaveBuffEvent", true) end
         if re and re:IsA("RemoteEvent") and running then
+            local card = RS:FindFirstChild("NotifyCardEvent", true)
+            if card and card:IsA("RemoteEvent") then
+                conns[#conns + 1] = card.OnClientEvent:Connect(function(title, _, _, _, tag)
+                    if tag == "combat-zone" and type(title) == "string" then
+                        zone = title
+                        GENV.PantheonVeilZone = title
+                        dlog("ZONE %s", title)
+                        if CFG.verbose then log.info("[Weave] zone: " .. title) end
+                    end
+                end)
+            end
             conns[#conns + 1] = re.OnClientEvent:Connect(function(stacks)
                 if tonumber(stacks) and tonumber(stacks) > 0 then lastCatch = now() end
                 dlog("BUFF %s", tostring(stacks))
