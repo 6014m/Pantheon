@@ -64,12 +64,34 @@ local ATTACKS = {
     ["127688919744763"] = 0.50,  -- Runner / Cambion
     ["74743744689930"]  = 0.65,  -- Runner
     ["117802002100480"] = 0.80,  -- Minotaur big swing (0.74-0.88 recorded, 32-240 dmg)
+    ["131201775492062"] = 0.91,  -- Enchanted Sword slash (0.89 / 0.92 / 0.93, from up to 19 studs)
+    ["120338508145604"] = 0.42,  -- Cursed Hammer smash, 1st hit (2nd below)
+}
+
+-- attacks that land more than once: extra hits (seconds after the anim starts)
+local EXTRA_HITS = {
+    ["120338508145604"] = { 0.90 },   -- Cursed Hammer smash lands twice (0.42, 0.90)
+}
+
+-- mobs whose "facing" means nothing (a floating sword spins while it attacks)
+local NO_FACING = {
+    ["131201775492062"] = true,
 }
 
 -- attacks that reach further than CFG.meleeRange (the mob lunges in while swinging)
 local ATTACK_RANGE = {
     ["117802002100480"] = 18,    -- Minotaur swing starts 11-14 studs out, closing ~15 stud/s
+    ["131201775492062"] = 20,    -- Enchanted Sword slash reached 19 studs
+    ["120338508145604"] = 14,    -- Cursed Hammer smash lunges in (closing ~15 stud/s)
 }
+
+-- RHYTHM: instant attacks (damage lands with the animation) that can only be dodged by
+-- predicting the next one. Alien Gunner's GreenBeam: 2 shots 0.21 s apart, a burst every
+-- 2.23 s (19 recorded gaps, +-0.02 s), damage 0.00-0.07 s after the shot anim starts.
+local RHYTHM = {
+    ["87947721952194"] = { hit = 0.04, burst = 0.21, cycle = 2.23, range = 35, facing = 30 },
+}
+local lastShot = setmetatable({}, { __mode = "k" })   -- model -> time of its last shot
 
 -- CHANNELS: long attacks you can't weave (you're hit a little no matter what). Answer:
 -- dash AWAY the moment it starts, keep attacking while you back off (user's call).
@@ -136,6 +158,9 @@ local RANGED = {
     -- Cambion's shot: 9.2 dmg ~0.43 s after the anim starts at 19-62 studs alike (practically
     -- hitscan); fires in bursts ~0.52 s apart
     ["103401623213387"] = { impact = 0.43, range = 80, facing = 20 },
+    -- Cursed Hammer leap slam: starts ~28 studs out, its smash hitbox appears ~1.54 s later
+    -- (1 recorded sample -- a first guess)
+    ["136161739984425"] = { impact = 1.54, range = 35, facing = 30, kind = "land" },
     -- NOT the Imp fireball cast: timing fireballs from the cast (0.26 s + distance / 59) was
     -- replayed against the recordings and never beat timing them from the fireball itself
     -- (78.1% vs 73-78%), because most casts target your summons and the extra weaves crowd
@@ -550,9 +575,11 @@ end
 local function plan(t)
     settleWatching(t)
     -- drop past and covered hits
+    local me = root()
     for i = #impacts, 1, -1 do
         local h = impacts[i]
-        if h.t < t - 0.05 or covered(h) then table.remove(impacts, i) end
+        local gone = h.root and (not h.root.Parent or not me or (h.root.Position - me.Position).Magnitude > h.range)
+        if h.t < t - 0.05 or gone or covered(h) then table.remove(impacts, i) end
     end
     if attempt then
         if t > attempt.deadline then
@@ -619,7 +646,6 @@ local function plan(t)
 
     -- be ready for the next hit after this group: known, or a nearby mob's predicted attack
     local nextHit = open[n + 1]
-    local me = root()
     for model, pr in pairs(preds) do
         if pr.t < t or not model.Parent or not pr.root.Parent
            or not me or (pr.root.Position - me.Position).Magnitude > pr.range then
@@ -665,6 +691,23 @@ local function onMobAnim(model, mroot, track)
     local anim = track.Animation
     local id = anim and string.match(anim.AnimationId, "%d+")
     if not id then return end
+    local rhythm = RHYTHM[id]
+    if rhythm then
+        local r0 = root()
+        local t0 = now()
+        local prev = lastShot[model]
+        lastShot[model] = t0
+        if not (r0 and mroot.Parent) then return end
+        local d = (mroot.Position - r0.Position).Magnitude
+        if d > rhythm.range or facingDeg(mroot.CFrame, r0.Position) > rhythm.facing then return end
+        if not prev or t0 - prev > rhythm.burst * 3 then
+            -- first shot of a burst: the second one follows, and the next burst after the cycle
+            want(t0 + rhythm.burst + rhythm.hit, model.Name .. " beam (2nd of burst)", "melee", mroot.Position, id)
+            want(t0 + rhythm.cycle + rhythm.hit, model.Name .. " beam (next burst)", "melee", mroot.Position, id)
+            impacts[#impacts].root, impacts[#impacts].range = mroot, rhythm.range
+        end
+        return
+    end
     local channel = CHANNELS[id]
     if channel then
         local r0 = root()
@@ -695,13 +738,16 @@ local function onMobAnim(model, mroot, track)
     if not r or not mroot.Parent then return end
     local range = ranged and ranged.range or ATTACK_RANGE[id] or CFG.meleeRange
     if (mroot.Position - r.Position).Magnitude > range then return end
-    if facingDeg(mroot.CFrame, r.Position) > (ranged and ranged.facing or CFG.meleeFacing) then return end
+    if not NO_FACING[id] and facingDeg(mroot.CFrame, r.Position) > (ranged and ranged.facing or CFG.meleeFacing) then return end
     local t0 = now()
     if ranged and ranged.perStud then
         impact = impact + (mroot.Position - r.Position).Magnitude * ranged.perStud
     end
     want(t0 + impact, string.format("%s %s %s (+%.2fs)", model.Name, ranged and "shot" or "swing", id, impact),
         ranged and ranged.kind or "melee", mroot.Position, id)
+    for _, extraHit in ipairs(EXTRA_HITS[id] or {}) do
+        want(t0 + extraHit, string.format("%s %s hit 2 (+%.2fs)", model.Name, id, extraHit), "melee", mroot.Position, id)
+    end
     -- its next swing can't land before this (the mob's attack rhythm)
     preds[model] = { t = t0 + (REATTACK[id] or 1.28) + impact, root = mroot,
                      kind = ranged and ranged.kind or "melee", range = range + 6 }
