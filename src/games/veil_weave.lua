@@ -981,11 +981,56 @@ local function onMobDied(model, mroot)
     local h = { t = now() + DASH.lead, reason = model.Name .. " death blast", kind = "melee",
                 from = mroot.Position, key = "death blast", unweavable = true }
     dlog("DEATH %s at %.1f studs", model.Name, (mroot.Position - r.Position).Magnitude)
-    -- no waiting in line: drop any weave being retried and dash right now
+    -- already dashed for its predicted death (or just dashed): nothing more to do
+    if (dashes[#dashes] or -math.huge) > now() - 0.5 then return end
+    -- no waiting in line: drop any weave being retried and dash right now; the hit stays
+    -- queued so the planner keeps trying if this frame can't
     if attempt and not attempt.dash then attempt = nil end
-    if not tryDash(now(), h, true) then
-        impacts[#impacts + 1] = h   -- dash on cooldown: the planner retries it for the next moments
-    end
+    impacts[#impacts + 1] = h
+    tryDash(now(), h, true)
+end
+
+-- 2. PREDICT the death. The blast knocks you down and stuns you (Ragdolled, StunUntil,
+-- StunAllowsWeave=false) the instant it dies, so reacting is always too late -- but a dash
+-- that is ALREADY up when it dies blocks all of it (recorded). So: watch its health; once
+-- the next hit will probably kill it, predict when that hit lands from the rhythm of the
+-- damage it's been taking (your swings, your poison ticks, your summons) and dash just
+-- before.
+local function watchForDeath(model, hum, mroot)
+    local drops, lastHp, queued = {}, hum.Health, nil
+    return hum.HealthChanged:Connect(function(hp)
+        local t = now()
+        local d = lastHp - hp
+        lastHp = hp
+        if d <= 0 or hp <= 0 then return end
+        drops[#drops + 1] = { t = t, d = d }
+        if #drops > 6 then table.remove(drops, 1) end
+        if not (running and CFG.enabled and CFG.dash) then return end
+        local reach = deathBlastReach(model.Name)
+        local r = root()
+        if not (reach and r and mroot.Parent) or (mroot.Position - r.Position).Magnitude > reach + 4 then return end
+        -- typical hit size and spacing
+        local sizes, gaps = {}, {}
+        for i, x in ipairs(drops) do
+            sizes[#sizes + 1] = x.d
+            if i > 1 then gaps[#gaps + 1] = x.t - drops[i - 1].t end
+        end
+        table.sort(sizes); table.sort(gaps)
+        local typical = sizes[math.ceil(#sizes / 2)]
+        if hp > typical * 1.15 then return end                 -- not one hit from death yet
+        local gap = #gaps > 0 and gaps[math.ceil(#gaps / 2)] or nil
+        local predicted = t + ((gap and gap < 1.2) and gap or 0.15)
+        if queued and queued.t > t then
+            queued.t = predicted                                -- keep the guess current
+            return
+        end
+        queued = { t = predicted, reason = model.Name .. " about to die (blast)", kind = "melee",
+                   from = mroot.Position, key = "death blast", unweavable = true,
+                   root = mroot, range = reach + 8 }
+        impacts[#impacts + 1] = queued
+        dlog("PREDEATH %s hp %.0f (hits ~%.0f every %s) -> dash for ~%.2f s", model.Name, hp, typical,
+            gap and string.format("%.2f s", gap) or "?", predicted - t)
+    end)
 end
 
 local function hookMob(model)
@@ -1005,6 +1050,7 @@ local function hookMob(model)
         if not ok and CFG.verbose then log.warn("[Weave] anim: " .. tostring(err)) end
     end)
     if deathBlastReach(model.Name) then
+        list[#list + 1] = watchForDeath(model, hum, mroot)
         local fired = false
         local function died()
             if fired then return end
