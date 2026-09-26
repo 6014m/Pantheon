@@ -43,8 +43,8 @@ local CFG = {
     projMiss     = 4,       -- a projectile passing closer than this counts as a hit
     hitboxes     = true,
     hitboxDelay  = 0.3,     -- static AoE hitboxes: seconds after they cover you before weaving
-    pvp          = true,
-    reflex       = true,    -- weave the moment a mob explosion lands on you, if nothing else is planned    -- other players outside your party (and their summons) are enemies
+    pvp          = true,    -- other players outside your party (and their summons) are enemies
+    reflex       = false,   -- weave the moment a mob explosion lands on you (tested: too late, 7/19 hit)
     verbose      = false,   -- print every weave and its reason to the console
 }
 
@@ -104,7 +104,9 @@ local PROJ_IGNORE = { Bomb = true, Circle = true, Plane = true, Ichor = true }
 -- from spawn instead. ImpFireball, recorded: damage lands ~0.12 s + distance / 59 after it
 -- appears (16 of 19 hits inside the weave window); beyond ~34 studs it lands where you WERE.
 local TIMED_PROJ = {
-    ImpFireball = { hold = 0.12, speed = 59, maxDist = 34 },
+    -- flight to the explosion: 0.076 s + distance / 54.4 (fit on 131 fireballs that landed on
+    -- you). They HOME: 8 of 13 fired from 35-79 studs still landed on you.
+    ImpFireball = { hold = 0.076, speed = 54.4, maxDist = 90 },
 }
 -- yours or harmless: never weave for these
 local IGNORE_PARTS = {
@@ -187,12 +189,15 @@ end
 -- WHEN a weave has to start depends on how the hit arrives. Measured over every recorded
 -- weave (sessions 2-6) against the moment the damage landed:
 --   melee swing / aimed shot  start 0.14-0.36 s before the hit  (at 0.25: 1 hit in 172)
---   landing (fireball, bomb,  start 0.02-0.21 s before it lands (0 hits in 59 fireballs,
---   explosion, projectile)    1 in 27 explosions) -- basically "the moment it lands"
+--   landing (fireball, bomb,  start 0.05-0.25 s before the explosion appears (49 of 50
+--   explosion, projectile)    fireballs dodged) -- weaving AS it appears is too late
 -- Weaving earlier than the window gets you hit (the weave is over before the hit lands).
 local WINDOWS = {
     melee = { from = 0.14, to = 0.36, lead = 0.25 },
-    land  = { from = 0.02, to = 0.21, lead = 0.10 },
+    -- landings are timed to the moment the EXPLOSION APPEARS (your HP drops ~0.10 s later):
+    -- weave started 0.05-0.25 s before it dodged 49 of 50 fireballs, at the moment it
+    -- appears 7 of 19 got hit (sessions 3-7)
+    land  = { from = 0.05, to = 0.25, lead = 0.18 },   -- lead: replay optimum (0.13 window centre + the fit's 0.05 s lateness)
 }
 
 local function win(h)
@@ -538,7 +543,7 @@ local OWN_RADIUS = 7   -- parts spawning closer than this to you are treated as 
 -- cube; GiantExplosionHitbox 60 for the big ones) appears ~0.15 s after the bomb vanishes
 -- and the damage lands on that same frame, so reacting to the explosion is always too late.
 -- The fuse is the tell: when it's about to go off and you're inside its blast, weave.
-local BOMB_FUSE = 4.03        -- spawn -> damage (fit to the 17 fuse hits: -0.1 s vs the 4.12 lifetime)
+local BOMB_FUSE = 3.93        -- spawn -> explosion appears (damage shows ~0.1 s later, at 4.03)
 local BOMB_RADIUS = 10.5      -- 17-stud cube = 8.5 half-width, + your body + slack
 local GIANT_RADIUS = 32       -- 60-stud cube
 local bombs = {}              -- part -> { spawn, giant, queued }
@@ -793,7 +798,7 @@ function Weave.feature()
             { type = "textbox", name = "Extra attacks (animId=seconds, ...)", key = "extra",
               placeholder = "117802002100480=0.74", default = "",
               onChange = function(v) parseExtra(v) end },
-            { type = "toggle", name = "Reflex weave when an explosion lands on you", key = "reflex", default = true,
+            { type = "toggle", name = "Reflex weave when an explosion lands on you (tested: too late)", key = "reflex", default = false,
               onChange = function(v) CFG.reflex = v and true or false end },
             { type = "toggle", name = "Log every weave to console", key = "verbose", default = false,
               onChange = function(v) CFG.verbose = v and true or false end },
