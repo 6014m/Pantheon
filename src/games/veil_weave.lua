@@ -545,6 +545,8 @@ local MOVE_GUARD = "PantheonDashMoveGuard"
 local MOVE_INPUTS = { Enum.KeyCode.W, Enum.KeyCode.A, Enum.KeyCode.S, Enum.KeyCode.D,
                       Enum.KeyCode.Up, Enum.KeyCode.Down, Enum.KeyCode.Left, Enum.KeyCode.Right }
 local RS_D = game:GetService("RunService")
+local aimOk, aimState = pcall(require, "modules.aim.state")
+if not aimOk then aimState = {} end
 
 local function escapeVector(threat, mode)
     local r = root()
@@ -560,47 +562,97 @@ local function escapeVector(threat, mode)
     return away
 end
 
+-- Walls (user: it double dashed me right into a wall): sweep the dash path at waist and chest
+-- height and turn toward the nearest direction that's actually open -- straight away first,
+-- then 30/60/90/120 degrees either side; if nothing is fully open, the roomiest one.
+local DASH_REACH = 24
+local function clearance(from, dir)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { LP.Character }
+    params.RespectCanCollide = true
+    local best = DASH_REACH
+    for _, h in ipairs({ -1, 1.2 }) do
+        local o = from + Vector3.new(0, h, 0)
+        local hit = Workspace:Raycast(o, dir * DASH_REACH, params)
+        if hit then best = math.min(best, hit.Distance) end
+    end
+    return best
+end
+
+local function openDirection(dir)
+    local r = root()
+    if not r then return dir end
+    local pick, room = dir, -1
+    for _, deg in ipairs({ 0, 30, -30, 60, -60, 90, -90, 120, -120 }) do
+        local d = (CFrame.Angles(0, math.rad(deg), 0) * CFrame.new(Vector3.zero, dir)).LookVector
+        d = Vector3.new(d.X, 0, d.Z).Unit
+        local c = clearance(r.Position, d)
+        if c >= DASH_REACH - 0.5 then return d end
+        if c > room then pick, room = d, c end
+    end
+    return pick
+end
+
+-- One shared "dash facing" session: a second dash inside the first (double dash) extends it
+-- instead of starting its own -- before, the second dash saved AutoRotate while the first
+-- had it switched off and "restored" it to off, so rotation never came back (user).
+local dashFace = { active = false, untilT = 0, autoRotate = true, hum = nil, dir = nil, held = {} }
+
 local function sendDash(threat, mode)
     lastInject = now()
     local r = root()
     local c = LP.Character
     local hum = c and c:FindFirstChildOfClass("Humanoid")
     local dirVec = (mode and mode ~= "Where you're moving only") and escapeVector(threat, mode) or nil
+    if dirVec then dirVec = openDirection(dirVec) end
     if not (dirVec and r and hum) then
         -- no direction asked for: plain Q, your held key (if any) steers it
         pcall(function() VIM:SendKeyEvent(true, CFG.dashKey, false, game) end)
         task.delay(0.08, function() pcall(function() VIM:SendKeyEvent(false, CFG.dashKey, false, game) end) end)
         return
     end
+    dashFace.dir = dirVec
+    dashFace.untilT = now() + 0.35
+    pcall(function() aimState.dashBodyUntil = os.clock() + 0.35 end)   -- lock-on rotation yields, then resumes
+    local function press()
+        task.wait(0.03)                                  -- let the turn land first
+        pcall(function() VIM:SendKeyEvent(true, CFG.dashKey, false, game) end)
+        task.wait(0.08)
+        pcall(function() VIM:SendKeyEvent(false, CFG.dashKey, false, game) end)
+    end
+    if dashFace.active then                              -- already facing for a dash: extend
+        task.spawn(press)
+        return
+    end
+    dashFace.active, dashFace.hum, dashFace.autoRotate = true, hum, hum.AutoRotate
     -- remember which movement keys were down, then block all movement input
-    local held = {}
-    for _, k in ipairs(MOVE_KEYS) do if UIS:IsKeyDown(k) then held[#held + 1] = k end end
+    table.clear(dashFace.held)
+    for _, k in ipairs(MOVE_KEYS) do if UIS:IsKeyDown(k) then dashFace.held[#dashFace.held + 1] = k end end
     pcall(function()
         CAS_D:BindActionAtPriority(MOVE_GUARD, function() return Enum.ContextActionResult.Sink end, false,
             Enum.ContextActionPriority.High.Value + 1000, table.unpack(MOVE_INPUTS))
     end)
     -- face the escape direction (yaw only) every frame for the dash, camera untouched
-    local autoRotate = hum.AutoRotate
     hum.AutoRotate = false
-    local untilT = now() + 0.35
     local bind = "PantheonDashFace"
     pcall(function() RS_D:UnbindFromRenderStep(bind) end)
     RS_D:BindToRenderStep(bind, Enum.RenderPriority.Last.Value, function()
         local rr = root()
-        if not rr or now() > untilT then return end
-        pcall(function() rr.CFrame = CFrame.lookAt(rr.Position, rr.Position + dirVec) end)
+        if not rr or now() > dashFace.untilT or not dashFace.dir then return end
+        pcall(function() rr.CFrame = CFrame.lookAt(rr.Position, rr.Position + dashFace.dir) end)
     end)
+    task.spawn(press)
     task.spawn(function()
-        task.wait(0.03)                                  -- let the turn land first
-        pcall(function() VIM:SendKeyEvent(true, CFG.dashKey, false, game) end)
-        task.wait(0.08)
-        pcall(function() VIM:SendKeyEvent(false, CFG.dashKey, false, game) end)
-        task.wait(math.max(0, untilT - now()))
+        while now() < dashFace.untilT do task.wait(math.max(0.01, dashFace.untilT - now())) end
         pcall(function() RS_D:UnbindFromRenderStep(bind) end)
         pcall(function() CAS_D:UnbindAction(MOVE_GUARD) end)
-        pcall(function() hum.AutoRotate = autoRotate end)
+        -- hand rotation back: AutoRotate on; Rotation Lock / Shift Lock re-take it next frame if
+        -- they're engaged (restoring the saved value could leave it off after they let go)
+        pcall(function() dashFace.hum.AutoRotate = true end)
+        dashFace.active = false
         -- your keys were swallowed while blocked: press the ones still held again
-        for _, k in ipairs(held) do
+        for _, k in ipairs(dashFace.held) do
             if UIS:IsKeyDown(k) then pcall(function() VIM:SendKeyEvent(true, k, false, game) end) end
         end
     end)

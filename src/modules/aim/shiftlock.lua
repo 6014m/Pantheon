@@ -701,6 +701,7 @@ local function step()
 
     if not state.shiftlock_active or not self_state.root or not hum then return end
     if state.techBodyOverride then return end   -- a Tech Builder Rotate step owns the body; don't overwrite it
+    if os.clock() < (state.dashBodyUntil or 0) then return end   -- Auto Weave escape dash owns the body
     if hum.Health <= 0 then return end
 
     local st = hum:GetState()
