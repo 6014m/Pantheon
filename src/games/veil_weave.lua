@@ -1489,7 +1489,9 @@ local function stepRushes(t, me)
                         if fresh and h and h.t > t then
                             -- same rush, still accelerating: keep the arrival time current
                             h.t = t + eta
-                        elseif not fresh then
+                        elseif not fresh or not h or h.t <= t - 0.05 then
+                            -- a NEW rush -- including one right after the last passed you
+                            -- (the Festering Wound rushes back to back)
                             rushQueued[model] = t
                             want(t + eta, string.format("%s rushing through you (%.0f stud/s)", model.Name, speed),
                                 "melee", pos, "rush:" .. model.Name)
