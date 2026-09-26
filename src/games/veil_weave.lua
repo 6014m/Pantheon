@@ -552,7 +552,7 @@ end
 -- ~0.15-0.85 s after the first tap (to be tuned from recordings).
 -- lead 0.5 (user: jumps went out a little late); the second tap waits until you're actually
 -- airborne (user: a fixed 0.14 s gap only produced a single jump)
-local JUMP = { lead = 0.5, gap = 0.14, from = 0.15, to = 0.95, cooldown = 1.0 }
+local JUMP = { lead = 0.65, gap = 0.14, from = 0.15, to = 1.1, cooldown = 1.0 }   -- lead 0.5 -> 0.65 (user: a little earlier)
 local jumps = {}
 
 -- double jump, the pattern the user verified in-game: Space, wait until actually airborne
