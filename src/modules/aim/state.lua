@@ -79,6 +79,9 @@ local state = {
 
     -- Misc
     lockHeightOffset = 0,
+    -- Camera Lock aims this many studs to the SIDE of the target (+ = right of it on screen);
+    -- only the camera's aim point moves -- rotation still faces the target itself
+    lockSideOffset = 0,
     friendlies       = {},
 
     -- Aim-assist prediction window. lockon's camera tracking and rotation_lock's

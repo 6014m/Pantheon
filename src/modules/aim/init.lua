@@ -206,6 +206,15 @@ function module.register()
               key = "prediction", min = 0, max = 0.3, step = 0.01, default = 0.1,
               onChange = function(v) state.predictionTime = v end },
 
+            { type = "section", name = "Camera offset" },
+            -- camera aims beside / above the target; your character still faces the target
+            { type = "slider", name = "Side offset (studs, + = right)",
+              key = "side_offset", min = -10, max = 10, step = 0.5, default = 0,
+              onChange = function(v) state.lockSideOffset = v end },
+            { type = "slider", name = "Height offset (studs)",
+              key = "height_offset", min = -5, max = 5, step = 0.5, default = 0,
+              onChange = function(v) state.lockHeightOffset = v end },
+
             { type = "section", name = "Resistance" },
             { type = "toggle", name = "Enable Resistance", default = false,
               onChange = function(v) state.resistance_enabled = v end },

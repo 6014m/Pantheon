@@ -59,6 +59,16 @@ local function cameraStep(dt)
     local lookPos = tRoot.Position
         + (tVel * state.getLeadTime())
         + Vector3.new(0, state.lockHeightOffset or 0, 0)
+    -- side offset: shift the camera's aim point sideways, perpendicular to the camera->target
+    -- line, so the target sits off-centre while your character still faces them
+    local side = state.lockSideOffset or 0
+    if side ~= 0 then
+        local flat = Vector3.new(lookPos.X - camPos.X, 0, lookPos.Z - camPos.Z)
+        if flat.Magnitude > 0.1 then
+            local right = flat.Unit:Cross(Vector3.new(0, 1, 0))
+            lookPos = lookPos + right * side
+        end
+    end
     local desired = lookPos - camPos
     if desired.Magnitude < 0.5 then
         if s.lastDir then
