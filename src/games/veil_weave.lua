@@ -91,6 +91,14 @@ local ATTACKS = {
     ["115142136659049"] = 1.03,  -- Starving Warrior lunging slash (1.02-1.05, 32 dmg, from 11-19 studs)
     ["91438445642768"]  = 0.56,  -- Gigazapper zap (0.55 / 0.57 / 0.55, 27.6 dmg) -- Martian Saucer add
     ["91414483216673"]  = 0.50,  -- Gigazapper second attack (1 sample)
+    -- Smelter Demon (boss)
+    ["91349317972378"]  = 1.58,  -- fire burst: 80-stud SmelterFireBurstPart ~1.5-1.6 s in (55 dmg)
+    ["130122482089218"] = 0.76,  -- leaping slam: 35 dmg at 0.74-0.79 s from up to 46 studs
+    ["81155999312581"]  = 0.38,  -- ground strike: 10 dmg at 0.35-0.44 s from 16-50 studs
+    ["90623661509768"]  = 1.30,  -- charge along a line of Hitbox parts 1.0-1.6 s in (40 dmg at 1.39)
+    -- The Stormcaller (boss)
+    ["129783803036051"] = 1.08,  -- heavy swing: 30 dmg at 1.07-1.10 s
+    ["77025178675756"]  = 0.87,  -- lightning stomp: 60-stud LightningStompHitbox, 40 dmg at 0.84-0.90 s
     ["123223658247605"] = 0.72,  -- Turret Golem up close (0.69 / 0.75, 25 dmg); from range it fires a
                                  -- LaserProjectile, which the trajectory tracker handles
 }
@@ -116,6 +124,12 @@ local ATTACK_RANGE = {
     ["115142136659049"] = 21,    -- Starving Warrior slash reached 19 studs
     ["123223658247605"] = 14,    -- Turret Golem close-range hit (beyond this it's the laser)
     ["102522251341739"] = 90,    -- Ancient Bones spike erupts under you ~0.65 s later, even from 57-85 studs
+    ["91349317972378"]  = 45,    -- Smelter fire burst (80-stud cube)
+    ["130122482089218"] = 50,    -- Smelter leap
+    ["81155999312581"]  = 55,    -- Smelter ground strike
+    ["90623661509768"]  = 40,    -- Smelter charge
+    ["129783803036051"] = 22,    -- Stormcaller swing
+    ["77025178675756"]  = 32,    -- Stormcaller stomp (60-stud ring)
 }
 
 -- beyond this distance the attack targets where you ARE (a spike under you): it only lands
