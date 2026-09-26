@@ -1089,9 +1089,11 @@ local function onMobAnim(model, mroot, track)
     end
     local channel = CHANNELS[id]
     if channel then
+        -- keep the rush tracker off this mob for the whole channel, from ANY distance
+        -- (a Minotaur charging from 30 studs is still an unweavable charge, not a rush to weave)
+        channelUntil[model] = now() + 3.2
         local r0 = root()
         if r0 and mroot.Parent and (mroot.Position - r0.Position).Magnitude <= channel.range then
-            channelUntil[model] = now() + 3.2
             -- get-away moves (user): the Enchanted Sword first, launched straight away from it
             if channel.sword and useSword(channel.name, mroot.Position) then
                 -- the sword alone doesn't get you out of range (user): follow it with one
@@ -1644,9 +1646,14 @@ local function stepSlams(t, me)
     end
 end
 
+-- mobs whose fast movement is never a weavable rush (user: the Minotaur's charge is not
+-- weavable; its swing is timed from its anim)
+local NO_RUSH = { Minotaur = true }
+
 local function stepRushes(t, me)
     if not CFG.melee then return end
     for model, mroot in pairs(mobRoots) do
+        if NO_RUSH[model.Name] then continue end
         local fresh = t - (rushQueued[model] or -math.huge) <= 0.8
         if mroot.Parent and not (channelUntil[model] and t < channelUntil[model]) then
             local pos = mroot.Position
