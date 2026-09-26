@@ -575,9 +575,26 @@ local jumps = {}
 
 -- double jump, the pattern the user verified in-game: Space, wait until actually airborne
 -- (Freefall / FloorMaterial Air, up to 0.5 s), a 0.12 s beat, Space again
+-- your M1s during the jump made the double jump go silent (user): swallow left clicks from
+-- the first tap until the second tap is out (you're airborne), then give them back
+local CAS = game:GetService("ContextActionService")
+local M1_GUARD = "PantheonJumpM1Guard"
+local function guardM1(on)
+    pcall(function()
+        if on then
+            CAS:BindActionAtPriority(M1_GUARD, function() return Enum.ContextActionResult.Sink end, false,
+                Enum.ContextActionPriority.High.Value + 1000, Enum.UserInputType.MouseButton1)
+        else
+            CAS:UnbindAction(M1_GUARD)
+        end
+    end)
+end
+
 local function sendDoubleJump()
     lastInject = now()
     local sp = Enum.KeyCode.Space
+    guardM1(true)
+    task.delay(0.9, function() guardM1(false) end)   -- safety: never leave clicks blocked
     task.spawn(function()
         local c = LP.Character
         local hum = c and c:FindFirstChildOfClass("Humanoid")
@@ -594,6 +611,7 @@ local function sendDoubleJump()
         end
         task.wait(0.12)
         tap()
+        guardM1(false)                                -- airborne: your M1s are back
     end)
 end
 
