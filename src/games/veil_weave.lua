@@ -1199,11 +1199,14 @@ sampleUnknownRef = sampleUnknown
 -- shadow clones) 3 of 4, Cambion's close swing 127688919744763 26 of 37 -- a whiff costs a
 -- ~1.4 s lockout, so these are left alone. (The real Shrouded: 40 caught, 3 whiffed.)
 local SKIP_MOBS = { ["Shrouded Apparition"] = true }
+-- friendly NPCs (user): Runners fight WITH you -- their swings are at mobs, never at you.
+-- Before this, a pack of Runners got weaved and backup-dashed away from all fight long.
+local FRIENDLY_NPCS = { Runner = true }
 local SKIP_ATTACK_FOR = { ["127688919744763"] = { Cambion = true } }
 
 local function onMobAnim(model, mroot, track)
     if not (running and CFG.enabled and CFG.melee) then return end
-    if SKIP_MOBS[model.Name] then return end
+    if SKIP_MOBS[model.Name] or FRIENDLY_NPCS[model.Name] then return end
     if isSummon(model) and classify(model) == "friendly" then return end
     local anim = track.Animation
     local id = anim and string.match(anim.AnimationId, "%d+")
@@ -1452,6 +1455,7 @@ local function hookMob(model)
     -- summons are hooked too: an enemy player's (or a mob's) summon attacks like any mob.
     -- Yours / your party's are filtered per attack in onMobAnim (ownership can change).
     if model == LP.Character or Players:GetPlayerFromCharacter(model) then return end
+    if FRIENDLY_NPCS[model.Name] then return end
     local hum = model:FindFirstChildOfClass("Humanoid")
     local mroot = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
     local animator = hum and model:FindFirstChildWhichIsA("Animator", true)
