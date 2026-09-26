@@ -555,12 +555,28 @@ end
 local JUMP = { lead = 0.5, gap = 0.14, from = 0.15, to = 0.95, cooldown = 1.0 }
 local jumps = {}
 
--- a single, well-timed jump is enough (user: the double jump isn't needed)
+-- double jump, the pattern the user verified in-game: Space, wait until actually airborne
+-- (Freefall / FloorMaterial Air, up to 0.5 s), a 0.12 s beat, Space again
 local function sendDoubleJump()
     lastInject = now()
     local sp = Enum.KeyCode.Space
-    pcall(function() VIM:SendKeyEvent(true, sp, false, game) end)
-    task.delay(0.08, function() pcall(function() VIM:SendKeyEvent(false, sp, false, game) end) end)
+    task.spawn(function()
+        local c = LP.Character
+        local hum = c and c:FindFirstChildOfClass("Humanoid")
+        local function tap()
+            pcall(function() VIM:SendKeyEvent(true, sp, false, game) end)
+            task.wait(0.05)
+            pcall(function() VIM:SendKeyEvent(false, sp, false, game) end)
+        end
+        local t0 = now()
+        tap()
+        while hum and now() - t0 < 0.5 do
+            if hum:GetState() == Enum.HumanoidStateType.Freefall or hum.FloorMaterial == Enum.Material.Air then break end
+            task.wait()
+        end
+        task.wait(0.12)
+        tap()
+    end)
 end
 
 local function jumpCovers(p, h)
