@@ -76,6 +76,9 @@ local EXTRA_HITS = {
 -- mobs whose "facing" means nothing (a floating sword spins while it attacks)
 local NO_FACING = {
     ["131201775492062"] = true,
+    -- Minotaur swing: it turns while lunging -- swings that hit started facing 109-145 deg
+    -- away, so facing says nothing about whether it lands
+    ["117802002100480"] = true,
 }
 
 -- attacks that reach further than CFG.meleeRange (the mob lunges in while swinging)
