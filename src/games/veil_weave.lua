@@ -57,7 +57,7 @@ local CFG = {
     lead         = 0.25,    -- press this long before impact (measured sweet spot at 46 ms ping)
     basePing     = 0.046,   -- ping the lead was measured at; extra ping adds to the lead
     cooldown     = 0.5,     -- presses closer than this are ignored by the game
-    meleeRange   = 12,      -- mob must be this close when its swing starts
+    meleeRange   = 15,      -- mob must be this close when its swing starts (Bones / Hivelings lunge in from 11-14)
     meleeFacing  = 180,     -- off: mobs turn mid-swing; swings that started >80 deg away hit you as often (15-22%) as ones facing you (17%)
     melee        = true,
     projectiles  = true,
@@ -124,6 +124,7 @@ local ATTACK_RANGE = {
     ["115142136659049"] = 21,    -- Starving Warrior slash reached 19 studs
     ["123223658247605"] = 14,    -- Turret Golem close-range hit (beyond this it's the laser)
     ["102522251341739"] = 90,    -- Ancient Bones spike erupts under you ~0.65 s later, even from 57-85 studs
+    ["110285618672790"] = 17,    -- Ancient Bones swing: starts 11-15 studs out and still lands (unseen twice)
     ["91349317972378"]  = 45,    -- Smelter fire burst (80-stud cube)
     ["130122482089218"] = 50,    -- Smelter leap
     ["81155999312581"]  = 55,    -- Smelter ground strike
@@ -1342,7 +1343,9 @@ local function inWorldFolder(part)
 end
 
 -- the user's own Shatterpoint rapier: only an enemy player's counts
-local MY_WEAPON_PARTS = { ShatterStab = true, ShatterProjectile = true }
+-- (Vine = the user's class dash, Vine Rush: every dash -- including Auto Weave's own -- throws
+-- vine parts that fly at nearby targets, and they were being woven: a wasted weave + lockout)
+local MY_WEAPON_PARTS = { ShatterStab = true, ShatterProjectile = true, Vine = true }
 
 local function onPart(part)
     if not (running and CFG.enabled) or not part:IsA("BasePart") then return end
@@ -1567,8 +1570,6 @@ function Weave.start()
     conns[#conns + 1] = UIS.InputBegan:Connect(function(input)
         local ut = input.UserInputType
         if ut == Enum.UserInputType.Keyboard and (input.KeyCode == CFG.key or NOT_ABILITY[input.KeyCode]) then return end
-        -- our own injected dash (Q + direction) isn't you using an ability
-        if ut == Enum.UserInputType.Keyboard and input.KeyCode == CFG.dashKey and now() - lastInject < 0.15 then return end
         if ut == Enum.UserInputType.Keyboard or ut == Enum.UserInputType.MouseButton2 then
             myActionAt = math.max(myActionAt, now() + MY_ACTION_WINDOW)
         elseif ut == Enum.UserInputType.MouseButton1 then
@@ -1681,7 +1682,7 @@ function Weave.feature()
             { type = "toggle", name = "Melee swings", key = "melee", default = true,
               onChange = function(v) CFG.melee = v and true or false end },
             { type = "slider", name = "Melee range (studs)", key = "melee_range", min = 6, max = 25, step = 1,
-              default = 12, onChange = function(v) CFG.meleeRange = v end },
+              default = 15, onChange = function(v) CFG.meleeRange = v end },
             { type = "toggle", name = "Projectiles", key = "projectiles", default = true,
               onChange = function(v) CFG.projectiles = v and true or false end },
             { type = "toggle", name = "Enemy players", key = "pvp", default = true,
