@@ -74,6 +74,7 @@ local CFG = {
     dashBackup   = true,    -- also dash when a weave can't make it (only with a spare dash banked)
     swordMobility = false,  -- use the Enchanted Sword (Elite mobility cast, ~0 stamina) when a dash can't go
     dashDir      = "Away from the attack",
+    pillarDodge  = true,    -- slide out from under the Festering Wound's rot pillar when its marker lands on you
 }
 
 -- attack animation -> seconds from anim start to damage (median of clean hits on you)
@@ -2007,6 +2008,75 @@ end
 
 --------------------------------------------------------------------- lifecycle
 
+-- ---- rot pillar sidestep (Festering Wound BigBeam) --------------------------------------
+-- The tell (user): a little star sparkle on YOU -- an IndicatorAttachment with a "Star"
+-- emitter parented to your Torso. In 42 recorded pillars the beam (_TNBossFX.BigBeam, a
+-- 14-wide x 96-tall Hitbox) spawned 0.63-0.70 s later, on the spot you were standing when
+-- the marker appeared (standing still: right under you; running: 8-10 studs behind), and its
+-- 10.5-dmg ticks start ~0.45 s after that. So when the marker lands, slide ~14 studs off
+-- that spot (outside the 7-stud radius + your body) -- away from the boss, around walls.
+local PILLAR = { clear = 14, speed = 44, maxTime = 0.55 }
+local pillarBusy = false
+
+local function nearestMobPos(pos)
+    local best, bd = nil, 120
+    local folder = Workspace:FindFirstChild("Monsters")
+    for _, m in ipairs(folder and folder:GetChildren() or {}) do
+        local mr = m:IsA("Model") and (m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart)
+        if mr then
+            local d = (mr.Position - pos).Magnitude
+            if d < bd then best, bd = mr.Position, d end
+        end
+    end
+    return best
+end
+
+local function pillarSidestep()
+    if not (CFG.enabled and CFG.pillarDodge) or pillarBusy or inSafeZone() then return end
+    local r = root()
+    local c = LP.Character
+    local hum = c and c:FindFirstChildOfClass("Humanoid")
+    if not (r and hum) or hum.Health <= 0 then return end
+    local spot = r.Position                               -- the pillar locks onto this spot
+    -- direction: keep going if you're already moving, else away from the boss / nearest mob
+    local dir = Vector3.new(hum.MoveDirection.X, 0, hum.MoveDirection.Z)
+    if dir.Magnitude < 0.1 then
+        local mob = nearestMobPos(spot)
+        dir = mob and Vector3.new(spot.X - mob.X, 0, spot.Z - mob.Z) or Vector3.zero
+    end
+    if dir.Magnitude < 0.1 then
+        local lv = r.CFrame.LookVector
+        dir = -Vector3.new(lv.X, 0, lv.Z)
+    end
+    dir = openDirection(dir.Unit)
+    pillarBusy = true
+    dlog("PILLAR marker on you -> slide %.0f studs", PILLAR.clear)
+    if CFG.verbose then log.info("[Weave] rot pillar marker -> sliding out") end
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { c }
+    params.RespectCanCollide = true
+    local t0 = now()
+    local conn
+    conn = RunService.Heartbeat:Connect(function(dt)
+        local rr = root()
+        local off = rr and Vector3.new(rr.Position.X - spot.X, 0, rr.Position.Z - spot.Z).Magnitude
+        if not rr or not running or off >= PILLAR.clear or now() - t0 > PILLAR.maxTime then
+            conn:Disconnect()
+            pillarBusy = false
+            return
+        end
+        local stepV = dir * math.min(PILLAR.speed * dt, PILLAR.clear - off + 0.2)
+        -- stop at walls instead of pushing into / through them
+        if Workspace:Raycast(rr.Position, dir * (stepV.Magnitude + 1.5), params) then
+            conn:Disconnect()
+            pillarBusy = false
+            return
+        end
+        pcall(function() rr.CFrame = rr.CFrame + stepV end)
+    end)
+end
+
 function Weave.start()
     if running then return end
     running = true
@@ -2058,6 +2128,9 @@ function Weave.start()
             local a = tr.Animation
             local n = (a and a.Name ~= "Animation" and a.Name) or tr.Name
             if string.find(n, "Weave") then confirmWeave(now()) end
+        end)
+        conns[#conns + 1] = char.DescendantAdded:Connect(function(d)
+            if d.Name == "IndicatorAttachment" and d:IsA("Attachment") then pcall(pillarSidestep) end
         end)
         local lastHp = hum.Health
         conns[#conns + 1] = hum.HealthChanged:Connect(function(v)
@@ -2181,6 +2254,8 @@ function Weave.feature()
             { type = "textbox", name = "Extra attacks", key = "extra",
               placeholder = "117802002100480=0.74", default = "",
               onChange = function(v) parseExtra(v) end },
+            { type = "toggle", name = "Dodge rot pillars", key = "pillar_dodge", default = true,
+              onChange = function(v) CFG.pillarDodge = v and true or false end },
             { type = "toggle", name = "Reflex weave", key = "reflex", default = false,
               onChange = function(v) CFG.reflex = v and true or false end },
             { type = "button", name = "Forget learned attacks",
