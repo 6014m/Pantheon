@@ -1441,6 +1441,12 @@ local function onPart(part)
     if inWorldFolder(part) then return end
     local char = LP.Character
     if char and part:IsDescendantOf(char) then return end
+    if part.Name == "RotOrb" then
+        -- Festering Wound gas ball: ragdolls you on contact; a dash through it avoids that
+        -- (user). Followed every frame; a dash goes out just before it touches you.
+        tracked[part] = { first = now(), pos = part.Position, t = now(), fired = false, checked = true, rotorb = true }
+        return
+    end
     if part.Name == "Bomb" and CFG.hitboxes then
         -- thrown bombs start at the boss, never on you: no rate limit, no ownership guess
         local r = root()
@@ -1613,7 +1619,18 @@ local function step()
                     local vel = (pos - rec.pos) / dt
                     rec.pos, rec.t = pos, t
                     local speed = vel.Magnitude
-                    if rec.proximity then
+                    if rec.rotorb then
+                        local gap = (pos - me).Magnitude - 3   -- orb radius + your body
+                        local closing = rec.lastGap and (rec.lastGap - gap) / dt or 0
+                        rec.lastGap = gap
+                        if gap <= math.max(2, closing * 0.25) and CFG.dash then
+                            rec.fired = true
+                            impacts[#impacts + 1] = { t = t + DASH.lead, reason = "gas ball (RotOrb) touching you",
+                                                      kind = "melee", from = pos, key = "RotOrb", unweavable = true,
+                                                      dashDir = "Where you're moving only" }
+                            dlog("ROTORB %.1f studs, closing %.0f -> dash", gap, closing)
+                        end
+                    elseif rec.proximity then
                         -- follow it in: weave just before it reaches you
                         local gap = (pos - me).Magnitude - HELLFIRE_CONTACT
                         local closing = rec.lastGap and (rec.lastGap - gap) / dt or 0
