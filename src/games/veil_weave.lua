@@ -1496,8 +1496,21 @@ local function stepRushes(t, me)
                             want(t + eta, string.format("%s rushing through you (%.0f stud/s)", model.Name, speed),
                                 "melee", pos, "rush:" .. model.Name)
                             rushImpact[model] = impacts[#impacts]
+                            impacts[#impacts].rushLive = true
                         end
                     end
+                end
+                -- it stopped short (or turned away) before reaching you: drop the weave that
+                -- hasn't gone out yet -- a whiff locks weaving ~1.4 s, right before its next rush
+                local h = rushImpact[model]
+                local closing = rel.Magnitude > 0.5 and vel:Dot(rel.Unit) or 0
+                if h and h.rushLive and h.t > t + 0.05 and (speed < RUSH_SPEED * 0.5 or closing < 10)
+                   and not (attempt and not attempt.dash) then
+                    for i, x in ipairs(impacts) do
+                        if x == h then table.remove(impacts, i); break end
+                    end
+                    rushImpact[model] = nil
+                    dlog("CANCEL %s stopped short", model.Name)
                 end
             end
         end
