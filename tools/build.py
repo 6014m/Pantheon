@@ -52,6 +52,7 @@ BUILD_ORDER = [
     "games/evilplate",
     "games/gakuran",
     "games/veil_weave",
+    "games/veil_sprint",
     "games/veil",
     "init",
 ]

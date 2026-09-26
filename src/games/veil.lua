@@ -34,6 +34,7 @@ local state     = require("modules.aim.state")
 local log       = require("core.log")
 local persist   = require("core.persist")
 local weave     = require("games.veil_weave")
+local sprint    = require("games.veil_sprint")
 
 local Workspace = game:GetService("Workspace")
 
@@ -214,6 +215,7 @@ function Veil.register()
 
     weave.loadSaved(persist)
     box:add(feature.declare(weave.feature()).root)
+    box:add(feature.declare(sprint.feature()).root)
 
     log.info("The Veil module registered -- Bot Mode filter + Auto Weave")
 end
@@ -222,6 +224,7 @@ end
 -- it doesn't stack across boots or linger in another game.
 function Veil.destroy()
     pcall(weave.stop)
+    pcall(sprint.stop)
     if removeFilter then
         pcall(removeFilter)
         removeFilter = nil
