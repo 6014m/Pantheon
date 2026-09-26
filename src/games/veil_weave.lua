@@ -1719,11 +1719,13 @@ local function step()
                         local gap = (pos - me).Magnitude - 3   -- orb radius + your body
                         local closing = rec.lastGap and (rec.lastGap - gap) / dt or 0
                         rec.lastGap = gap
-                        if gap <= math.max(2, closing * 0.25) and CFG.dash then
+                        -- they start above you and TRACK you (user): direction is useless, the
+                        -- i-frames are what count -> wait until it's ~0.15 s from touching
+                        if gap <= math.max(1.5, closing * 0.15) and CFG.dash then
                             rec.fired = true
                             impacts[#impacts + 1] = { t = t + DASH.lead, reason = "gas ball (RotOrb) touching you",
                                                       kind = "melee", from = pos, key = "RotOrb", unweavable = true,
-                                                      dashDir = "Toward the attack" }
+                                                      dashDir = "Where you're moving only" }
                             dlog("ROTORB %.1f studs, closing %.0f -> dash", gap, closing)
                         end
                     elseif rec.proximity then
