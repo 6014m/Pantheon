@@ -36,8 +36,6 @@ local CFG = {
     lead         = 0.25,    -- press this long before impact (measured sweet spot at 46 ms ping)
     basePing     = 0.046,   -- ping the lead was measured at; extra ping adds to the lead
     cooldown     = 0.5,     -- presses closer than this are ignored by the game
-    iframeFrom   = 0.10,    -- a press covers hits landing from +0.10 ...
-    iframeTo     = 0.40,    -- ... to +0.40 s after it
     meleeRange   = 12,      -- mob must be this close when its swing starts
     meleeFacing  = 80,      -- and facing within this many degrees of you
     melee        = true,
@@ -57,11 +55,19 @@ local ATTACKS = {
     ["102522251341739"] = 0.65,  -- Ancient Bones
     ["116165199693856"] = 0.34,  -- Shrouded
     ["84146368125308"]  = 0.57,  -- Clown
-    ["85194526199823"]  = 0.33,  -- Imp
-    ["127688919744763"] = 0.50,  -- Runner
+    -- (Imp 85194526199823 is its fireball CAST, not a swing: the fireball is timed instead)
+    ["127688919744763"] = 0.50,  -- Runner / Cambion
     ["74743744689930"]  = 0.65,  -- Runner
 }
 local extra = {}   -- user-added "id=seconds" pairs from the settings textbox
+
+-- aimed ranged attacks timed from the shooting animation: hit lands `impact` s after it
+-- starts, from any distance up to `range`, only when the shooter is aiming at you
+local RANGED = {
+    -- Cambion's shot: 9.2 dmg ~0.43 s after the anim starts at 19-62 studs alike (practically
+    -- hitscan); fires in bursts ~0.52 s apart
+    ["103401623213387"] = { impact = 0.43, range = 80, facing = 20 },
+}
 
 -- Parts a mob carries INSIDE its own model that are attacks (everything else inside a
 -- mob -- limbs, accessories -- is ignored). Loose parts a mob launches don't need a name.
@@ -84,7 +90,7 @@ local HOSTILE_PARTS = {
 local REFLEX = {
     BombExplosionHitbox = true, ImpFireballExplosion = true, GiantExplosionHitbox = true,
     MourningWakeExplosionHitbox = true, LightningStrike = true, BlackFlash = true,
-    SmashHitbox = true, DeathExplosionHitbox = true,
+    SmashHitbox = true, DeathExplosionHitbox = true, HellfireBulletExplosionHitbox = true,
 }
 
 -- loose flying parts that are NOT attacks (bomb bits are handled by the fuse, Ichor is a pickup)
@@ -142,6 +148,8 @@ local function isSummon(model)
     return model:FindFirstChild("SummonNameGui", true) ~= nil
 end
 
+local classify   -- friend/foe for models (defined with the ownership rules below)
+
 --------------------------------------------------------------------- pressing
 
 -- The game refuses a weave while you're busy (your "Doing" flag: mid-M1, mid-ability, in
@@ -171,42 +179,60 @@ local function confirmWeave(t)
     end
 end
 
--- would a weave starting at p cover an impact at i?
-local function covers(p, i) return i - p >= CFG.iframeFrom and i - p <= CFG.iframeTo end
+-- ---- weave windows ----------------------------------------------------------
+-- WHEN a weave has to start depends on how the hit arrives. Measured over every recorded
+-- weave (sessions 2-6) against the moment the damage landed:
+--   melee swing / aimed shot  start 0.14-0.36 s before the hit  (at 0.25: 1 hit in 172)
+--   landing (fireball, bomb,  start 0.02-0.21 s before it lands (0 hits in 59 fireballs,
+--   explosion, projectile)    1 in 27 explosions) -- basically "the moment it lands"
+-- Weaving earlier than the window gets you hit (the weave is over before the hit lands).
+local WINDOWS = {
+    melee = { from = 0.14, to = 0.36, lead = 0.25 },
+    land  = { from = 0.02, to = 0.21, lead = 0.10 },
+}
+
+local function win(h)
+    local w = WINDOWS[h.kind] or WINDOWS.melee
+    local pe = pingExtra()
+    return w.from + pe, w.to + pe, w.lead * (CFG.lead / 0.25) + pe
+end
+
+-- would a weave pressed at p cover hit h?
+local function coversHit(p, h)
+    local from, to = win(h)
+    local d = h.t - p
+    return d >= from and d <= to
+end
 
 -- ---- planner ----------------------------------------------------------------
 -- Hits rarely arrive together: one mob swings, another 0.2-0.4 s later, then a third. A
--- weave dodges every hit landing while it's active (press +0.10 .. +0.40 s), and the next
--- weave needs the cooldown. So every frame the planner looks at every hit it knows is
--- coming (plus each nearby mob's PREDICTED next swing from its rhythm) and picks the press
--- time that
---   1. covers the earliest uncovered hit, together with any others landing close enough
---      to share the same weave, and
+-- weave dodges every hit landing while it's active, and the next weave needs the cooldown.
+-- So every frame the planner looks at every hit it knows is coming (plus each nearby mob's
+-- PREDICTED next attack from its rhythm) and picks the press time that
+--   1. covers the earliest uncovered hit, together with any others close enough to share
+--      the same weave, and
 --   2. is early enough that the cooldown is over in time for the NEXT hit after that group.
--- Two hits can both be dodged as long as they're >= ~0.2 s apart (one weave each) or
--- <= ~0.28 s apart (one weave for both); the planner just has to place the first weave right.
-local SAFE_FROM, SAFE_TO = 0.12, 0.38   -- slightly inside the measured +0.10 .. +0.40 window
 
--- minimum seconds between two swings of the same mob (recorded, p10), by anim id
+-- minimum seconds between two attacks of the same mob (recorded, p10), by anim id
 local REATTACK = {
     ["107426583476702"] = 1.48, ["110285618672790"] = 1.28, ["84146368125308"] = 1.28,
-    ["85194526199823"] = 4.05,
+    ["103401623213387"] = 0.52,   -- Cambion shoots in bursts
 }
 
-local function covered(i)
-    for _, p in ipairs(done) do if covers(p, i) then return true end end
+local function covered(h)
+    for _, p in ipairs(done) do if coversHit(p, h) then return true end end
     return false
 end
 
--- true when a hit at time i is already handled (a weave covers it, or one is being pressed
--- right now that will)
-local function handled(i)
-    if covered(i) then return true end
-    return attempt ~= nil and i >= attempt.first and i <= attempt.last
+-- handled = a weave covers it, or the one being pressed right now will
+local function handled(h)
+    if covered(h) then return true end
+    return attempt ~= nil and coversHit(attempt.started, h)
 end
 
-local function want(impact, reason)
-    impacts[#impacts + 1] = { t = impact, reason = reason }
+-- kind: "melee" (timed from an animation) or "land" (projectile / bomb / explosion)
+local function want(impact, reason, kind)
+    impacts[#impacts + 1] = { t = impact, reason = reason, kind = kind or "melee" }
 end
 
 local function reflex(t, reason)
@@ -214,11 +240,10 @@ local function reflex(t, reason)
     local lastDone = done[#done] or -math.huge
     if t < lastDone + CFG.cooldown then return end
     for _, h in ipairs(impacts) do
-        if h.t - t < 0.9 and not covered(h.t) then return end   -- the planner has something coming
+        if h.t - t < 0.9 and not covered(h) then return end   -- the planner has something coming
     end
     if UIS:GetFocusedTextBox() or not alive() then return end
-    attempt = { first = t, last = t, started = t, lastPress = t, deadline = t + 0.12,
-                reason = "reflex: " .. reason }
+    attempt = { started = t, lastPress = t, deadline = t + 0.12, reason = "reflex: " .. reason }
     sendKey()
     if not animHooked then confirmWeave(t) end
 end
@@ -227,7 +252,7 @@ local function plan(t)
     -- drop past and covered hits
     for i = #impacts, 1, -1 do
         local h = impacts[i]
-        if h.t < t - 0.05 or covered(h.t) then table.remove(impacts, i) end
+        if h.t < t - 0.05 or covered(h) then table.remove(impacts, i) end
     end
     if attempt then
         if t > attempt.deadline then
@@ -241,58 +266,68 @@ local function plan(t)
     end
     local open = {}
     for _, h in ipairs(impacts) do
-        if not handled(h.t) then open[#open + 1] = h end
+        if not handled(h) then open[#open + 1] = h end
     end
     if #open == 0 then return end
     table.sort(open, function(a, b) return a.t < b.t end)
 
-    local lead = leadNow()
     local lastDone = done[#done] or -math.huge
-    local earliest = math.max(t, lastDone + CFG.cooldown)
+    local cdEnd = lastDone + CFG.cooldown
+    local earliest = math.max(t, cdEnd)
 
-    -- group: the first open hit plus every later one one weave can still cover
-    local first, last, n = open[1].t, open[1].t, 1
-    for i = 2, #open do
-        local lo = math.max(open[i].t - SAFE_TO, earliest)
-        -- keep >= 1.5 frames of slack, a window narrower than that is a coin flip
-        if lo <= first - SAFE_FROM - 0.025 then last, n = open[i].t, i else break end
+    -- press-time window for one hit: [t - to, t - from]
+    local function range(h)
+        local from, to, lead = win(h)
+        return h.t - to, h.t - from, h.t - lead
     end
-    local lo = math.max(last - SAFE_TO, earliest)
-    local hi = first - SAFE_FROM
-    if lo > hi then
-        -- can't make even the first one (cooldown / too late): it's undodgeable, drop it
+
+    -- group: the first open hit plus every later one the same weave can still cover
+    local lo, hi, ideal = range(open[1])
+    local idealSum, n = ideal, 1
+    for i = 2, #open do
+        local l2, h2, i2 = range(open[i])
+        local nlo, nhi = math.max(lo, l2), math.min(hi, h2)
+        -- keep >= 1.5 frames of slack, a window narrower than that is a coin flip
+        if math.max(nlo, earliest) <= nhi - 0.025 then
+            lo, hi, idealSum, n = nlo, nhi, idealSum + i2, i
+        else
+            break
+        end
+    end
+    local loNow = math.max(lo, earliest)
+    if loNow > hi then
+        -- can't make even the first one (cooldown / too late): undodgeable, drop it
         if CFG.verbose then log.info("[Weave] can't cover: " .. open[1].reason) end
         for i, h in ipairs(impacts) do if h == open[1] then table.remove(impacts, i); break end end
         return
     end
-    local target = math.clamp((first + last) / 2 - lead, lo, hi)
+    local target = math.clamp(idealSum / n, loNow, hi)
 
-    -- be ready for the next hit after this group: known, or a nearby mob's predicted swing
-    local nextHit = open[n + 1] and open[n + 1].t or math.huge
+    -- be ready for the next hit after this group: known, or a nearby mob's predicted attack
+    local nextHit = open[n + 1]
     local me = root()
     for model, pr in pairs(preds) do
-        -- only mobs still alive and still in swinging distance of you
         if pr.t < t or not model.Parent or not pr.root.Parent
-           or not me or (pr.root.Position - me.Position).Magnitude > CFG.meleeRange + 6 then
+           or not me or (pr.root.Position - me.Position).Magnitude > pr.range then
             if pr.t < t or not model.Parent then preds[model] = nil end
-        elseif pr.t > last + 0.05 and pr.t < nextHit then
-            nextHit = pr.t
+        elseif pr.t > open[n].t + 0.05 and (not nextHit or pr.t < nextHit.t) then
+            nextHit = { t = pr.t, kind = pr.kind }
         end
     end
-    if nextHit < math.huge then
+    if nextHit then
         -- compare against the window WITHOUT "now": once the ideal moment has passed the
         -- answer is "press immediately", not "forget about it"
-        local loFixed = math.max(last - SAFE_TO, lastDone + CFG.cooldown)
-        local ready = nextHit - lead - CFG.cooldown            -- next weave lands centred
-        if ready < loFixed then ready = nextHit - SAFE_FROM - CFG.cooldown - 0.03 end   -- or at least inside
+        local loFixed = math.max(lo, cdEnd)
+        local nlo, nhi, nideal = range(nextHit)
+        local ready = nideal - CFG.cooldown                      -- next weave lands centred
+        if ready < loFixed then ready = nhi - CFG.cooldown - 0.03 end   -- or at least inside
         if ready >= loFixed and ready < target then target = ready end
     end
 
     if t >= target then
         local names = {}
         for i = 1, n do names[i] = open[i].reason end
-        attempt = { first = first, last = last, started = t, lastPress = t, deadline = hi,
-                    reason = table.concat(names, " + ") }
+        attempt = { started = t, lastPress = t, deadline = hi, reason = table.concat(names, " + ") }
         if UIS:GetFocusedTextBox() or not alive() then attempt = nil; return end
         sendKey()
         if not animHooked then confirmWeave(t) end
@@ -310,23 +345,29 @@ end
 
 local function onMobAnim(model, mroot, track)
     if not (running and CFG.enabled and CFG.melee) then return end
+    if isSummon(model) and classify(model) == "friendly" then return end
     local anim = track.Animation
     local id = anim and string.match(anim.AnimationId, "%d+")
-    local impact = id and (extra[id] or ATTACKS[id])
+    if not id then return end
+    local ranged = RANGED[id]
+    local impact = extra[id] or ATTACKS[id] or (ranged and ranged.impact)
     if not impact then return end
     local r = root()
     if not r or not mroot.Parent then return end
-    if (mroot.Position - r.Position).Magnitude > CFG.meleeRange then return end
-    if facingDeg(mroot.CFrame, r.Position) > CFG.meleeFacing then return end
+    local range = ranged and ranged.range or CFG.meleeRange
+    if (mroot.Position - r.Position).Magnitude > range then return end
+    if facingDeg(mroot.CFrame, r.Position) > (ranged and ranged.facing or CFG.meleeFacing) then return end
     local t0 = now()
-    want(t0 + impact, string.format("%s swing %s (+%.2fs)", model.Name, id, impact))
+    want(t0 + impact, string.format("%s %s %s (+%.2fs)", model.Name, ranged and "shot" or "swing", id, impact), "melee")
     -- its next swing can't land before this (the mob's attack rhythm)
-    preds[model] = { t = t0 + (REATTACK[id] or 1.28) + impact, root = mroot }
+    preds[model] = { t = t0 + (REATTACK[id] or 1.28) + impact, root = mroot, kind = "melee", range = range + 6 }
 end
 
 local function hookMob(model)
     if mobConns[model] or not model:IsA("Model") then return end
-    if model == LP.Character or Players:GetPlayerFromCharacter(model) or isSummon(model) then return end
+    -- summons are hooked too: an enemy player's (or a mob's) summon attacks like any mob.
+    -- Yours / your party's are filtered per attack in onMobAnim (ownership can change).
+    if model == LP.Character or Players:GetPlayerFromCharacter(model) then return end
     local hum = model:FindFirstChildOfClass("Humanoid")
     local mroot = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
     local animator = hum and model:FindFirstChildWhichIsA("Animator", true)
@@ -420,17 +461,23 @@ end
 
 -- "friendly" (you, party, friends, their summons), "hostile" (other players + their
 -- summons) or "mob"
-local function classify(model)
+function classify(model)
     local pl = Players:GetPlayerFromCharacter(model)
     if pl then return hostilePlayer(pl) and "hostile" or "friendly" end
     if isSummon(model) then
         local mine = teamOf(LP.Character)
         local theirs = teamOf(model)
         if mine and theirs and mine == theirs then return "friendly" end
-        local owner = tonumber(model.Name) and Players:GetPlayerByUserId(tonumber(model.Name))
+        -- owner = a player in the server, read from the model name / PlayerID / Team values
+        local owner
+        for _, key in ipairs({ model.Name, (model:FindFirstChild("PlayerID") or {}).Value,
+                               theirs }) do
+            local id = tonumber(key)
+            owner = owner or (id and Players:GetPlayerByUserId(id))
+        end
         if owner == LP then return "friendly" end
-        if owner and hostilePlayer(owner) then return "hostile" end
-        return "friendly"   -- unknown owner: don't weave at it
+        if owner then return hostilePlayer(owner) and "hostile" or "friendly" end
+        return "mob"        -- no player owns it: a mob's minion
     end
     return "mob"
 end
@@ -498,7 +545,7 @@ local function trackBomb(part)
             local r = root()
             local radius = b.giant and GIANT_RADIUS or BOMB_RADIUS
             if r and (part.Position - r.Position).Magnitude <= radius then
-                want(now() + 0.15, "bomb went off")
+                want(now() + 0.15, "bomb went off", "land")
             end
         end
     end)
@@ -515,7 +562,7 @@ local function stepBombs(t, me)
                 local d = (part.Position - me).Magnitude
                 if d <= radius then
                     b.queued = true
-                    want(impact, string.format("%sbomb fuse (%.0f studs)", b.giant and "giant " or "", d))
+                    want(impact, string.format("%sbomb fuse (%.0f studs)", b.giant and "giant " or "", d), "land")
                 end
             elseif t > impact + 1 then
                 b.queued = true   -- a long-fuse bomb: only the "went off" fallback is left
@@ -570,7 +617,8 @@ local function step()
                 -- banners) or next to a party member is never a trigger.
                 local inside = insideHumanoidModel(part)
                 local src = inside and classify(inside)
-                if not src and (part.Position - me).Magnitude >= OWN_RADIUS then
+                -- timed projectiles spawn at the caster's hand: a close Imp is still a mob
+                if not src and ((part.Position - me).Magnitude >= OWN_RADIUS or TIMED_PROJ[part.Name]) then
                     src = nearestSource(part.Position)
                 end
                 rec.pvp = (src == "hostile")
@@ -584,7 +632,7 @@ local function step()
                     local d = (part.Position - me).Magnitude
                     rec.fired = true
                     if d <= timed.maxDist then
-                        want(rec.first + timed.hold + d / timed.speed, string.format("%s (%.0f studs)", part.Name, d))
+                        want(rec.first + timed.hold + d / timed.speed, string.format("%s (%.0f studs)", part.Name, d), "land")
                     end
                 elseif isMine(part, rec) or (src ~= "mob" and src ~= "hostile") then
                     rec.fired = true   -- ignore it for good
@@ -604,15 +652,15 @@ local function step()
                         if eta > 0 then
                             local miss = (rel - vel * eta).Magnitude
                             if miss <= CFG.projMiss + math.max(part.Size.X, part.Size.Y, part.Size.Z) * 0.5
-                               and eta <= leadNow() + 0.05 then
+                               and eta <= 0.8 then
                                 rec.fired = true
-                                want(t + eta, string.format("projectile %s eta %.2fs miss %.1f", part.Name, eta, miss))
+                                want(t + eta, string.format("projectile %s eta %.2fs miss %.1f", part.Name, eta, miss), "land")
                             end
                         end
                     elseif CFG.hitboxes and rec.pvp and speed <= 15 and coversMe(part, me, 1.5) then
                         -- enemy PLAYERS' AoE only (their hitboxes can have any name)
                         rec.fired = true
-                        want(t + CFG.hitboxDelay + leadNow(), "hitbox " .. part.Name)
+                        want(t + CFG.hitboxDelay, "enemy player hitbox " .. part.Name, "land")
                     end
                 end
             end
@@ -729,7 +777,7 @@ function Weave.feature()
               onChange = function(v) CFG.pvp = v and true or false end },
             { type = "toggle", name = "Bombs + enemy players' AoE", key = "hitboxes", default = true,
               onChange = function(v) CFG.hitboxes = v and true or false end },
-            { type = "slider", name = "Enemy player AoE: wait before weaving (s)", key = "hitbox_delay", min = 0, max = 1, step = 0.05,
+            { type = "slider", name = "Enemy player AoE: lands this long after it appears (s)", key = "hitbox_delay", min = 0, max = 1, step = 0.05,
               default = 0.3, onChange = function(v) CFG.hitboxDelay = v end },
             { type = "textbox", name = "Extra attacks (animId=seconds, ...)", key = "extra",
               placeholder = "117802002100480=0.74", default = "",
