@@ -94,7 +94,8 @@ local ATTACKS = {
     ["91438445642768"]  = 0.56,  -- Gigazapper zap (0.55 / 0.57 / 0.55, 27.6 dmg) -- Martian Saucer add
     ["91414483216673"]  = 0.50,  -- Gigazapper second attack (1 sample)
     -- Smelter Demon (boss)
-    ["91349317972378"]  = 1.58,  -- fire burst: 80-stud SmelterFireBurstPart ~1.5-1.6 s in (55 dmg)
+    ["91349317972378"]  = 1.60,  -- fire burst: 80-stud SmelterFireBurstPart ~1.5-1.6 s in (55 dmg; 57.75 at 1.62/1.65 in fight 2)
+    ["134186092103081"] = 1.14,  -- main swing: 36.75 dmg at 1.05-1.24 (median 1.14, 16 hits in fight 2, never weaved before)
     ["130122482089218"] = 0.76,  -- leaping slam: 35 dmg at 0.74-0.79 s from up to 46 studs
     ["81155999312581"]  = 0.38,  -- ground strike: 10 dmg at 0.35-0.44 s from 16-50 studs
     ["90623661509768"]  = 1.30,  -- charge along a line of Hitbox parts 1.0-1.6 s in (40 dmg at 1.39)
@@ -138,6 +139,7 @@ local ATTACK_RANGE = {
     ["83705524958250"]  = 30,    -- Wound punch (it moves while punching)
     ["82381115462756"]  = 22,    -- Wound punch 2
     ["91349317972378"]  = 45,    -- Smelter fire burst (80-stud cube)
+    ["134186092103081"] = 30,    -- Smelter main swing (started ~15 studs out)
     ["130122482089218"] = 50,    -- Smelter leap
     ["81155999312581"]  = 55,    -- Smelter ground strike
     ["90623661509768"]  = 40,    -- Smelter charge
