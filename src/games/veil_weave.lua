@@ -30,6 +30,27 @@ local LP = Players.LocalPlayer
 
 local Weave = {}
 
+-- Decision log: workspace/Veil_Combat/autoweave_<time>.log, one line per decision, stamped
+-- with os.clock() so it lines up with the Combat Recorder (its start event carries the same
+-- clock). Lets any hit that got through be traced to the exact reason.
+local DLOG_DIR = "Veil_Combat"
+local dlogPath, dlogBuf = nil, {}
+local function dlog(fmt, ...)
+    local ok, line = pcall(string.format, fmt, ...)
+    dlogBuf[#dlogBuf + 1] = string.format("%.3f %s", os.clock(), ok and line or fmt)
+end
+local function dlogFlush()
+    if #dlogBuf == 0 or not writefile then table.clear(dlogBuf); return end
+    if not dlogPath then
+        pcall(function() if makefolder and isfolder and not isfolder(DLOG_DIR) then makefolder(DLOG_DIR) end end)
+        dlogPath = DLOG_DIR .. "/autoweave_" .. os.date("%m%d_%H%M%S") .. ".log"
+        pcall(writefile, dlogPath, "")
+    end
+    local chunk = table.concat(dlogBuf, "\n") .. "\n"
+    if appendfile and pcall(appendfile, dlogPath, chunk) then table.clear(dlogBuf) end
+    if #dlogBuf > 4000 then table.clear(dlogBuf) end
+end
+
 local CFG = {
     enabled      = false,
     key          = Enum.KeyCode.F,
@@ -187,6 +208,7 @@ local function sampleUnknown(tHit)
                 local sec = (list[i] + list[i + 1]) / 2
                 learnedAttacks[best.id] = sec
                 log.info(string.format("[Weave] learned attack %s (%s): hits %.2f s after it starts", best.id, best.label, sec))
+                dlog("LEARN attack %s %s %.2f", best.id, best.label, sec)
                 saveLearned()
                 attackSamples[best.id] = nil
                 break
@@ -356,6 +378,7 @@ local function confirmWeave(t)
     done[#done + 1] = t
     if #done > 8 then table.remove(done, 1) end
     if watchCovered then watchCovered(t) end
+    dlog("WEAVE %s", attempt and attempt.reason or "(manual)")
     if attempt then
         weaves += 1
         if CFG.verbose then
@@ -448,6 +471,7 @@ local function confirmDash(t)
     if attempt and attempt.dash then
         weaves += 1
         if CFG.verbose then log.info(string.format("[Weave] #%d DASH %s", weaves, attempt.reason)) end
+        dlog("DASH %s dir=%s", attempt.reason, tostring(attempt.dashDir or CFG.dashDir))
         attempt = nil
     end
 end
@@ -530,6 +554,7 @@ local function judge(key, failed)
         learned[key] = true
         log.info(string.format("[Weave] learned: %s goes through weaves (%d of %d) -- dashing it from now on",
             key, v.fail, v.fail + v.ok))
+        dlog("LEARN unweavable %s", key)
     end
 end
 
@@ -538,6 +563,7 @@ local sampleUnknownRef   -- set once the learner exists (defined with the attack
 
 local function onMyDamage(amount)
     if amount < 5 then return end   -- DoT ticks
+    dlog("HIT -%.1f", amount)
     local t = now()
     local explained = false
     for _, h in ipairs(impacts) do
@@ -617,6 +643,7 @@ local function tryDash(t, h, primary)
         if UIS:GetFocusedTextBox() or not alive() then return false end
         attempt = { started = t, lastPress = t, deadline = hi, reason = h.reason, dash = true, from = h.from,
                     dashDir = h.dashDir }
+        dlog("PRESS dash for %s (hit in %.2f, stamina %.0f)", h.reason, h.t - t, stamina())
         sendDash(h.from, h.dashDir)
     end
     return true
@@ -646,6 +673,7 @@ local function plan(t)
     if attempt then
         if t > attempt.deadline then
             if CFG.verbose then log.info("[Weave] game refused every press (busy / stun / cooldown): " .. attempt.reason) end
+            dlog("REFUSED %s %s", attempt.dash and "dash" or "weave", attempt.reason)
             attempt = nil
         elseif t - attempt.lastPress >= RETRY then
             attempt.lastPress = t
@@ -689,7 +717,7 @@ local function plan(t)
         local l2, h2, i2 = range(open[i])
         local nlo, nhi = math.max(lo, l2), math.min(hi, h2)
         -- keep >= 1.5 frames of slack, a window narrower than that is a coin flip
-        if math.max(nlo, earliest) <= nhi - 0.025 then
+        if math.max(nlo, earliest) <= nhi - 0.01 then
             lo, hi, idealSum, n = nlo, nhi, idealSum + i2, i
         else
             break
@@ -700,6 +728,7 @@ local function plan(t)
         -- a weave can't make it (cooldown / too late): a dash might
         if tryDash(t, open[1]) then return end
         if CFG.verbose then log.info("[Weave] can't cover: " .. open[1].reason) end
+        dlog("CANT %s in=%.2f readyIn=%.2f", open[1].reason, open[1].t - t, cdEnd - t)
         for i, h in ipairs(impacts) do if h == open[1] then table.remove(impacts, i); break end end
         return
     end
@@ -729,6 +758,8 @@ local function plan(t)
         local names = {}
         for i = 1, n do names[i] = open[i].reason end
         attempt = { started = t, lastPress = t, deadline = hi, reason = table.concat(names, " + ") }
+        dlog("PRESS weave for %s (hits in %.2f..%.2f, ready %.2f)", attempt.reason, open[1].t - t, open[n].t - t,
+            cdEnd - t)
         if UIS:GetFocusedTextBox() or not alive() then attempt = nil; return end
         sendKey()
         if not animHooked then confirmWeave(t) end
@@ -1279,6 +1310,7 @@ local function step()
                                 if x == h then table.remove(impacts, i); break end
                             end
                             if CFG.verbose then log.info("[Weave] " .. part.Name .. " veered off, weave cancelled") end
+                            dlog("CANCEL %s veered off", part.Name)
                             rec.impact = false   -- don't re-queue this one
                         end
                     elseif CFG.hitboxes and rec.pvp and speed <= 15 and coversMe(part, me, 1.5) then
@@ -1306,6 +1338,7 @@ function Weave.start()
         if re and re:IsA("RemoteEvent") and running then
             conns[#conns + 1] = re.OnClientEvent:Connect(function(stacks)
                 if tonumber(stacks) and tonumber(stacks) > 0 then lastCatch = now() end
+                dlog("BUFF %s", tostring(stacks))
             end)
         end
     end)
@@ -1364,8 +1397,10 @@ function Weave.start()
     task.spawn(function()
         while running do
             pcall(scanMobs)
+            pcall(dlogFlush)
             task.wait(1)
         end
+        pcall(dlogFlush)
     end)
     log.info("[Weave] started")
 end
