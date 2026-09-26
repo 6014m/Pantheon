@@ -434,12 +434,30 @@ end
 local WHIFF_LOCK = 1.45
 local lastCatch = -math.huge
 
+-- The game's own weave timer (user: track it): the character attribute WeaveCdUntil (server
+-- time). Recorded: ~0.1 s after a press it's set to the weave's end (~0.49 s after the
+-- press); on a whiff the "Weave" cooldown (AbilityCooldownEvent, 1 s) fires ~0.41 s in and
+-- pushes it to ~1.4 s after the press. When it's there it replaces the guessed lockout.
+local function weaveCdAttr()
+    local c = LP.Character
+    local v = c and c:GetAttribute("WeaveCdUntil")
+    if type(v) ~= "number" then return nil end
+    local ok, sn = pcall(function() return Workspace:GetServerTimeNow() end)
+    if not ok then return nil end
+    return now() + (v - sn)
+end
+
 local function weaveReadyAt(t)
     local last = done[#done]
-    if not last then return -math.huge end
-    if lastCatch >= last - 0.05 then return last + CFG.cooldown end   -- caught: short cooldown
-    if t < last + 0.55 then return last + CFG.cooldown end            -- verdict still pending
-    return last + WHIFF_LOCK                                           -- whiffed: locked out
+    local attr = weaveCdAttr()
+    if not last then return attr or -math.huge end
+    local est
+    if lastCatch >= last - 0.05 then est = last + CFG.cooldown         -- caught: short cooldown
+    elseif t < last + 0.55 then est = last + CFG.cooldown             -- verdict still pending
+    else est = last + WHIFF_LOCK end                                   -- whiffed: locked out
+    -- the game's timer is exact once it has caught up with this weave (it's set ~0.1 s after)
+    if attr and t > last + 0.15 then return math.max(attr, last + CFG.cooldown) end
+    return math.max(est, attr or -math.huge)
 end
 
 local watchCovered   -- set below: registers the hits a confirmed weave is expected to cover
