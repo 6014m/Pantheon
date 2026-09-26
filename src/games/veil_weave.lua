@@ -96,6 +96,7 @@ local ATTACKS = {
     ["130122482089218"] = 0.76,  -- leaping slam: 35 dmg at 0.74-0.79 s from up to 46 studs
     ["81155999312581"]  = 0.38,  -- ground strike: 10 dmg at 0.35-0.44 s from 16-50 studs
     ["90623661509768"]  = 1.30,  -- charge along a line of Hitbox parts 1.0-1.6 s in (40 dmg at 1.39)
+    ["110148940035265"] = 0.54,  -- Pillar Mimic hit: 26 dmg at 0.51-0.57 s from ~9-11 studs
     -- The Stormcaller (boss)
     ["129783803036051"] = 1.08,  -- heavy swing: 30 dmg at 1.07-1.10 s
     ["77025178675756"]  = 0.87,  -- lightning stomp: 60-stud LightningStompHitbox, 40 dmg at 0.84-0.90 s
