@@ -99,7 +99,9 @@ local ATTACKS = {
     ["90623661509768"]  = 1.30,  -- charge along a line of Hitbox parts 1.0-1.6 s in (40 dmg at 1.39)
     ["110148940035265"] = 0.54,  -- Pillar Mimic hit: 26 dmg at 0.51-0.57 s from ~9-11 studs
     -- The Festering Wound (recorded fight 2026-09-25)
-    ["100113874261999"] = 1.03,  -- rush: hits 0.97-1.18 (29-31 dmg) then again ~2.04 (EXTRA_HITS)
+    -- (Wound rush 100113874261999 is NOT timed from its anim: its hits moved with distance --
+    -- 0.97-1.18 / 2.0 in one fight, 1.07-1.37 / 2.65-2.88 in another -- so the size-aware
+    -- rush tracker times each rush from his actual approach instead)
     ["83705524958250"]  = 0.70,  -- punch: 0.62 / 0.67 / 0.77 + a weave caught at 0.77
     ["82381115462756"]  = 0.73,  -- punch 2: weaves caught it at 0.72 / 0.72 / 0.74
     -- The Stormcaller (boss)
@@ -112,7 +114,6 @@ local ATTACKS = {
 -- attacks that land more than once: extra hits (seconds after the anim starts)
 local EXTRA_HITS = {
     ["120338508145604"] = { 0.90 },   -- Cursed Hammer smash lands twice (0.42, 0.90)
-    ["100113874261999"] = { 2.04 },   -- Festering Wound rushes again after the stop
 }
 
 -- mobs whose "facing" means nothing (a floating sword spins while it attacks)
@@ -1594,6 +1595,19 @@ end
 -- within RUSH_MISS studs is timed like a projectile: the weave lands as it passes through.
 local RUSH_SPEED = 40
 local RUSH_MISS = 6
+-- Big mobs hit you with their BODY: the Festering Wound's rushes stop with his centre
+-- ~14-15 studs from you, so "centre passes within 6 studs" never fired for him. Each mob's
+-- own size (half its widest horizontal extent) is added to the reach, and the arrival time
+-- is to its edge, not its centre.
+local mobRadius = setmetatable({}, { __mode = "k" })
+local function radiusOf(model)
+    local r = mobRadius[model]
+    if r then return r end
+    local ok, size = pcall(function() return model:GetExtentsSize() end)
+    r = (ok and size) and math.clamp(math.max(size.X, size.Z) / 2, 1, 25) or 2
+    mobRadius[model] = r
+    return r
+end
 
 -- ---- slam-downs ------------------------------------------------------------------
 -- A boss that leaps and slams down: while its root is falling fast near you, time its
@@ -1641,9 +1655,14 @@ local function stepRushes(t, me)
                 local vel = mroot.AssemblyLinearVelocity
                 local speed = vel.Magnitude
                 if speed >= RUSH_SPEED and rel.Magnitude > 0.5 and vel:Dot(rel.Unit) >= RUSH_SPEED * 0.8 then
-                    local eta = rel:Dot(vel) / (speed * speed)
-                    local miss = (rel - vel * eta).Magnitude
-                    if eta > 0 and eta <= 0.7 and miss <= RUSH_MISS and classify(model) ~= "friendly" then
+                    local reach = RUSH_MISS + radiusOf(model)
+                    local dir = vel / speed
+                    local along = rel:Dot(dir)                     -- studs until its centre is abreast of you
+                    local miss = (rel - dir * along).Magnitude     -- how far its centre line passes from you
+                    -- time until its BODY reaches you (edge of the reach sphere), not its centre
+                    local eta = miss <= reach and (along - math.sqrt(math.max(reach * reach - miss * miss, 0))) / speed or -1
+                    if eta < 0 and miss <= reach and along > 0 then eta = 0.02 end   -- already touching
+                    if eta >= 0 and eta <= 0.7 and miss <= reach and classify(model) ~= "friendly" then
                         local h = rushImpact[model]
                         if fresh and h and h.t > t then
                             -- same rush, still accelerating: keep the arrival time current
