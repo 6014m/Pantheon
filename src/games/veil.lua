@@ -35,7 +35,6 @@ local log       = require("core.log")
 local persist   = require("core.persist")
 local weave     = require("games.veil_weave")
 local sprint    = require("games.veil_sprint")
-local recorder  = require("games.veil_recorder")
 
 local Workspace = game:GetService("Workspace")
 
@@ -217,9 +216,8 @@ function Veil.register()
     weave.loadSaved(persist)
     box:add(feature.declare(weave.feature()).root)
     box:add(feature.declare(sprint.feature()).root)
-    box:add(feature.declare(recorder.feature()).root)
 
-    log.info("The Veil module registered -- Bot Mode filter + Auto Weave + Combat Recorder")
+    log.info("The Veil module registered -- Bot Mode filter + Auto Weave")
 end
 
 -- Called by init.lua's shutdown (re-execute / Auto Re-Execute): drop the filter so
@@ -227,7 +225,6 @@ end
 function Veil.destroy()
     pcall(weave.stop)
     pcall(sprint.stop)
-    pcall(recorder.stop)
     if removeFilter then
         pcall(removeFilter)
         removeFilter = nil

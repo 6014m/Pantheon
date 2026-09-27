@@ -76,7 +76,6 @@ local files = {
     { "games.gakuran",             "games/gakuran.lua" },
     { "games.veil_weave",          "games/veil_weave.lua" },
     { "games.veil_sprint",         "games/veil_sprint.lua" },
-    { "games.veil_recorder",       "games/veil_recorder.lua" },
     { "games.veil",                "games/veil.lua" },
     { "init",                      "init.lua" },
 }
