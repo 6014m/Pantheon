@@ -226,15 +226,19 @@ local CHANNELS = {
 local JUMP_ATTACKS = {
     -- 2nd recorded fight: the slam's 47 dmg landed 1.34-1.60 s in (8 hits) -> 1.45
     ["80778819711637"] = { impacts = { 1.45 }, range = 90, name = "Festering Wound jump slam" },
+    -- Smelter Demon two-stage = ONE anim, 130122482089218 (user, 2026-09-27: "the horizontal
+    -- slice into the vertical" -- double jump the horizontal, then dash or weave). Horizontal:
+    -- SlashSound 0.60-0.63 s, 36.75 dmg at 0.67-1.01 (median ~0.75); dashing it failed (hit at
+    -- 0.73 / 1.00 right after Q). Vertical: 36.75 at 1.54 / 1.57, and weaves CAUGHT hits at
+    -- 1.72 / 1.80 in earlier fights -> weaved (thenWeave).
+    ["130122482089218"] = { impacts = { 0.74 }, thenWeave = { 1.56 }, range = 50,
+                            name = "Smelter Demon horizontal slice" },
     -- (81155999312581 was mapped here as the Smelter "horizontal swing" -- it is his CHAIN PULL
     -- (user, 2026-09-27): unavoidable whatever you do, it only drags you in. See NEVER_LEARN.)
 }
--- DASH_ATTACKS: always dashed (never weaved), timed from the anim. Smelter Demon vertical
--- leap slam 130122482089218 (user: "for the second swing it's a dodge"): 36.75 at 0.67-0.80
--- s; weaves whiffed on it and dashes timed for 0.76 registered right as it hit (5 hits in
--- fight 3), so it's planned for 0.66 -> i-frames cover ~0.5-1.0 s.
+-- DASH_ATTACKS: always dashed (never weaved), timed from the anim. (130122482089218 used to
+-- be dashed here as the "vertical leap slam" -- it's the two-stage, see JUMP_ATTACKS.)
 local DASH_ATTACKS = {
-    ["130122482089218"] = { impact = 0.66, range = 50, name = "Smelter Demon vertical leap slam" },
     -- Smelter fire burst (80-stud cube, 55-57.75 dmg at ~1.6 s): dashed 13/13 while it was
     -- learned unweavable; once that learning reset it was treated as weavable -> CANT + 2 hits
     ["91349317972378"]  = { impact = 1.60, range = 45, name = "Smelter Demon fire burst" },
@@ -1329,6 +1333,11 @@ local function onMobAnim(model, mroot, track)
                 want(now() + dt, string.format("%s %d/%d", jumpAtk.name, i, #jumpAtk.impacts), "melee",
                     mroot.Position, "jump:" .. id)
                 impacts[#impacts].jump = true
+            end
+            -- a follow-up in the same anim that's weaved, not jumped (Smelter vertical)
+            for i, dt in ipairs(jumpAtk.thenWeave or {}) do
+                want(now() + dt, string.format("%s follow-up %d", jumpAtk.name, i), "melee",
+                    mroot.Position, "jumpweave:" .. id)
             end
         end
         return
