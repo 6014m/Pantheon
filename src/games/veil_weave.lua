@@ -72,6 +72,10 @@ local CFG = {
     dashKey      = Enum.KeyCode.Q,
     dashReserve  = 0,       -- stamina to leave for yourself
     dashBackup   = true,    -- also dash when a weave can't make it (only with a spare dash banked)
+    tankHits     = 5,       -- user (2026-09-27): "we can tank at least 5 hits before dashing" -- in
+    tankWindow   = 4,       --   crowds it dashed far too much. Only a boss's must-dash move (a real
+                            --   unweavable) dashes straight away; every other dash waits until you've
+                            --   taken this many hits (>= 5 dmg) in the last tankWindow seconds
     swordMobility = false,  -- use the Enchanted Sword (Elite mobility cast, ~0 stamina) when a dash can't go
     dashDir      = "Away from the attack",
     pillarDodge  = true,    -- move out of the Festering Wound's rot pillar as soon as it spawns
@@ -996,10 +1000,14 @@ end
 -- you lost HP: blame any weaved hit that was due right now
 local sampleUnknownRef   -- set once the learner exists (defined with the attack tables)
 
+local recentHits = {}      -- times you took a real hit (for CFG.tankHits)
+
 local function onMyDamage(amount)
     if amount < 5 then return end   -- DoT ticks
     dlog("HIT -%.1f", amount)
     local t = now()
+    recentHits[#recentHits + 1] = t
+    if #recentHits > 20 then table.remove(recentHits, 1) end
     local explained = false
     for _, h in ipairs(impacts) do
         if math.abs(h.t - t) <= 0.3 then explained = true; break end
@@ -1073,6 +1081,15 @@ local function tryDash(t, h, primary)
         return false
     end
     if not primary and not CFG.dashBackup then return false end
+    if not h.unweavable and CFG.tankHits > 0 then
+        -- tank it: only dash once you've already eaten tankHits hits recently
+        local n = 0
+        for _, ht in ipairs(recentHits) do if t - ht <= CFG.tankWindow then n += 1 end end
+        if n < CFG.tankHits then
+            if not h.tankLogged then h.tankLogged = true; dlog("TANK %s (%d/%d hits)", h.reason, n, CFG.tankHits) end
+            return false
+        end
+    end
     local st = stamina()
     if st < DASH.cost + CFG.dashReserve + (primary and 0 or DASH.cost) then
         if primary then
@@ -2375,6 +2392,8 @@ function Weave.feature()
               onChange = function(v) CFG.dash = v and true or false end },
             { type = "toggle", name = "Backup dash", key = "dash_backup",
               default = true, onChange = function(v) CFG.dashBackup = v and true or false end },
+            { type = "slider", name = "Tank hits before dashing", key = "tank_hits", min = 0, max = 10, step = 1,
+              default = 5, onChange = function(v) CFG.tankHits = v end },
             { type = "textbox", name = "Unweavables", key = "unweavable",
               placeholder = "Bomb, 107426583476702", default = "",
               onChange = function(v) parseUnweavable(v) end },
