@@ -509,7 +509,9 @@ end
 -- ~150) and can be used again ~0.43 s later. Direction = the movement key held with it
 -- (hold A + Q = dash left). Weaves are free, so dashes are the BACKUP: they cover hits a
 -- weave can't (weave on cooldown, hits bunched too tightly), with a longer window.
-local DASH = { from = 0.05, to = 0.40, lead = 0.20, cost = 50, cooldown = 0.45, afterWeave = 0.25 }
+-- DASH.hits = times you took a real hit (for CFG.tankHits); a field, not a local: this
+-- chunk is at Luau's 200-local limit
+local DASH = { hits = {}, from = 0.05, to = 0.40, lead = 0.20, cost = 50, cooldown = 0.45, afterWeave = 0.25 }
 local dashes = {}          -- confirmed dash start times
 local lastInject = -math.huge
 
@@ -1000,14 +1002,12 @@ end
 -- you lost HP: blame any weaved hit that was due right now
 local sampleUnknownRef   -- set once the learner exists (defined with the attack tables)
 
-local recentHits = {}      -- times you took a real hit (for CFG.tankHits)
-
 local function onMyDamage(amount)
     if amount < 5 then return end   -- DoT ticks
     dlog("HIT -%.1f", amount)
     local t = now()
-    recentHits[#recentHits + 1] = t
-    if #recentHits > 20 then table.remove(recentHits, 1) end
+    DASH.hits[#DASH.hits + 1] = t
+    if #DASH.hits > 20 then table.remove(DASH.hits, 1) end
     local explained = false
     for _, h in ipairs(impacts) do
         if math.abs(h.t - t) <= 0.3 then explained = true; break end
@@ -1084,7 +1084,7 @@ local function tryDash(t, h, primary)
     if not h.unweavable and CFG.tankHits > 0 then
         -- tank it: only dash once you've already eaten tankHits hits recently
         local n = 0
-        for _, ht in ipairs(recentHits) do if t - ht <= CFG.tankWindow then n += 1 end end
+        for _, ht in ipairs(DASH.hits) do if t - ht <= CFG.tankWindow then n += 1 end end
         if n < CFG.tankHits then
             if not h.tankLogged then h.tankLogged = true; dlog("TANK %s (%d/%d hits)", h.reason, n, CFG.tankHits) end
             return false
