@@ -53,6 +53,7 @@ BUILD_ORDER = [
     "games/gakuran",
     "games/veil_weave",
     "games/veil_sprint",
+    "games/veil_recorder",
     "games/veil",
     "init",
 ]
