@@ -2497,8 +2497,15 @@ end
 do
     local PVP = { learnRange = 18, range = 16, facing = 100, learned = {}, samples = {},
                   plays = {}, seen = {}, hooked = {}, persist = nil }
-    local SKIP_PRIO = { [Enum.AnimationPriority.Core] = true, [Enum.AnimationPriority.Idle] = true,
-                        [Enum.AnimationPriority.Movement] = true }
+    -- Core is NOT skipped: players' M1 combo swings play at Core priority (fight 2026-09-27);
+    -- looped tracks (walk / idle) are still dropped
+    local SKIP_PRIO = { [Enum.AnimationPriority.Idle] = true, [Enum.AnimationPriority.Movement] = true }
+    -- Players on different weapons share attack anims with different timings (117662409096966:
+    -- 0.59 / 0.74 / 0.83 across a lightning and a rot weapon) -> learn per anim @ held tool.
+    local function weaponOf(char)
+        local tool = char and char:FindFirstChildOfClass("Tool")
+        return tool and tool.Name or "none"
+    end
 
     local function save()
         if not PVP.persist then return end
@@ -2512,9 +2519,10 @@ do
         if track.Looped or SKIP_PRIO[track.Priority] then return end
         if not hostilePlayer(pl) then return end
         local anim = track.Animation
-        local id = anim and string.match(anim.AnimationId, "%d+")
+        local aid = anim and string.match(anim.AnimationId, "%d+")
         local r = root()
-        if not (id and r and proot.Parent) then return end
+        if not (aid and r and proot.Parent) then return end
+        local id = aid .. "@" .. weaponOf(pl.Character)
         local d = (proot.Position - r.Position).Magnitude
         local impact = PVP.learned[id]
         if impact then
@@ -2602,7 +2610,7 @@ do
         PVP.persist = persist
         local ok, v = pcall(function() return persist.get("veil.auto_weave.learned_pvp") end)
         if ok and type(v) == "string" then
-            for id, sec in string.gmatch(v, "(%d+)=([%d%.]+)") do PVP.learned[id] = tonumber(sec) end
+            for id, sec in string.gmatch(v, "([^,=]+)=([%d%.]+)") do PVP.learned[id] = tonumber(sec) end
         end
     end
 end
