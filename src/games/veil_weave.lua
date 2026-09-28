@@ -79,6 +79,7 @@ local CFG = {
     swordMobility = false,  -- use the Enchanted Sword (Elite mobility cast, ~0 stamina) when a dash can't go
     dashDir      = "Away from the attack",
     pillarDodge  = true,    -- move out of the Festering Wound's rot pillar as soon as it spawns
+    escapePush   = true,    -- push you out of reach of long AoE channels (Wound ground punches)
     orbPush      = true,    -- gas balls (RotOrb): get pushed away while one is near instead of dashing
                             --   (user 2026-09-27: dashing them is iffy, they pop on their own)
 }
@@ -218,8 +219,14 @@ local CHANNELS = {
     -- (user: being double-jumped when the punching starts avoids it at once, but you can't
     -- stay up for the whole thing -> double jump over the first punch, then dash away before
     -- landing. Only if the double jump is off cooldown; else straight to the dashes.)
+    -- REACH (fight 2026-09-27, user: "if I'm just within its range it won't get me out"): he
+    -- stands still, the ring is 85 wide (TripleSmashEffects), but punches hit you from 42-55
+    -- studs (the server sees you ~0.2-0.3 s behind) and it only reacted inside 45 and only
+    -- dashed. Now: escape = push you out to 60 studs for the whole move (learned further if a
+    -- punch still lands out there), jump + dashes still cover the first punches on the way.
     ["127293443282395"] = { name = "Festering Wound ground punches", range = 45, dashes = 2,
-                            strikes = { 0.96, 1.41 }, jumpFirst = 0.96, dashAt = 1.2 },
+                            strikes = { 0.96, 1.41 }, jumpFirst = 0.96, dashAt = 1.2,
+                            escape = 60, duration = 4.65 },
     -- (Festering Wound rot pillar/beam 111237192632620 -- 10.5 dmg ticks every ~0.1 s, beam2
     -- 5x4x82 follows you -- is NOT dashed: 3 sideways dashes in fight 3 escaped nothing and
     -- burned 110 stamina the gas balls then needed. Waiting on how it's really avoided.)
@@ -522,7 +529,9 @@ end
 -- DASH.hits = times you took a real hit (for CFG.tankHits); a field, not a local: this
 -- chunk is at Luau's 200-local limit
 -- DASH.orbs = live gas balls (RotOrb) for the push-away (pillarStep); same reason
-local DASH = { hits = {}, orbs = {}, from = 0.05, to = 0.40, lead = 0.20, cost = 50, cooldown = 0.45, afterWeave = 0.25 }
+-- DASH.escapes = live "get out of reach" zones ({ root, till, id, clear }); DASH.reach = learned
+-- reach per channel anim (persisted veil.auto_weave.escape_reach)
+local DASH = { hits = {}, orbs = {}, escapes = {}, reach = {}, from = 0.05, to = 0.40, lead = 0.20, cost = 50, cooldown = 0.45, afterWeave = 0.25 }
 local dashes = {}          -- confirmed dash start times
 local lastInject = -math.huge
 
@@ -1019,6 +1028,23 @@ local function onMyDamage(amount)
     local t = now()
     DASH.hits[#DASH.hits + 1] = t
     if #DASH.hits > 20 then table.remove(DASH.hits, 1) end
+    -- hit near/over the edge of an escape zone: its real reach is further -> learn it
+    local me = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    for _, e in ipairs(DASH.escapes) do
+        if me and e.root.Parent and t <= e.till and amount >= 20 then
+            local d = Vector3.new(me.Position.X - e.root.Position.X, 0, me.Position.Z - e.root.Position.Z).Magnitude
+            if d >= e.clear - 3 and d + 5 > e.clear then
+                e.clear = math.min(95, d + 5)
+                DASH.reach[e.id] = e.clear
+                dlog("LEARN reach %s -> %.0f studs (hit at %.0f)", e.id, e.clear, d)
+                if persistRef then
+                    local parts = {}
+                    for k, v in pairs(DASH.reach) do parts[#parts + 1] = k .. "=" .. string.format("%.0f", v) end
+                    pcall(persistRef.set, "veil.auto_weave.escape_reach", table.concat(parts, ","))
+                end
+            end
+        end
+    end
     local explained = false
     for _, h in ipairs(impacts) do
         if math.abs(h.t - t) <= 0.3 then explained = true; break end
@@ -1186,6 +1212,11 @@ local function plan(t)
             return
         end
     end
+
+    -- a hit waiting for its jump is not a weave's business: weaving it (or "can't cover" -> drop
+    -- it) lost the jump twice in the 2026-09-27 fight
+    for i = #open, 1, -1 do if open[i].jump then table.remove(open, i) end end
+    if #open == 0 then return end
 
     -- unweavable: dash it (if even a dash can't, a weave is still better than nothing)
     for _, h in ipairs(open) do
@@ -1355,6 +1386,11 @@ local function onMobAnim(model, mroot, track)
     end
     local jumpAtk = JUMP_ATTACKS[id]
     if jumpAtk then
+        -- the slam's lunge (up to ~200 stud/s) read as "rushing through you" -> stray weaves
+        -- that ate the cooldown (user: "sometimes it starts to weave it randomly")
+        local last = 0
+        for _, dt in ipairs(jumpAtk.impacts) do last = math.max(last, dt) end
+        channelUntil[model] = math.max(channelUntil[model] or 0, now() + last + 0.4)
         local r0 = root()
         if r0 and mroot.Parent and (mroot.Position - r0.Position).Magnitude <= jumpAtk.range then
             for i, dt in ipairs(jumpAtk.impacts) do
@@ -1384,9 +1420,15 @@ local function onMobAnim(model, mroot, track)
     if channel then
         -- keep the rush tracker off this mob for the whole channel, from ANY distance
         -- (a Minotaur charging from 30 studs is still an unweavable charge, not a rush to weave)
-        channelUntil[model] = now() + 3.2
+        channelUntil[model] = now() + math.max(3.2, channel.duration or 0)
         local r0 = root()
-        if r0 and mroot.Parent and (mroot.Position - r0.Position).Magnitude <= channel.range then
+        local reach = channel.escape and math.max(channel.escape, DASH.reach[id] or 0)
+        if reach and CFG.escapePush and r0 and mroot.Parent then
+            -- get out of its reach for the whole move (pushed like the rot pillar, pillarStep)
+            DASH.escapes[#DASH.escapes + 1] = { root = mroot, till = now() + (channel.duration or 3), id = id, clear = reach }
+            dlog("ESCAPE %s: %.0f studs away, reach %.0f", channel.name, (mroot.Position - r0.Position).Magnitude, reach)
+        end
+        if r0 and mroot.Parent and (mroot.Position - r0.Position).Magnitude <= math.max(channel.range, (reach or 0) - 5) then
             -- get-away moves (user): the Enchanted Sword first, launched straight away from it
             if channel.sword and useSword(channel.name, mroot.Position) then
                 -- the sword alone doesn't get you out of range (user): follow it with one
@@ -2192,10 +2234,25 @@ local function flatDist(a, b) return Vector3.new(a.X - b.X, 0, a.Z - b.Z) end
 local function pillarStep(dt)
     local usePillars = CFG.pillarDodge and #pillars > 0
     local useOrbs = CFG.orbPush and #DASH.orbs > 0
-    if not (CFG.enabled and (usePillars or useOrbs)) then return end
+    local useEscapes = #DASH.escapes > 0
+    if not (CFG.enabled and (usePillars or useOrbs or useEscapes)) then return end
     local r = root()
     if not r then return end
     local push, worst = Vector3.zero, 0
+    for i = #DASH.escapes, 1, -1 do
+        local e = DASH.escapes[i]
+        if not e.root.Parent or now() > e.till then
+            table.remove(DASH.escapes, i)
+        else
+            local off = flatDist(r.Position, e.root.Position)
+            local depth = e.clear - off.Magnitude
+            if depth > 0 then
+                local d = off.Magnitude > 0.3 and off.Unit or -Vector3.new(r.CFrame.LookVector.X, 0, r.CFrame.LookVector.Z).Unit
+                push += d * depth
+                worst = math.max(worst, depth)
+            end
+        end
+    end
     for i = #DASH.orbs, 1, -1 do
         local orb = DASH.orbs[i]
         if not orb.Parent then
@@ -2382,6 +2439,7 @@ function Weave.stop()
     running = false
     table.clear(pillars)
     table.clear(DASH.orbs)
+    table.clear(DASH.escapes)
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     table.clear(conns)
     for _, list in pairs(mobConns) do
@@ -2459,6 +2517,8 @@ function Weave.feature()
               onChange = function(v) parseExtra(v) end },
             { type = "toggle", name = "Dodge rot pillars", key = "pillar_dodge", default = true,
               onChange = function(v) CFG.pillarDodge = v and true or false end },
+            { type = "toggle", name = "Get out of range of ground punches", key = "escape_push", default = true,
+              onChange = function(v) CFG.escapePush = v and true or false end },
             { type = "toggle", name = "Push away from gas balls", key = "orb_push", default = true,
               onChange = function(v) CFG.orbPush = v and true or false end },
             { type = "toggle", name = "Reflex weave", key = "reflex", default = false,
@@ -2485,6 +2545,10 @@ function Weave.loadSaved(persist)
             if not NEVER_LEARN[id] then learnedAttacks[id] = tonumber(sec) end
         end
         saveLearned()   -- drops blacklisted entries from the saved list too
+    end
+    local okR, rr = pcall(function() return persist.get("veil.auto_weave.escape_reach") end)
+    if okR and type(rr) == "string" then
+        for id, n in string.gmatch(rr, "(%d+)=([%d%.]+)") do DASH.reach[id] = tonumber(n) end
     end
     local okU, u = pcall(function() return persist.get("veil.auto_weave.unweavable") end)
     if okU and type(u) == "string" then parseUnweavable(u) end
