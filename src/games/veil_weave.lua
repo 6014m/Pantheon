@@ -80,6 +80,7 @@ local CFG = {
     dashDir      = "Away from the attack",
     pillarDodge  = true,    -- move out of the Festering Wound's rot pillar as soon as it spawns
     escapePush   = true,    -- push you out of reach of long AoE channels (Wound ground punches)
+    jumpStyle    = "Single jump",   -- slams: a plain jump (no cooldown) or the double jump (2 s cooldown)
     orbPush      = true,    -- gas balls (RotOrb): get pushed away while one is near instead of dashing
                             --   (user 2026-09-27: dashing them is iffy, they pop on their own)
 }
@@ -763,7 +764,12 @@ end
 -- ~0.15-0.85 s after the first tap (to be tuned from recordings).
 -- lead 0.5 (user: jumps went out a little late); the second tap waits until you're actually
 -- airborne (user: a fixed 0.14 s gap only produced a single jump)
-local JUMP = { lead = 0.65, gap = 0.14, from = 0.15, to = 1.1, cooldown = 1.0 }   -- lead 0.5 -> 0.65 (user: a little earlier)
+local JUMP = { lead = 0.65, gap = 0.14, from = 0.15, to = 1.1, cooldown = 1.0,   -- lead 0.5 -> 0.65 (user: a little earlier)
+               -- SINGLE jump (user 2026-09-27: "the slams need to be jumped, a double jump doesn't have
+               -- a short enough cooldown"): JumpPower 50 at gravity 196 = ~0.5 s airborne, apex at
+               -- ~0.25 s -> tap 0.3 s before impact, covered ~0.08-0.5 s after the tap, and it can
+               -- go again once you've landed
+               single = {}, singleLead = 0.30, singleFrom = 0.08, singleTo = 0.50, singleCooldown = 0.55 }
 local jumps = {}
 
 -- double jump, the pattern the user verified in-game: Space, wait until actually airborne
@@ -839,8 +845,8 @@ end
 
 local function sendDoubleJump(timeLeft)
     lastInject = now()
-    local single = not doubleJumpReady()
-    if single then dlog("JUMP single (double jump cooling down %.2f s)", djUntil - now()) end
+    local single = CFG.jumpStyle ~= "Double jump" or not doubleJumpReady()
+    if single and CFG.jumpStyle == "Double jump" then dlog("JUMP single (double jump cooling down %.2f s)", djUntil - now()) end
     local sp = Enum.KeyCode.Space
     guardM1(true)
     task.delay(1.6, function() guardM1(false) end)   -- safety: never leave clicks blocked
@@ -876,6 +882,7 @@ end
 
 local function jumpCovers(p, h)
     local d = h.t - p
+    if JUMP.single[p] then return d >= JUMP.singleFrom and d <= JUMP.singleTo end
     return d >= JUMP.from and d <= JUMP.to
 end
 
@@ -1244,17 +1251,21 @@ local function plan(t)
     -- undashable (slam-downs): double jump so you're airborne when it lands. Your clicks are
     -- blocked 0.6 s before the jump so the swing in progress ends first (user-verified)
     for _, h in ipairs(open) do
-        if h.jump and not h.guarded and h.t - t <= JUMP.lead + 0.6 then
+        if h.jump and not h.guarded and h.t - t <= JUMP.lead + 0.6 then   -- (the longer lead: guard either way)
             h.guarded = true
             guardM1(true)
             task.delay(1.6, function() guardM1(false) end)
         end
     end
     for _, h in ipairs(open) do
-        if h.jump and h.t - t <= JUMP.lead + 0.02 then
-            if t - (jumps[#jumps] or -math.huge) >= JUMP.cooldown and not UIS:GetFocusedTextBox() and alive() then
+        local singleJ = CFG.jumpStyle ~= "Double jump" or not doubleJumpReady()
+        if h.jump and h.t - t <= (singleJ and JUMP.singleLead or JUMP.lead) + 0.02 then
+            local last = jumps[#jumps] or -math.huge
+            local cd = JUMP.single[last] and JUMP.singleCooldown or JUMP.cooldown
+            if t - last >= cd and not UIS:GetFocusedTextBox() and alive() then
                 jumps[#jumps + 1] = t
-                if #jumps > 6 then table.remove(jumps, 1) end
+                if singleJ then JUMP.single[t] = true end
+                if #jumps > 6 then JUMP.single[table.remove(jumps, 1)] = nil end
                 sendDoubleJump(h.t - t)
                 dlog("JUMP %s (lands in %.2f)", h.reason, h.t - t)
             end
@@ -2699,6 +2710,8 @@ function Weave.feature()
               onChange = function(v) parseExtra(v) end },
             { type = "toggle", name = "Dodge rot pillars", key = "pillar_dodge", default = true,
               onChange = function(v) CFG.pillarDodge = v and true or false end },
+            { type = "dropdown", name = "Jump over slams with", key = "jump_style", options = { "Single jump", "Double jump" },
+              default = "Single jump", onChange = function(v) CFG.jumpStyle = v end },
             { type = "toggle", name = "Get out of range of ground punches", key = "escape_push", default = true,
               onChange = function(v) CFG.escapePush = v and true or false end },
             { type = "toggle", name = "Push away from gas balls", key = "orb_push", default = true,
