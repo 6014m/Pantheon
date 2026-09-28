@@ -79,6 +79,8 @@ local CFG = {
     swordMobility = false,  -- use the Enchanted Sword (Elite mobility cast, ~0 stamina) when a dash can't go
     dashDir      = "Away from the attack",
     pillarDodge  = true,    -- move out of the Festering Wound's rot pillar as soon as it spawns
+    orbPush      = true,    -- gas balls (RotOrb): get pushed away while one is near instead of dashing
+                            --   (user 2026-09-27: dashing them is iffy, they pop on their own)
 }
 
 -- attack animation -> seconds from anim start to damage (median of clean hits on you)
@@ -519,7 +521,8 @@ end
 -- weave can't (weave on cooldown, hits bunched too tightly), with a longer window.
 -- DASH.hits = times you took a real hit (for CFG.tankHits); a field, not a local: this
 -- chunk is at Luau's 200-local limit
-local DASH = { hits = {}, from = 0.05, to = 0.40, lead = 0.20, cost = 50, cooldown = 0.45, afterWeave = 0.25 }
+-- DASH.orbs = live gas balls (RotOrb) for the push-away (pillarStep); same reason
+local DASH = { hits = {}, orbs = {}, from = 0.05, to = 0.40, lead = 0.20, cost = 50, cooldown = 0.45, afterWeave = 0.25 }
 local dashes = {}          -- confirmed dash start times
 local lastInject = -math.huge
 
@@ -1873,6 +1876,7 @@ local function onPart(part)
         -- Festering Wound gas ball: ragdolls you on contact; a dash through it avoids that
         -- (user). Followed every frame; a dash goes out just before it touches you.
         tracked[part] = { first = now(), pos = part.Position, t = now(), fired = false, checked = true, rotorb = true }
+        DASH.orbs[#DASH.orbs + 1] = part
         return
     end
     -- Turret Golem laser (user: the laser itself isn't the damage, the explosion where it lands
@@ -2097,7 +2101,7 @@ local function step()
                         rec.lastGap = gap
                         -- they start above you and TRACK you (user): direction is useless, the
                         -- i-frames are what count -> wait until it's ~0.15 s from touching
-                        if gap <= math.max(1.5, closing * 0.15) and CFG.dash then
+                        if gap <= math.max(1.5, closing * 0.15) and CFG.dash and not CFG.orbPush then
                             rec.fired = true
                             impacts[#impacts + 1] = { t = t + DASH.lead, reason = "gas ball (RotOrb) touching you",
                                                       kind = "melee", from = pos, key = "RotOrb", unweavable = true,
@@ -2177,17 +2181,40 @@ end
 -- Centre = the 20-wide ground ring (BigBeam.FX), NOT BigBeam.Hitbox: in the live fight the
 -- Hitbox read 0.0-2.5 studs from you while the ring (where the damage went) was 7-13 away,
 -- so pushing "out of the Hitbox" shoved you back into the ring (died to it).
-local PILLAR = { clear = 12.5, speed = 48 }
+-- Gas balls (RotOrb, CFG.orbPush) use the same push: kept orbClear studs away (3D distance,
+-- pushed along the ground) until they pop.
+local PILLAR = { clear = 12.5, speed = 48, orbClear = 9 }
 local pillars = {}               -- live BigBeam ground rings
 local pillarLogAt = 0
 
 local function flatDist(a, b) return Vector3.new(a.X - b.X, 0, a.Z - b.Z) end
 
 local function pillarStep(dt)
-    if not (CFG.enabled and CFG.pillarDodge) or #pillars == 0 then return end
+    local usePillars = CFG.pillarDodge and #pillars > 0
+    local useOrbs = CFG.orbPush and #DASH.orbs > 0
+    if not (CFG.enabled and (usePillars or useOrbs)) then return end
     local r = root()
     if not r then return end
     local push, worst = Vector3.zero, 0
+    for i = #DASH.orbs, 1, -1 do
+        local orb = DASH.orbs[i]
+        if not orb.Parent then
+            table.remove(DASH.orbs, i)
+        elseif useOrbs then
+            local depth = PILLAR.orbClear - (orb.Position - r.Position).Magnitude
+            if depth > 0 then
+                local off = flatDist(r.Position, orb.Position)
+                local d = off.Magnitude > 0.3 and off.Unit or nil
+                if not d then                                  -- right above you: straight back
+                    local lv = r.CFrame.LookVector
+                    d = -Vector3.new(lv.X, 0, lv.Z).Unit
+                end
+                push += d * depth
+                worst = math.max(worst, depth)
+            end
+        end
+    end
+    if not usePillars then table.clear(pillars) end
     for i = #pillars, 1, -1 do
         local hb = pillars[i]
         if not hb.Parent then
@@ -2209,7 +2236,7 @@ local function pillarStep(dt)
     if worst <= 0 or push.Magnitude < 0.01 then return end
     if now() - (pillarLogAt or 0) > 0.2 then
         pillarLogAt = now()
-        dlog("PILLAR inside by %.1f -> pushing", worst)
+        dlog("PUSH inside a pillar / gas ball by %.1f -> pushing", worst)
     end
     local dir = push.Unit
     local params = RaycastParams.new()
@@ -2354,6 +2381,7 @@ end
 function Weave.stop()
     running = false
     table.clear(pillars)
+    table.clear(DASH.orbs)
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     table.clear(conns)
     for _, list in pairs(mobConns) do
@@ -2431,6 +2459,8 @@ function Weave.feature()
               onChange = function(v) parseExtra(v) end },
             { type = "toggle", name = "Dodge rot pillars", key = "pillar_dodge", default = true,
               onChange = function(v) CFG.pillarDodge = v and true or false end },
+            { type = "toggle", name = "Push away from gas balls", key = "orb_push", default = true,
+              onChange = function(v) CFG.orbPush = v and true or false end },
             { type = "toggle", name = "Reflex weave", key = "reflex", default = false,
               onChange = function(v) CFG.reflex = v and true or false end },
             { type = "button", name = "Forget learned attacks",
