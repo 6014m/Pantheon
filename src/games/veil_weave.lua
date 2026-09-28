@@ -97,7 +97,10 @@ local ATTACKS = {
     ["74743744689930"]  = 0.65,  -- Runner
     ["117802002100480"] = 0.80,  -- Minotaur big swing (0.74-0.88 recorded, 32-240 dmg)
     ["131201775492062"] = 0.91,  -- Enchanted Sword slash (0.89 / 0.92 / 0.93, from up to 19 studs)
-    -- (Cursed Hammer smash 120338508145604 is DASHED now: DASH_ATTACKS)
+    -- Cursed Hammer BASIC attack (38 plays a session): its real hit is 38.5 at 0.90-0.94 s. It
+    -- used to be weaved at 0.42 (a 15-dmg nick at 0.23-0.25), which burned the cooldown -> 27
+    -- weaves, 2 caught. (Briefly dashed by mistake -- user: that's his basic, weave it.)
+    ["120338508145604"] = 0.92,
     ["115142136659049"] = 1.03,  -- Starving Warrior lunging slash (1.02-1.05, 32 dmg, from 11-19 studs)
     ["91438445642768"]  = 0.56,  -- Gigazapper zap (0.55 / 0.57 / 0.55, 27.6 dmg) -- Martian Saucer add
     ["91414483216673"]  = 0.50,  -- Gigazapper second attack (1 sample)
@@ -271,11 +274,12 @@ local JUMP_ATTACKS = {
 -- DASH_ATTACKS: always dashed (never weaved), timed from the anim. (130122482089218 used to
 -- be dashed here as the "vertical leap slam" -- it's the two-stage, see JUMP_ATTACKS.)
 local DASH_ATTACKS = {
-    -- Cursed Hammer smash 120338508145604 (user 2026-09-27: "we keep weaving an unweavable
-    -- attack"): weaved 27 times, caught 2, hit anyway 11. Its real hit is 38.5 at 0.90-0.94 s
-    -- (7 hits; one 210 at 1.06); the old 0.42 "first hit" only ever did 15 at 0.23-0.25 and
-    -- burned the weave cooldown before the real one.
-    ["120338508145604"] = { impact = 0.90, range = 16, name = "Cursed Hammer smash" },
+    -- Cursed Hammer LEAP SLAM 136161739984425 = its unweavable (user 2026-09-27). The game says so:
+    -- it opens with the "Indicator" sound (like the Husk slam / Crowned smash) where weavable
+    -- specials play "WeaveIndi" (its spin dash 90831939847969: 5 weaves caught, 0 hits). "Go" at
+    -- ~1.52 s, 46.2 dmg at 1.1-2.1 s (often two ~0.43 apart) and weaves didn't stop it -> dash,
+    -- planned for 1.5 so the i-frames (~0.46 s) sit over the 1.2-1.7 bulk of the hits.
+    ["136161739984425"] = { impact = 1.50, range = 35, name = "Cursed Hammer leap slam" },
     -- Smelter fire burst (80-stud cube, 55-57.75 dmg at ~1.6 s): dashed 13/13 while it was
     -- learned unweavable; once that learning reset it was treated as weavable -> CANT + 2 hits
     ["91349317972378"]  = { impact = 1.60, range = 45, name = "Smelter Demon fire burst" },
@@ -353,9 +357,7 @@ local RANGED = {
     -- Cambion's shot: 9.2 dmg ~0.43 s after the anim starts at 19-62 studs alike (practically
     -- hitscan); fires in bursts ~0.52 s apart
     ["103401623213387"] = { impact = 0.43, range = 80, facing = 20 },
-    -- Cursed Hammer leap slam: starts ~28 studs out, its smash hitbox appears ~1.54 s later
-    -- (1 recorded sample -- a first guess)
-    ["136161739984425"] = { impact = 1.54, range = 35, facing = 30, kind = "land" },
+    -- (Cursed Hammer leap slam 136161739984425 is DASHED now: DASH_ATTACKS)
     -- The Crowned Nothing DASH 86888546045147 (fight 2026-09-27, events_0927_205224 ~t 4575-4598):
     -- starts with a "WeaveIndi" sound (the Discord's "weave his dashes, use the audio cue"),
     -- 44 dmg at 0.69 / 0.72 from 13-15 studs and 0.89 from 42 -> 0.6 s + 0.007 s per stud; he
