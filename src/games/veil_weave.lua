@@ -111,6 +111,11 @@ local ATTACKS = {
     -- plays a "WeaveIndi" sound as it starts): 44 at 0.84 from 16 studs (1 sample).
     ["109307767575462"] = 0.65,
     ["100666197209295"] = 0.84,
+    -- Smelter Demon CHAIN PULL 81155999312581 (user 2026-09-28: "you can weave the chains before
+    -- they're attached"): the chain lands 10.5 at 0.36-0.42 s (median 0.38, every recorded pull,
+    -- 16-55 studs) and then drags you in. Weaved just before it attaches. (Still in NEVER_LEARN so
+    -- the learner can't overwrite this with a noisy value.)
+    ["81155999312581"]  = 0.38,
     -- Smelter Demon (boss)
     ["91349317972378"]  = 1.60,  -- fire burst: 80-stud SmelterFireBurstPart ~1.5-1.6 s in (55 dmg; 57.75 at 1.62/1.65 in fight 2)
     ["134186092103081"] = 1.14,  -- main swing: 36.75 dmg at 1.05-1.24 (median 1.14, 16 hits in fight 2, never weaved before)
@@ -158,6 +163,7 @@ local ATTACK_RANGE = {
     ["100666197209295"] = 22,    -- Stone Husk WeaveIndi swing (started 16 out)
     ["91349317972378"]  = 45,    -- Smelter fire burst (80-stud cube)
     ["134186092103081"] = 30,    -- Smelter main swing (started ~15 studs out)
+    ["81155999312581"]  = 58,    -- Smelter chain pull: reaches you from 16-55 studs
     ["130122482089218"] = 50,    -- Smelter leap
     ["90623661509768"]  = 40,    -- Smelter charge
     ["129783803036051"] = 22,    -- Stormcaller swing
@@ -269,8 +275,8 @@ local JUMP_ATTACKS = {
     -- the moment it starts, leaps in from up to ~44 studs (read as a 45-56 stud/s "rush" ->
     -- stray weaves), lands 55 dmg at 1.25 s (2/2 hits, 8-16 studs).
     ["96618374539761"] = { impacts = { 1.25 }, range = 50, name = "Stone Husk slam down" },
-    -- (81155999312581 was mapped here as the Smelter "horizontal swing" -- it is his CHAIN PULL
-    -- (user, 2026-09-27): unavoidable whatever you do, it only drags you in. See NEVER_LEARN.)
+    -- (81155999312581 was mapped here as the Smelter "horizontal swing" -- it is his CHAIN PULL,
+    -- weaved before it attaches: see ATTACKS.)
 }
 -- DASH_ATTACKS: always dashed (never weaved), timed from the anim. (130122482089218 used to
 -- be dashed here as the "vertical leap slam" -- it's the two-stage, see JUMP_ATTACKS.)
