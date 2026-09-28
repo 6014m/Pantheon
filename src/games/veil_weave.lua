@@ -96,7 +96,7 @@ local ATTACKS = {
     ["74743744689930"]  = 0.65,  -- Runner
     ["117802002100480"] = 0.80,  -- Minotaur big swing (0.74-0.88 recorded, 32-240 dmg)
     ["131201775492062"] = 0.91,  -- Enchanted Sword slash (0.89 / 0.92 / 0.93, from up to 19 studs)
-    ["120338508145604"] = 0.42,  -- Cursed Hammer smash, 1st hit (2nd below)
+    -- (Cursed Hammer smash 120338508145604 is DASHED now: DASH_ATTACKS)
     ["115142136659049"] = 1.03,  -- Starving Warrior lunging slash (1.02-1.05, 32 dmg, from 11-19 studs)
     ["91438445642768"]  = 0.56,  -- Gigazapper zap (0.55 / 0.57 / 0.55, 27.6 dmg) -- Martian Saucer add
     ["91414483216673"]  = 0.50,  -- Gigazapper second attack (1 sample)
@@ -127,7 +127,6 @@ local ATTACKS = {
 
 -- attacks that land more than once: extra hits (seconds after the anim starts)
 local EXTRA_HITS = {
-    ["120338508145604"] = { 0.90 },   -- Cursed Hammer smash lands twice (0.42, 0.90)
 }
 
 -- mobs whose "facing" means nothing (a floating sword spins while it attacks)
@@ -271,6 +270,11 @@ local JUMP_ATTACKS = {
 -- DASH_ATTACKS: always dashed (never weaved), timed from the anim. (130122482089218 used to
 -- be dashed here as the "vertical leap slam" -- it's the two-stage, see JUMP_ATTACKS.)
 local DASH_ATTACKS = {
+    -- Cursed Hammer smash 120338508145604 (user 2026-09-27: "we keep weaving an unweavable
+    -- attack"): weaved 27 times, caught 2, hit anyway 11. Its real hit is 38.5 at 0.90-0.94 s
+    -- (7 hits; one 210 at 1.06); the old 0.42 "first hit" only ever did 15 at 0.23-0.25 and
+    -- burned the weave cooldown before the real one.
+    ["120338508145604"] = { impact = 0.90, range = 16, name = "Cursed Hammer smash" },
     -- Smelter fire burst (80-stud cube, 55-57.75 dmg at ~1.6 s): dashed 13/13 while it was
     -- learned unweavable; once that learning reset it was treated as weavable -> CANT + 2 hits
     ["91349317972378"]  = { impact = 1.60, range = 45, name = "Smelter Demon fire burst" },
@@ -293,7 +297,10 @@ local attackPlays = {}        -- anim id -> times it started near you (learning 
 -- 0.17 s swing -> pointless weaves); the pillar is dodged by moving (pillarGuard) instead
 -- 81155999312581 = Smelter Demon chain pull (user: unavoidable no matter what, keeps you from
 -- running); its small ~10 dmg at 0.39 s would otherwise get it learned and weaved at
-local NEVER_LEARN = { ["110431028319368"] = true, ["111237192632620"] = true, ["81155999312581"] = true }
+-- 96252443340298 = Cursed Hammer's 4 s Action anim (112 plays in one session): it got learned
+-- as a 0.93 swing, but hits "after" it land anywhere from 0.05 to 1.24 s -> 15 weaves, 3 caught
+local NEVER_LEARN = { ["110431028319368"] = true, ["111237192632620"] = true, ["81155999312581"] = true,
+                      ["96252443340298"] = true }
 local unknownSeen = {}        -- recent unknown attack anims: { id, t, root, label }
 local persistRef = nil
 
