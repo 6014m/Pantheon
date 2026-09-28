@@ -2435,11 +2435,23 @@ end
 -- server sees it move. If the server kept ownership the shove only happens on your screen --
 -- BOMBPUSH logs owner=true/false (isnetworkowner) so one fight tells which it is.
 do
-    local BOMB_NAMES = { WhiteOrbBomb = true }
-    local PUSH = { radius = 18, speed = 85, lift = 30, every = 0.08, bombs = {}, logged = setmetatable({}, { __mode = "k" }) }
+    -- (user: "flat out worked ... clean" -> "do that with the smiley bombs too") The smiley bombs
+    -- are "Bomb" MeshParts, loose + unanchored like the orb: Workspace.PuppeteerBomb (1.6),
+    -- Workspace.PuppeteerGiantBomb (8 -- 32-stud blast, so a wider push), Workspace.ThrownBomb
+    -- (Clowns). The Bomb a Clown is still HOLDING lives in Monsters.Clown and is left alone.
+    local BOMB_NAMES = { WhiteOrbBomb = 18 }
+    local BOMB_MODELS = { PuppeteerBomb = 18, ThrownBomb = 18, PuppeteerGiantBomb = 40 }
+    local PUSH = { speed = 85, lift = 30, every = 0.08, bombs = {}, logged = setmetatable({}, { __mode = "k" }) }
 
     function Weave._bombSeen(part)
-        if BOMB_NAMES[part.Name] and not part.Anchored then PUSH.bombs[#PUSH.bombs + 1] = { part = part, at = 0 } end
+        if part.Anchored then return end
+        local radius = BOMB_NAMES[part.Name]
+        if not radius and part.Name == "Bomb" then
+            local m = part.Parent
+            radius = m and BOMB_MODELS[m.Name]
+            if not radius and m and m.Parent == Workspace and m.Name ~= "Monsters" then radius = 18 end
+        end
+        if radius then PUSH.bombs[#PUSH.bombs + 1] = { part = part, at = 0, radius = radius } end
     end
 
     function Weave._bombPushStep()
@@ -2454,7 +2466,7 @@ do
                 table.remove(PUSH.bombs, i)
             elseif t - b.at >= PUSH.every then
                 local off = Vector3.new(part.Position.X - r.Position.X, 0, part.Position.Z - r.Position.Z)
-                if off.Magnitude < PUSH.radius then
+                if off.Magnitude < b.radius then
                     b.at = t
                     local dir = off.Magnitude > 0.2 and off.Unit or -Vector3.new(r.CFrame.LookVector.X, 0, r.CFrame.LookVector.Z).Unit
                     pcall(function() part.AssemblyLinearVelocity = dir * PUSH.speed + Vector3.new(0, PUSH.lift, 0) end)
