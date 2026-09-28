@@ -246,7 +246,10 @@ local CHANNELS = {
     -- punch still lands out there), jump + dashes still cover the first punches on the way.
     ["127293443282395"] = { name = "Festering Wound ground punches", range = 45, dashes = 2,
                             strikes = { 0.96, 1.41 }, jumpFirst = 0.96, dashAt = 1.2,
-                            escape = 60, duration = 4.65 },
+                            escape = 60, duration = 4.65, edgeBand = 15 },
+    -- edgeBand (user 2026-09-28: "I get pushed out before my character gets the chance to double
+    -- jump and dash away"): the push only acts in the outer 15 studs of the reach; inside, the
+    -- double jump + dashes do the escaping
     -- (Festering Wound rot pillar/beam 111237192632620 -- 10.5 dmg ticks every ~0.1 s, beam2
     -- 5x4x82 follows you -- is NOT dashed: 3 sideways dashes in fight 3 escaped nothing and
     -- burned 110 stamina the gas balls then needed. Waiting on how it's really avoided.)
@@ -258,7 +261,9 @@ local CHANNELS = {
 -- never leaves the ground (the jump is only the animation), so it's timed from the anim.
 local JUMP_ATTACKS = {
     -- 2nd recorded fight: the slam's 47 dmg landed 1.34-1.60 s in (8 hits) -> 1.45
-    ["80778819711637"] = { impacts = { 1.45 }, range = 90, name = "Festering Wound jump slam" },
+    -- double = always the double jump (user 2026-09-28: "a regular jump barely ever works for the
+    -- festering wound")
+    ["80778819711637"] = { impacts = { 1.45 }, range = 90, name = "Festering Wound jump slam", double = true },
     -- Smelter Demon two-stage = ONE anim, 130122482089218 (user, 2026-09-27: "the horizontal
     -- slice into the vertical" -- double jump the horizontal, then dash or weave). Horizontal:
     -- SlashSound 0.60-0.63 s, 36.75 dmg at 0.67-1.01 (median ~0.75); dashing it failed (hit at
@@ -857,9 +862,9 @@ local function cancelSwingAndLift(hum)
     return true
 end
 
-local function sendDoubleJump(timeLeft)
+local function sendDoubleJump(timeLeft, wantDouble)
     lastInject = now()
-    local single = CFG.jumpStyle ~= "Double jump" or not doubleJumpReady()
+    local single = not (wantDouble or CFG.jumpStyle == "Double jump") or not doubleJumpReady()
     if single and CFG.jumpStyle == "Double jump" then dlog("JUMP single (double jump cooling down %.2f s)", djUntil - now()) end
     local sp = Enum.KeyCode.Space
     guardM1(true)
@@ -1272,7 +1277,7 @@ local function plan(t)
         end
     end
     for _, h in ipairs(open) do
-        local singleJ = CFG.jumpStyle ~= "Double jump" or not doubleJumpReady()
+        local singleJ = (CFG.jumpStyle ~= "Double jump" and not h.double) or not doubleJumpReady()
         if h.jump and h.t - t <= (singleJ and JUMP.singleLead or JUMP.lead) + 0.02 then
             local last = jumps[#jumps] or -math.huge
             local cd = JUMP.single[last] and JUMP.singleCooldown or JUMP.cooldown
@@ -1280,7 +1285,7 @@ local function plan(t)
                 jumps[#jumps + 1] = t
                 if singleJ then JUMP.single[t] = true end
                 if #jumps > 6 then JUMP.single[table.remove(jumps, 1)] = nil end
-                sendDoubleJump(h.t - t)
+                sendDoubleJump(h.t - t, not singleJ)
                 dlog("JUMP %s (lands in %.2f)", h.reason, h.t - t)
             end
             return
@@ -1471,6 +1476,7 @@ local function onMobAnim(model, mroot, track)
                 want(now() + dt, string.format("%s %d/%d", jumpAtk.name, i, #jumpAtk.impacts), "melee",
                     mroot.Position, "jump:" .. id)
                 impacts[#impacts].jump = true
+                impacts[#impacts].double = jumpAtk.double
             end
             -- a follow-up in the same anim that's weaved, not jumped (Smelter vertical)
             for i, dt in ipairs(jumpAtk.thenWeave or {}) do
@@ -1499,7 +1505,8 @@ local function onMobAnim(model, mroot, track)
         local reach = channel.escape and math.max(channel.escape, DASH.reach[id] or 0)
         if reach and CFG.escapePush and r0 and mroot.Parent then
             -- get out of its reach for the whole move (pushed like the rot pillar, pillarStep)
-            DASH.escapes[#DASH.escapes + 1] = { root = mroot, till = now() + (channel.duration or 3), id = id, clear = reach }
+            DASH.escapes[#DASH.escapes + 1] = { root = mroot, till = now() + (channel.duration or 3), id = id, clear = reach,
+                                                band = channel.edgeBand }
             dlog("ESCAPE %s: %.0f studs away, reach %.0f", channel.name, (mroot.Position - r0.Position).Magnitude, reach)
         end
         if r0 and mroot.Parent and (mroot.Position - r0.Position).Magnitude <= math.max(channel.range, (reach or 0) - 5) then
@@ -1517,6 +1524,7 @@ local function onMobAnim(model, mroot, track)
             if channel.jumpFirst and doubleJumpReady() then
                 want(now() + channel.jumpFirst, channel.name .. " (jump over)", "melee", mroot.Position, "jump:" .. id)
                 impacts[#impacts].jump = true
+                impacts[#impacts].double = true   -- the tantrum's opening: double jump, then dash away
                 dashStart = channel.dashAt or 0
             end
             impacts[#impacts + 1] = { t = now() + dashStart + DASH.lead, reason = channel.name, kind = "melee",
@@ -2088,6 +2096,7 @@ local function stepSlams(t, me)
                     want(t + tland, model.Name .. " slam-down", "melee", pos, "slam")
                     local imp = impacts[#impacts]
                     imp.jump = true
+                    imp.double = true                     -- Wound slam-downs: double jump (user)
                     slamQueued[model] = imp
                     dlog("SLAM %s falling %.0f stud/s, %.0f studs up, lands in %.2f", model.Name, vy, h, tland)
                 end
@@ -2378,7 +2387,7 @@ local function pillarStep(dt)
         else
             local off = flatDist(r.Position, e.root.Position)
             local depth = e.clear - off.Magnitude
-            if depth > 0 then
+            if depth > 0 and (not e.band or depth <= e.band) then
                 local d = off.Magnitude > 0.3 and off.Unit or -Vector3.new(r.CFrame.LookVector.X, 0, r.CFrame.LookVector.Z).Unit
                 push += d * depth
                 worst = math.max(worst, depth)
