@@ -82,10 +82,10 @@ local CFG = {
     escapePush   = true,    -- push you out of reach of long AoE channels (Wound ground punches)
     jumpStyle    = "Single jump",   -- slams: a plain jump (no cooldown) or the double jump (2 s cooldown)
     bombPush     = true,    -- shove loose bombs (Crowned Nothing's WhiteOrbBomb) away from you
-    orbMode      = "Dash + pull in",   -- gas balls (RotOrb): "Dash + pull in" / "Push away" / "Off"
-                            --   push (09-27) "didn't work out too well" (user 09-28) -> dash EARLY, and
-                            --   the moment the dash starts pull you into the ball so it pops inside
-                            --   the i-frames
+    orbMode      = "Jump + dash into it",   -- gas balls (RotOrb): "Jump + dash into it" / "Push away" / "Off"
+                            --   push (09-27) "didn't work out too well"; the pull-in (09-28) "looks too
+                            --   obvious I'm cheating" -> jump, aim the camera exactly at the ball, dash
+                            --   at it: you go through it with the dash's i-frames up
 }
 
 -- attack animation -> seconds from anim start to damage (median of clean hits on you)
@@ -578,9 +578,8 @@ end
 -- reach per channel anim (persisted veil.auto_weave.escape_reach)
 -- DASH.orbReach = how far (ground distance) a gas ball reaches you, learned from its hits
 -- DASH.rushVel = per-mob closing speed + its smoothed change (braking), for stepRushes
--- DASH.orbPull = { part, at }: the gas ball to pull you into once your dash starts; orbDashAt =
--- ground distance at which that dash goes out
-local DASH = { hits = {}, orbs = {}, orbReach = 12, orbPull = nil, orbDashAt = 14, orbPullSpeed = 140, rushVel = setmetatable({}, { __mode = "k" }), escapes = {}, reach = {}, from = 0.05, to = 0.40, lead = 0.20, cost = 50, cooldown = 0.45, afterWeave = 0.25 }
+-- DASH.orbDashAt = ground distance at which a gas ball gets jumped + dashed into (orbDashedAt = last)
+local DASH = { hits = {}, orbs = {}, orbReach = 12, orbDashAt = 14, orbDashedAt = nil, rushVel = setmetatable({}, { __mode = "k" }), escapes = {}, reach = {}, from = 0.05, to = 0.40, lead = 0.20, cost = 50, cooldown = 0.45, afterWeave = 0.25 }
 local dashes = {}          -- confirmed dash start times
 local lastInject = -math.huge
 
@@ -2263,17 +2262,26 @@ local function step()
                         local gap = (pos - me).Magnitude - 3   -- orb radius + your body
                         local closing = rec.lastGap and (rec.lastGap - gap) / dt or 0
                         rec.lastGap = gap
-                        -- "Dash + pull in": dash EARLY (ground distance -- they hover over you)
-                        -- and pull you into the ball while the dash's i-frames are up (pillarStep)
+                        -- "Jump + dash into it": when it's within orbDashAt (ground distance -- they
+                        -- hover), jump, point the camera straight at it and dash at it
                         local flat = Vector3.new(pos.X - me.X, 0, pos.Z - me.Z).Magnitude
-                        if CFG.orbMode == "Dash + pull in" and CFG.dash and flat <= DASH.orbDashAt
-                           and not (DASH.orbPull and DASH.orbPull.part.Parent and now() - DASH.orbPull.at < 1.0) then
+                        if CFG.orbMode == "Jump + dash into it" and CFG.dash and flat <= DASH.orbDashAt
+                           and now() - (DASH.orbDashedAt or -math.huge) > 1.0 and stamina() >= DASH.cost
+                           and not attempt and alive() and not UIS:GetFocusedTextBox() then
                             rec.fired = true
-                            DASH.orbPull = { part = part, at = t }
-                            impacts[#impacts + 1] = { t = t + DASH.lead, reason = "gas ball (RotOrb) -> dash + pull in",
-                                                      kind = "melee", from = pos, key = "RotOrb", unweavable = true,
-                                                      dashDir = "Where you're moving only" }
-                            dlog("ROTORB %.1f studs across (%.1f 3D), closing %.0f -> dash + pull in", flat, gap, closing)
+                            DASH.orbDashedAt = t
+                            dlog("ROTORB %.1f studs across (%.1f 3D), closing %.0f -> jump + dash into it", flat, gap, closing)
+                            task.spawn(function()
+                                lastInject = now()
+                                pcall(function() VIM:SendKeyEvent(true, Enum.KeyCode.Space, false, game) end)
+                                task.wait(0.05)
+                                pcall(function() VIM:SendKeyEvent(false, Enum.KeyCode.Space, false, game) end)
+                                task.wait(0.1)
+                                if not part.Parent then return end
+                                local cam = Workspace.CurrentCamera
+                                if cam then pcall(function() cam.CFrame = CFrame.lookAt(cam.CFrame.Position, part.Position) end) end
+                                sendDash(part.Position, "Toward the attack")
+                            end)
                         end
                     elseif rec.proximity then
                         -- follow it in: weave just before it reaches you
@@ -2357,22 +2365,6 @@ local pillarLogAt = 0
 local function flatDist(a, b) return Vector3.new(a.X - b.X, 0, a.Z - b.Z) end
 
 local function pillarStep(dt)
-    -- pull into the gas ball while the dash that was queued for it is running (i-frames ~0.45 s)
-    local op = DASH.orbPull
-    if op then
-        local r0 = root()
-        local d0 = dashes[#dashes]
-        if not op.part.Parent or now() - op.at > 1.5 or not r0 then
-            DASH.orbPull = nil
-        elseif d0 and d0 >= op.at - 0.05 and now() - d0 <= 0.35 then
-            local to = op.part.Position - r0.Position
-            if to.Magnitude > 1 then
-                local step = math.min(DASH.orbPullSpeed * dt, to.Magnitude)
-                pcall(function() r0.CFrame = r0.CFrame + to.Unit * step end)
-            end
-            if not op.logged then op.logged = true; dlog("ORBPULL %.1f studs to the ball", to.Magnitude) end
-        end
-    end
     local usePillars = CFG.pillarDodge and #pillars > 0
     local useOrbs = CFG.orbMode == "Push away" and #DASH.orbs > 0
     local useEscapes = #DASH.escapes > 0
@@ -2858,8 +2850,11 @@ function Weave.feature()
               onChange = function(v) CFG.escapePush = v and true or false end },
             { type = "toggle", name = "Push bombs away", key = "bomb_push", default = true,
               onChange = function(v) CFG.bombPush = v and true or false end },
-            { type = "dropdown", name = "Gas balls", key = "orb_mode", options = { "Dash + pull in", "Push away", "Off" },
-              default = "Dash + pull in", onChange = function(v) CFG.orbMode = v end },
+            { type = "dropdown", name = "Gas balls", key = "orb_mode", options = { "Jump + dash into it", "Push away", "Off" },
+              default = "Jump + dash into it", onChange = function(v)
+                  if v == "Dash + pull in" then v = "Jump + dash into it" end   -- saved by the old build
+                  CFG.orbMode = v
+              end },
             { type = "toggle", name = "Reflex weave", key = "reflex", default = false,
               onChange = function(v) CFG.reflex = v and true or false end },
             { type = "button", name = "Forget learned attacks",
