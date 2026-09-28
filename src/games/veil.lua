@@ -37,6 +37,8 @@ local weave     = require("games.veil_weave")
 local sprint    = require("games.veil_sprint")
 
 local Workspace = game:GetService("Workspace")
+local Lighting  = game:GetService("Lighting")
+local RunService = game:GetService("RunService")
 
 -- GameId first (read from the client log: game_join_loadtime universeid), then the place
 local VEIL_IDS = { 7970033072, 125503525638054 }
@@ -55,6 +57,41 @@ local CFG = {
     skipAllSummons = false,  -- every player's summons, friendly or not
     skipDrops      = true,   -- loot models in workspace.Drops (they carry a Humanoid)
 }
+
+-- ---- Clear Fog ---------------------------------------------------------------
+-- The Veil's "fog" is not fog: fog_report (2026-09-27) found no Atmosphere, no fog parts and
+-- FogEnd already 100000. It's Lighting.DepthOfField (FarIntensity 0.2, InFocusRadius 40)
+-- blurring everything past ~40 studs. Its FarIntensity is scaled to fogLeft% of what the game
+-- last set (the game may change it per zone -- a value we didn't write becomes the new base)
+-- and put back when turned off.
+local FOG = { on = false, left = 0, base = nil, wrote = nil, conn = nil }
+
+local function fogDof()
+    local d = Lighting:FindFirstChild("DepthOfField")
+    return (d and d:IsA("DepthOfFieldEffect")) and d or nil
+end
+
+local function fogStep()
+    local d = fogDof()
+    if not d then return end
+    local cur = d.FarIntensity
+    if FOG.wrote == nil or math.abs(cur - FOG.wrote) > 1e-4 then FOG.base = cur end
+    local v = (FOG.base or cur) * math.clamp(FOG.left / 100, 0, 1)
+    if math.abs(cur - v) > 1e-4 then d.FarIntensity = v end
+    FOG.wrote = v
+end
+
+local function setClearFog(on)
+    FOG.on = on
+    if on then
+        if not FOG.conn then FOG.conn = RunService.RenderStepped:Connect(function() pcall(fogStep) end) end
+    else
+        if FOG.conn then FOG.conn:Disconnect(); FOG.conn = nil end
+        local d = fogDof()
+        if d and FOG.base then pcall(function() d.FarIntensity = FOG.base end) end
+        FOG.base, FOG.wrote = nil, nil
+    end
+end
 
 -- Weak keys: despawned models drop out on their own.
 local seenAt      = setmetatable({}, { __mode = "k" })   -- model -> { pos, moved }
@@ -213,6 +250,18 @@ function Veil.register()
         },
     }).root)
 
+    box:add(feature.declare({
+        id          = "veil.clear_fog",
+        name        = "Clear Fog",
+        description = "Clears The Veil's fog. It isn't real fog: the game blurs everything more than ~40 studs away (a depth-of-field effect), and this turns that blur down. Fog left sets how much stays. Put back exactly as it was when you turn it off.",
+        default     = false,
+        onToggle    = function(v) setClearFog(v and true or false) end,
+        settings = {
+            { type = "slider", name = "Fog left (%)", key = "fog_left", min = 0, max = 100, step = 5, default = 0,
+              onChange = function(v) FOG.left = v end },
+        },
+    }).root)
+
     weave.loadSaved(persist)
     box:add(feature.declare(weave.feature()).root)
     box:add(feature.declare(sprint.feature()).root)
@@ -225,6 +274,7 @@ end
 function Veil.destroy()
     pcall(weave.stop)
     pcall(sprint.stop)
+    pcall(setClearFog, false)
     if removeFilter then
         pcall(removeFilter)
         removeFilter = nil
