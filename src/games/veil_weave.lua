@@ -531,7 +531,8 @@ end
 -- DASH.orbs = live gas balls (RotOrb) for the push-away (pillarStep); same reason
 -- DASH.escapes = live "get out of reach" zones ({ root, till, id, clear }); DASH.reach = learned
 -- reach per channel anim (persisted veil.auto_weave.escape_reach)
-local DASH = { hits = {}, orbs = {}, escapes = {}, reach = {}, from = 0.05, to = 0.40, lead = 0.20, cost = 50, cooldown = 0.45, afterWeave = 0.25 }
+-- DASH.orbReach = how far (ground distance) a gas ball reaches you, learned from its hits
+local DASH = { hits = {}, orbs = {}, orbReach = 12, escapes = {}, reach = {}, from = 0.05, to = 0.40, lead = 0.20, cost = 50, cooldown = 0.45, afterWeave = 0.25 }
 local dashes = {}          -- confirmed dash start times
 local lastInject = -math.huge
 
@@ -1028,8 +1029,27 @@ local function onMyDamage(amount)
     local t = now()
     DASH.hits[#DASH.hits + 1] = t
     if #DASH.hits > 20 then table.remove(DASH.hits, 1) end
-    -- hit near/over the edge of an escape zone: its real reach is further -> learn it
     local me = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    -- a gas ball got you (~35 dmg + ragdoll): log where it was, and if it reached you from
+    -- further than we keep it, keep it further from now on
+    if me and amount >= 25 then
+        local best
+        for _, orb in ipairs(DASH.orbs) do
+            if orb.Parent then
+                local d = Vector3.new(me.Position.X - orb.Position.X, 0, me.Position.Z - orb.Position.Z).Magnitude
+                if not best or d < best.d then best = { d = d, up = orb.Position.Y - me.Position.Y } end
+            end
+        end
+        if best and best.d < 25 then
+            dlog("ORBHIT -%.1f nearest gas ball %.1f studs across, %.1f up (keeping %.0f)", amount, best.d, best.up, DASH.orbReach)
+            if best.d + 3 > DASH.orbReach then
+                DASH.orbReach = math.min(25, best.d + 3)
+                dlog("LEARN gas ball reach -> %.0f", DASH.orbReach)
+                if persistRef then pcall(persistRef.set, "veil.auto_weave.orb_reach", DASH.orbReach) end
+            end
+        end
+    end
+    -- hit near/over the edge of an escape zone: its real reach is further -> learn it
     for _, e in ipairs(DASH.escapes) do
         if me and e.root.Parent and t <= e.till and amount >= 20 then
             local d = Vector3.new(me.Position.X - e.root.Position.X, 0, me.Position.Z - e.root.Position.Z).Magnitude
@@ -2223,9 +2243,9 @@ end
 -- Centre = the 20-wide ground ring (BigBeam.FX), NOT BigBeam.Hitbox: in the live fight the
 -- Hitbox read 0.0-2.5 studs from you while the ring (where the damage went) was 7-13 away,
 -- so pushing "out of the Hitbox" shoved you back into the ring (died to it).
--- Gas balls (RotOrb, CFG.orbPush) use the same push: kept orbClear studs away (3D distance,
--- pushed along the ground) until they pop.
-local PILLAR = { clear = 12.5, speed = 48, orbClear = 9 }
+-- Gas balls (RotOrb, CFG.orbPush) use the same push: kept DASH.orbReach studs away (ground
+-- distance, learned from their hits) until they pop.
+local PILLAR = { clear = 12.5, speed = 48 }
 local pillars = {}               -- live BigBeam ground rings
 local pillarLogAt = 0
 
@@ -2258,9 +2278,11 @@ local function pillarStep(dt)
         if not orb.Parent then
             table.remove(DASH.orbs, i)
         elseif useOrbs then
-            local depth = PILLAR.orbClear - (orb.Position - r.Position).Magnitude
+            -- GROUND distance: they hover above you, and 3D distance let them ragdoll you from
+            -- 9+ studs with the push never starting (fight 2026-09-27: 7 of 29 orbs)
+            local off = flatDist(r.Position, orb.Position)
+            local depth = DASH.orbReach - off.Magnitude
             if depth > 0 then
-                local off = flatDist(r.Position, orb.Position)
                 local d = off.Magnitude > 0.3 and off.Unit or nil
                 if not d then                                  -- right above you: straight back
                     local lv = r.CFrame.LookVector
@@ -2546,6 +2568,8 @@ function Weave.loadSaved(persist)
         end
         saveLearned()   -- drops blacklisted entries from the saved list too
     end
+    local okO, orr = pcall(function() return persist.get("veil.auto_weave.orb_reach") end)
+    if okO and tonumber(orr) then DASH.orbReach = math.max(12, tonumber(orr)) end
     local okR, rr = pcall(function() return persist.get("veil.auto_weave.escape_reach") end)
     if okR and type(rr) == "string" then
         for id, n in string.gmatch(rr, "(%d+)=([%d%.]+)") do DASH.reach[id] = tonumber(n) end
