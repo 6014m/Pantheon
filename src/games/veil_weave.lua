@@ -111,7 +111,7 @@ local ATTACKS = {
     ["82381115462756"]  = 0.73,  -- punch 2: weaves caught it at 0.72 / 0.72 / 0.74
     -- The Stormcaller (boss)
     ["129783803036051"] = 1.08,  -- heavy swing: 30 dmg at 1.07-1.10 s
-    ["77025178675756"]  = 0.87,  -- lightning stomp: 60-stud LightningStompHitbox, 40 dmg at 0.84-0.90 s
+    -- (Stormcaller lightning stomp 77025178675756 is jumped: JUMP_ATTACKS)
     ["123223658247605"] = 0.72,  -- Turret Golem up close (0.69 / 0.75, 25 dmg); from range it fires a
                                  -- LaserProjectile -> explosion (GOLEM_LASER below)
 }
@@ -237,6 +237,9 @@ local JUMP_ATTACKS = {
     -- 1.72 / 1.80 in earlier fights -> weaved (thenWeave).
     ["130122482089218"] = { impacts = { 0.74 }, thenWeave = { 1.56 }, range = 50,
                             name = "Smelter Demon horizontal slice" },
+    -- Stormcaller lightning stomp (user, 2026-09-27: "we're meant to jump that"): 60-stud
+    -- LightningStompHitbox, 40-43 dmg at 0.84-0.90 s (2 recorded hits) -- was weaved
+    ["77025178675756"] = { impacts = { 0.87 }, range = 34, name = "Stormcaller lightning stomp" },
     -- (81155999312581 was mapped here as the Smelter "horizontal swing" -- it is his CHAIN PULL
     -- (user, 2026-09-27): unavoidable whatever you do, it only drags you in. See NEVER_LEARN.)
 }
