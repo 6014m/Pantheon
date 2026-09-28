@@ -22,11 +22,12 @@ local orig = {
     Brightness     = Lighting.Brightness,
     GlobalShadows  = Lighting.GlobalShadows,
     FogEnd         = Lighting.FogEnd,
+    FogStart       = Lighting.FogStart,
     ClockTime      = Lighting.ClockTime,
     FieldOfView    = (workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView) or 70,
 }
 
-local st = { fullbright = false, nofog = false, fovOn = false, fov = 90, timeOn = false, clock = 12,
+local st = { fullbright = false, nofog = false, fogLeft = 0, fovOn = false, fov = 90, timeOn = false, clock = 12,
              speedFovOn = false, speedFovMax = 110, speedFovRef = 60, speedFovCur = nil }
 local enforceConn
 
@@ -62,12 +63,127 @@ local FB_GREY  = Color3.fromRGB(178, 178, 178)   -- fullbright ambient
 local CC2_TINT = Color3.fromRGB(255, 247, 239)   -- color-grade pass 2 tint
 local CC3_TINT = Color3.fromRGB(255, 255, 255)   -- color-grade pass 3 tint
 
+-- ---- fog (beyond Lighting.FogEnd) ------------------------------------------------
+-- Modern games fog with an Atmosphere (Density / Haze), zone scripts that tween it, and
+-- giant see-through "fog box" parts (The Veil has those -- user: the old FogEnd-only No Fog
+-- "didn't do shit"). Each Atmosphere is scaled to fogLeft% of what the GAME last set: if its
+-- value differs from what we wrote, the game changed it (new zone) and that becomes the base.
+-- Fog boxes (non-colliding, see-through, >= 256 studs on every axis) get
+-- LocalTransparencyModifier -- client-only and undone on revert.
+local fogAtmos = setmetatable({}, { __mode = "k" })   -- Atmosphere -> { base = {...}, wrote = {...} }
+local fogBoxes = setmetatable({}, { __mode = "k" })   -- BasePart -> true
+local fogScanConn
+local ATMO_PROPS = { "Density", "Haze", "Glare" }
+
+local function isFogBox(d)
+    if not d:IsA("BasePart") or d.CanCollide then return false end
+    local s = d.Size
+    return s.X >= 256 and s.Y >= 256 and s.Z >= 256 and d.Transparency > 0.02 and d.Transparency < 1
+end
+
+local function fogScan()
+    for _, d in ipairs(Lighting:GetDescendants()) do
+        if d:IsA("Atmosphere") and not fogAtmos[d] then fogAtmos[d] = { base = {}, wrote = {} } end
+    end
+    local cam = workspace.CurrentCamera
+    if cam then
+        for _, d in ipairs(cam:GetChildren()) do
+            if d:IsA("Atmosphere") and not fogAtmos[d] then fogAtmos[d] = { base = {}, wrote = {} } end
+        end
+    end
+    for _, d in ipairs(workspace:GetDescendants()) do
+        if isFogBox(d) then fogBoxes[d] = true end
+    end
+end
+
+local function applyFog()
+    Lighting.FogEnd = 1e9; Lighting.FogStart = 1e9 - 1
+    local k = math.clamp((st.fogLeft or 0) / 100, 0, 1)
+    for a, rec in pairs(fogAtmos) do
+        if a.Parent then
+            for _, prop in ipairs(ATMO_PROPS) do
+                local cur = a[prop]
+                if rec.wrote[prop] == nil or math.abs(cur - rec.wrote[prop]) > 1e-4 then rec.base[prop] = cur end
+                local v = rec.base[prop] * k
+                if math.abs(cur - v) > 1e-4 then a[prop] = v end
+                rec.wrote[prop] = v
+            end
+        end
+    end
+    for part in pairs(fogBoxes) do
+        if part.Parent then part.LocalTransparencyModifier = 1 - k end
+    end
+end
+
+local function revertFogAll()
+    Lighting.FogEnd = orig.FogEnd; Lighting.FogStart = orig.FogStart
+    for a, rec in pairs(fogAtmos) do
+        if a.Parent then for prop, v in pairs(rec.base) do pcall(function() a[prop] = v end) end end
+    end
+    for part in pairs(fogBoxes) do if part.Parent then part.LocalTransparencyModifier = 0 end end
+    table.clear(fogAtmos); table.clear(fogBoxes)
+    if fogScanConn then fogScanConn:Disconnect(); fogScanConn = nil end
+end
+
+-- what's fogging THIS game, written to Pantheon/fog_report.txt when No Fog turns on
+local function fogReport()
+    if not writefile then return end
+    local lines = { "Pantheon fog report  PlaceId " .. game.PlaceId .. "  " .. os.date("%Y-%m-%d %H:%M:%S"),
+        string.format("Lighting FogStart %.0f FogEnd %.0f FogColor %s  (orig start %.0f end %.0f)",
+            Lighting.FogStart, Lighting.FogEnd, tostring(Lighting.FogColor), orig.FogStart, orig.FogEnd) }
+    for a, rec in pairs(fogAtmos) do
+        lines[#lines + 1] = string.format("Atmosphere %s  Density %.3f Offset %.3f Haze %.3f Glare %.3f Color %s Decay %s (game base Density %s Haze %s)",
+            a:GetFullName(), a.Density, a.Offset, a.Haze, a.Glare, tostring(a.Color), tostring(a.Decay),
+            tostring(rec.base.Density), tostring(rec.base.Haze))
+    end
+    for _, root in ipairs({ Lighting, workspace.CurrentCamera }) do
+        for _, d in ipairs(root and root:GetChildren() or {}) do
+            if d:IsA("PostEffect") or d:IsA("Sky") or d:IsA("Clouds") then
+                local en = d:IsA("PostEffect") and tostring(d.Enabled) or "-"
+                local extra = d:IsA("DepthOfFieldEffect") and string.format(" FarIntensity %.2f FocusDistance %.0f InFocusRadius %.0f", d.FarIntensity, d.FocusDistance, d.InFocusRadius)
+                    or d:IsA("BlurEffect") and (" Size " .. d.Size) or ""
+                lines[#lines + 1] = string.format("%s %s enabled=%s%s", d.ClassName, d:GetFullName(), en, extra)
+            end
+        end
+    end
+    local n = 0
+    for part in pairs(fogBoxes) do
+        n += 1
+        if n <= 15 then
+            lines[#lines + 1] = string.format("fog box %s size %s transparency %.2f", part:GetFullName(), tostring(part.Size), part.Transparency)
+        end
+    end
+    lines[#lines + 1] = "fog boxes total: " .. n
+    local r = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if r then lines[#lines + 1] = "you are at " .. tostring(r.Position) end
+    pcall(function()
+        if makefolder and isfolder and not isfolder("Pantheon") then makefolder("Pantheon") end
+        writefile("Pantheon/fog_report.txt", table.concat(lines, "\n"))
+    end)
+end
+
+local function fogOn()
+    fogScan()
+    if not fogScanConn then
+        fogScanConn = workspace.DescendantAdded:Connect(function(d)
+            if isFogBox(d) then fogBoxes[d] = true end
+        end)
+    end
+    task.spawn(function()     -- zone changes can add Atmospheres / boxes later: rescan now and then
+        while st.nofog do
+            task.wait(5)
+            if st.nofog then pcall(fogScan) end
+        end
+    end)
+    task.delay(0.5, function() pcall(fogReport) end)
+end
+
 local function apply(dt)
     if st.fullbright then
         Lighting.Brightness = 2; Lighting.Ambient = FB_GREY
         Lighting.OutdoorAmbient = FB_GREY; Lighting.GlobalShadows = false
     end
-    if st.nofog then Lighting.FogEnd = 1e9 end
+    if st.nofog then applyFog() end
     if st.timeOn then Lighting.ClockTime = st.clock end
     if st.fovOn then
         local cam = workspace.CurrentCamera
@@ -91,7 +207,7 @@ local function revertFullbright()
     Lighting.Brightness = orig.Brightness; Lighting.Ambient = orig.Ambient
     Lighting.OutdoorAmbient = orig.OutdoorAmbient; Lighting.GlobalShadows = orig.GlobalShadows
 end
-local function revertFog()  Lighting.FogEnd   = orig.FogEnd   end
+local function revertFog()  revertFogAll() end
 local function revertTime() Lighting.ClockTime = orig.ClockTime end
 local function revertFov() local cam = workspace.CurrentCamera; if cam then cam.FieldOfView = orig.FieldOfView end end
 
@@ -292,8 +408,16 @@ function Aesthetic.register()
 
     box:add(feature.declare({
         id = "aesthetic.nofog", name = "No Fog",
-        description = "Pushes fog out to the horizon so distant geometry is visible.",
-        default = false, onToggle = function(v) st.nofog = v; if not v then revertFog() end; apply(); ensureLoop() end,
+        description = "Clears fog: pushes the classic fog to the horizon, thins every Atmosphere (the haze most games use now, re-applied when the game changes it per zone) and hides giant see-through fog-box parts. Writes what it found to Pantheon/fog_report.txt.",
+        default = false, onToggle = function(v)
+            st.nofog = v
+            if v then fogOn() else revertFog() end
+            apply(); ensureLoop()
+        end,
+        settings = {
+            { type = "slider", name = "Fog left (%)", key = "fog_left", min = 0, max = 100, step = 5, default = 0,
+              onChange = function(v) st.fogLeft = v end },
+        },
     }).root)
 
     box:add(feature.declare({
