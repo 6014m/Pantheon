@@ -70,7 +70,11 @@ local CFG = {
 --   clear  Clear distance   DepthOfField.InFocusRadius = max(game's, slider) -- studs kept sharp
 --   bloom  Bloom %          Lighting.Bloom.Intensity   x bloom/100  (the glow that adds haze)
 --   rays   Sun rays %       Lighting.SunRays.Intensity x rays/100
-local FOG = { on = false, left = 0, clear = 40, bloom = 100, rays = 100, conn = nil, track = {} }
+--   left   also Lighting.Atmosphere Density + Haze x left/100 -- THE fog: the Pale adds an
+--          Atmosphere (Density 0.65, Haze 10 = max) when you enter (fog_probe 2026-09-27)
+--   smoke  Pale smoke %     Camera.PaleFollowerPart.Smoke.Rate x smoke/100 (60-stud puffs
+--          glued to your camera, 50/s)
+local FOG = { on = false, left = 0, clear = 40, bloom = 100, rays = 100, smoke = 0, conn = nil, track = {} }
 
 local function fogTarget(name, class)
     local d = Lighting:FindFirstChild(name)
@@ -91,6 +95,18 @@ local function fogHold(inst, prop, fn)
 end
 
 local function fogStep()
+    local k = math.clamp(FOG.left / 100, 0, 1)
+    local atmo = Lighting:FindFirstChildOfClass("Atmosphere")
+    fogHold(atmo, "Density", function(b) return b * k end)
+    fogHold(atmo, "Haze", function(b) return b * k end)
+    local cam = Workspace.CurrentCamera
+    local follower = cam and cam:FindFirstChild("PaleFollowerPart")
+    local smoke = follower and follower:FindFirstChild("Smoke")
+    if smoke and smoke:IsA("ParticleEmitter") then
+        fogHold(smoke, "Rate", function(b) return b * math.clamp(FOG.smoke / 100, 0, 1) end)
+        if FOG.smoke == 0 and not FOG.cleared then FOG.cleared = true; pcall(function() smoke:Clear() end) end
+        if FOG.smoke > 0 then FOG.cleared = false end
+    end
     local dof = fogTarget("DepthOfField", "DepthOfFieldEffect")
     fogHold(dof, "FarIntensity", function(b) return b * math.clamp(FOG.left / 100, 0, 1) end)
     fogHold(dof, "InFocusRadius", function(b) return math.max(b, FOG.clear) end)
@@ -108,6 +124,7 @@ local function setClearFog(on)
             if rec.inst.Parent and rec.base then pcall(function() rec.inst[rec.prop] = rec.base end) end
         end
         table.clear(FOG.track)
+        FOG.cleared = false
     end
 end
 
@@ -271,12 +288,14 @@ function Veil.register()
     box:add(feature.declare({
         id          = "veil.clear_fog",
         name        = "Clear Fog",
-        description = "Clears The Veil's fog. It isn't real fog: the game blurs everything more than ~40 studs away (a depth-of-field effect). Fog left = how strong that blur stays, Clear distance = how far out stays sharp before it starts. Bloom glow and Sun rays tone down the glow haze on top. Everything goes back exactly as it was when you turn it off.",
+        description = "Clears The Veil's fog. Fog left = how much of the fog stays (the Pale's thick grey haze and the game's distance blur). Pale smoke = the smoke clouds the Pale puffs around your camera. Clear distance = how far out stays sharp. Bloom glow and Sun rays tone down the glow on top. Follows the game when it changes the fog per area, and everything goes back exactly as it was when you turn it off.",
         default     = false,
         onToggle    = function(v) setClearFog(v and true or false) end,
         settings = {
             { type = "slider", name = "Fog left (%)", key = "fog_left", min = 0, max = 100, step = 5, default = 0,
               onChange = function(v) FOG.left = v end },
+            { type = "slider", name = "Pale smoke (%)", key = "fog_smoke", min = 0, max = 100, step = 5, default = 0,
+              onChange = function(v) FOG.smoke = v end },
             { type = "slider", name = "Clear distance (studs)", key = "fog_clear", min = 40, max = 2000, step = 20, default = 40,
               onChange = function(v) FOG.clear = v end },
             { type = "slider", name = "Bloom glow (%)", key = "fog_bloom", min = 0, max = 150, step = 5, default = 100,
