@@ -64,21 +64,38 @@ local CFG = {
 -- blurring everything past ~40 studs. Its FarIntensity is scaled to fogLeft% of what the game
 -- last set (the game may change it per zone -- a value we didn't write becomes the new base)
 -- and put back when turned off.
-local FOG = { on = false, left = 0, base = nil, wrote = nil, conn = nil }
+-- Each tuned value keeps the game's own value as its base: when the current value differs from
+-- what we last wrote, the game changed it (new zone) and that's the new base. All restored off.
+--   left   Fog left %       DepthOfField.FarIntensity  x left/100
+--   clear  Clear distance   DepthOfField.InFocusRadius = max(game's, slider) -- studs kept sharp
+--   bloom  Bloom %          Lighting.Bloom.Intensity   x bloom/100  (the glow that adds haze)
+--   rays   Sun rays %       Lighting.SunRays.Intensity x rays/100
+local FOG = { on = false, left = 0, clear = 40, bloom = 100, rays = 100, conn = nil, track = {} }
 
-local function fogDof()
-    local d = Lighting:FindFirstChild("DepthOfField")
-    return (d and d:IsA("DepthOfFieldEffect")) and d or nil
+local function fogTarget(name, class)
+    local d = Lighting:FindFirstChild(name)
+    return (d and d:IsA(class)) and d or nil
+end
+
+-- keep inst[prop] at fn(base), where base = the game's value
+local function fogHold(inst, prop, fn)
+    if not inst then return end
+    local key = inst:GetFullName() .. "." .. prop
+    local rec = FOG.track[key]
+    if not rec then rec = { inst = inst, prop = prop }; FOG.track[key] = rec end
+    local cur = inst[prop]
+    if rec.wrote == nil or math.abs(cur - rec.wrote) > 1e-4 then rec.base = cur end
+    local v = fn(rec.base)
+    if math.abs(cur - v) > 1e-4 then inst[prop] = v end
+    rec.wrote = v
 end
 
 local function fogStep()
-    local d = fogDof()
-    if not d then return end
-    local cur = d.FarIntensity
-    if FOG.wrote == nil or math.abs(cur - FOG.wrote) > 1e-4 then FOG.base = cur end
-    local v = (FOG.base or cur) * math.clamp(FOG.left / 100, 0, 1)
-    if math.abs(cur - v) > 1e-4 then d.FarIntensity = v end
-    FOG.wrote = v
+    local dof = fogTarget("DepthOfField", "DepthOfFieldEffect")
+    fogHold(dof, "FarIntensity", function(b) return b * math.clamp(FOG.left / 100, 0, 1) end)
+    fogHold(dof, "InFocusRadius", function(b) return math.max(b, FOG.clear) end)
+    fogHold(fogTarget("Bloom", "BloomEffect"), "Intensity", function(b) return b * FOG.bloom / 100 end)
+    fogHold(fogTarget("SunRays", "SunRaysEffect"), "Intensity", function(b) return b * FOG.rays / 100 end)
 end
 
 local function setClearFog(on)
@@ -87,9 +104,10 @@ local function setClearFog(on)
         if not FOG.conn then FOG.conn = RunService.RenderStepped:Connect(function() pcall(fogStep) end) end
     else
         if FOG.conn then FOG.conn:Disconnect(); FOG.conn = nil end
-        local d = fogDof()
-        if d and FOG.base then pcall(function() d.FarIntensity = FOG.base end) end
-        FOG.base, FOG.wrote = nil, nil
+        for _, rec in pairs(FOG.track) do
+            if rec.inst.Parent and rec.base then pcall(function() rec.inst[rec.prop] = rec.base end) end
+        end
+        table.clear(FOG.track)
     end
 end
 
@@ -253,12 +271,18 @@ function Veil.register()
     box:add(feature.declare({
         id          = "veil.clear_fog",
         name        = "Clear Fog",
-        description = "Clears The Veil's fog. It isn't real fog: the game blurs everything more than ~40 studs away (a depth-of-field effect), and this turns that blur down. Fog left sets how much stays. Put back exactly as it was when you turn it off.",
+        description = "Clears The Veil's fog. It isn't real fog: the game blurs everything more than ~40 studs away (a depth-of-field effect). Fog left = how strong that blur stays, Clear distance = how far out stays sharp before it starts. Bloom glow and Sun rays tone down the glow haze on top. Everything goes back exactly as it was when you turn it off.",
         default     = false,
         onToggle    = function(v) setClearFog(v and true or false) end,
         settings = {
             { type = "slider", name = "Fog left (%)", key = "fog_left", min = 0, max = 100, step = 5, default = 0,
               onChange = function(v) FOG.left = v end },
+            { type = "slider", name = "Clear distance (studs)", key = "fog_clear", min = 40, max = 2000, step = 20, default = 40,
+              onChange = function(v) FOG.clear = v end },
+            { type = "slider", name = "Bloom glow (%)", key = "fog_bloom", min = 0, max = 150, step = 5, default = 100,
+              onChange = function(v) FOG.bloom = v end },
+            { type = "slider", name = "Sun rays (%)", key = "fog_rays", min = 0, max = 150, step = 5, default = 100,
+              onChange = function(v) FOG.rays = v end },
         },
     }).root)
 
