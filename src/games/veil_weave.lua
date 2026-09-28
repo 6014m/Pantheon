@@ -1539,6 +1539,9 @@ local function onMobAnim(model, mroot, track)
     end
     want(t0 + impact, string.format("%s %s %s (+%.2fs)", model.Name, ranged and "shot" or "swing", id, impact),
         ranged and ranged.kind or "melee", mroot.Position, id)
+    -- its lunge IS this attack: the rush tracker weaving the lunge too burned the cooldown right
+    -- before the real hit (Wound punches, 2026-09-27: 7 hits during "rushes")
+    channelUntil[model] = math.max(channelUntil[model] or 0, t0 + impact + 0.15)
     -- if you've moved out of its reach by the time it lands, the swing whiffs -- and so would
     -- a weave (1.4 s lockout). The planner drops hits whose attacker is out of range.
     impacts[#impacts].root, impacts[#impacts].range = mroot, range + 3
@@ -2090,6 +2093,10 @@ local function stepRushes(t, me)
                     -- time until its BODY reaches you (edge of the reach sphere), not its centre
                     local eta = miss <= reach and (along - math.sqrt(math.max(reach * reach - miss * miss, 0))) / speed or -1
                     if eta < 0 and miss <= reach and along > 0 then eta = 0.02 end   -- already touching
+                    -- you see mobs ~a ping + interpolation late; the server hits on ITS position,
+                    -- so arrival is earlier than it looks (rush weaves that went out and still got
+                    -- hit, 2026-09-27: 8 of ~20)
+                    if eta > 0.02 then eta = math.max(0.02, eta - (pingExtra() + 0.06)) end
                     if eta >= 0 and eta <= 0.7 and miss <= reach and classify(model) ~= "friendly" then
                         local h = rushImpact[model]
                         if fresh and h and h.t > t then
