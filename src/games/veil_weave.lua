@@ -323,6 +323,11 @@ local RANGED = {
     -- Cursed Hammer leap slam: starts ~28 studs out, its smash hitbox appears ~1.54 s later
     -- (1 recorded sample -- a first guess)
     ["136161739984425"] = { impact = 1.54, range = 35, facing = 30, kind = "land" },
+    -- Angry Nimbus (recorded 2026-09-27, user: "wasn't ready for him in the slightest"): one
+    -- attack, looped every ~0.8 s. Up close 21-22 dmg at 0.41-0.42 s (4 studs, 3 of 3); from
+    -- ~24 studs the same anim drops a bolt (0.5-wide segments ~0.37 s, LightningStrike 11-cube
+    -- on you 0.59 s) -> 20 dmg at 0.63 s. So: 0.37 s + 0.011 s per stud.
+    ["129213508660940"] = { impact = 0.37, perStud = 0.011, range = 35, facing = 45 },
     -- NOT the Imp fireball cast: timing fireballs from the cast (0.26 s + distance / 59) was
     -- replayed against the recordings and never beat timing them from the fireball itself
     -- (78.1% vs 73-78%), because most casts target your summons and the extra weaves crowd
