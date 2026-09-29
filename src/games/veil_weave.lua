@@ -1244,6 +1244,14 @@ local function reflex(t, reason)
     if not animHooked then confirmWeave(t) end
 end
 
+-- the mob that swung is dead / gone (its planned hit will never land)
+local function mobDown(model)
+    if not model or not model.Parent then return true end
+    if model:GetAttribute("MobDead") then return true end
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    return hum ~= nil and hum.Health <= 0
+end
+
 local function plan(t)
     settleWatching(t)
     -- drop past and covered hits
@@ -1472,13 +1480,6 @@ local function watchSwing(h, model, track, t0, impact)
         end
     end)
     task.delay(impact + 0.5, function() if c then c:Disconnect() end end)
-end
-
-local function mobDown(model)
-    if not model or not model.Parent then return true end
-    if model:GetAttribute("MobDead") then return true end
-    local hum = model:FindFirstChildOfClass("Humanoid")
-    return hum ~= nil and hum.Health <= 0
 end
 
 local function onMobAnim(model, mroot, track)
@@ -2232,8 +2233,14 @@ end
 -- weavable; its swing is timed from its anim)
 local NO_RUSH = { Minotaur = true }
 
-local function stepRushes(t, me)
+-- YOUR velocity matters as much as the mob's (user 2026-09-29: "rush attacks are still
+-- inaccurate as hell, especially if I'm moving"): arrival time and "does it pass through me"
+-- were computed as if you stood still, so running away made rushes look early and strafing
+-- made them look like misses/hits they weren't. Everything below uses the mob's velocity
+-- RELATIVE to you (horizontal: rushes run along the ground).
+local function stepRushes(t, me, myVel)
     if not CFG.melee then return end
+    local myFlat = Vector3.new(myVel.X, 0, myVel.Z)
     for model, mroot in pairs(mobRoots) do
         if NO_RUSH[model.Name] then continue end
         local fresh = t - (rushQueued[model] or -math.huge) <= 0.8
@@ -2241,7 +2248,9 @@ local function stepRushes(t, me)
             local pos = mroot.Position
             local rel = me - pos
             if rel.Magnitude < 70 then
-                local vel = mroot.AssemblyLinearVelocity
+                local mobVel = mroot.AssemblyLinearVelocity
+                local mobSpeed = mobVel.Magnitude          -- is IT rushing (its own speed)
+                local vel = mobVel - myFlat                -- how it moves relative to you
                 local speed = vel.Magnitude
                 -- braking (user 2026-09-27: "rushes from a distance, we heavily mistime the weave"):
                 -- a mob that rushes in from far SLOWS DOWN before it strikes, so constant-speed ETAs
@@ -2255,7 +2264,8 @@ local function stepRushes(t, me)
                 end
                 DASH.rushVel[model] = { c = closingNow, t = t, a = accel }
                 local braking = accel < -30 and closingNow > 0
-                if speed >= RUSH_SPEED and rel.Magnitude > 0.5 and vel:Dot(rel.Unit) >= RUSH_SPEED * 0.8 then
+                if mobSpeed >= RUSH_SPEED and speed > 1 and rel.Magnitude > 0.5 and mobVel:Dot(rel.Unit) >= RUSH_SPEED * 0.8
+                   and closingNow > 5 then
                     local reach = RUSH_MISS + radiusOf(model)
                     local dir = vel / speed
                     local along = rel:Dot(dir)                     -- studs until its centre is abreast of you
@@ -2294,7 +2304,7 @@ local function stepRushes(t, me)
                             -- a NEW rush -- including one right after the last passed you
                             -- (the Festering Wound rushes back to back)
                             rushQueued[model] = t
-                            want(t + eta, string.format("%s rushing through you (%.0f stud/s)", model.Name, speed),
+                            want(t + eta, string.format("%s rushing through you (%.0f stud/s, %.0f relative)", model.Name, mobSpeed, speed),
                                 "melee", pos, "rush:" .. model.Name)
                             rushImpact[model] = impacts[#impacts]
                             impacts[#impacts].rushLive = true
@@ -2305,7 +2315,7 @@ local function stepRushes(t, me)
                 -- hasn't gone out yet -- a whiff locks weaving ~1.4 s, right before its next rush
                 local h = rushImpact[model]
                 local closing = rel.Magnitude > 0.5 and vel:Dot(rel.Unit) or 0
-                if h and h.rushLive and h.t > t + 0.05 and (speed < RUSH_SPEED * 0.5 or closing < 10)
+                if h and h.rushLive and h.t > t + 0.05 and (mobSpeed < RUSH_SPEED * 0.5 or closing < 10)
                    and not (attempt and not attempt.dash) then
                     for i, x in ipairs(impacts) do
                         if x == h then table.remove(impacts, i); break end
@@ -2324,8 +2334,9 @@ local function step()
     local r = root()
     if r then
         local me = r.Position
+        local myVel = r.AssemblyLinearVelocity
         stepBombs(t, me)
-        stepRushes(t, me)
+        stepRushes(t, me, myVel)
         stepSlams(t, me)
         for part, rec in pairs(tracked) do
             local age = t - rec.first
@@ -2437,10 +2448,15 @@ local function step()
                         -- TRAJECTORY: every frame, where is it heading and when does it get here.
                         -- On course -> a weave is queued and its time kept current (homing);
                         -- veers off before the weave goes out -> cancelled (a whiff costs ~1.4 s).
+                        -- relative to YOU: a projectile you're running from arrives later, one
+                        -- you strafe out of the line of passes wide (user: "if I'm moving during
+                        -- any projectile it's inaccurate" -- the old math froze you in place)
                         local rel = me - pos
-                        local eta = rel:Dot(vel) / (speed * speed)
+                        local rvel = vel - myVel
+                        local rs2 = rvel:Dot(rvel)
+                        local eta = rs2 > 1 and rel:Dot(rvel) / rs2 or -1
                         local reach = CFG.projMiss + math.max(part.Size.X, part.Size.Y, part.Size.Z) * 0.5
-                        local miss = eta > 0 and (rel - vel * eta).Magnitude or math.huge
+                        local miss = eta > 0 and (rel - rvel * eta).Magnitude or math.huge
                         local h = rec.impact
                         if eta > 0 and eta <= 0.8 and miss <= reach then
                             if h and h.t > t then
