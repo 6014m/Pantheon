@@ -2710,8 +2710,12 @@ do
     -- are "Bomb" MeshParts, loose + unanchored like the orb: Workspace.PuppeteerBomb (1.6),
     -- Workspace.PuppeteerGiantBomb (8 -- 32-stud blast, so a wider push), Workspace.ThrownBomb
     -- (Clowns). The Bomb a Clown is still HOLDING lives in Monsters.Clown and is left alone.
+    -- (user 2026-09-29: "the push doesn't work against smiley bombs, they have some form of AI
+    -- on them which makes them jump" -- their own hopping overrides the shove. Only AI-less loose
+    -- parts can be pushed, so the smiley bombs are off the list; their fuse weave still applies.
+    -- WhiteOrbBomb stays: the Crowned Nothing's AND The Bell's orbs -- pushed whenever you own them.)
     local BOMB_NAMES = { WhiteOrbBomb = 18 }
-    local BOMB_MODELS = { PuppeteerBomb = 18, ThrownBomb = 18, PuppeteerGiantBomb = 40 }
+    local BOMB_MODELS = {}
     local PUSH = { speed = 85, lift = 30, every = 0.08, bombs = {}, logged = setmetatable({}, { __mode = "k" }) }
 
     function Weave._bombSeen(part)
@@ -2720,7 +2724,7 @@ do
         if not radius and part.Name == "Bomb" then
             local m = part.Parent
             radius = m and BOMB_MODELS[m.Name]
-            if not radius and m and m.Parent == Workspace and m.Name ~= "Monsters" then radius = 18 end
+            -- (loose "Bomb" models = smiley bombs: AI-driven, not pushable)
         end
         if radius then PUSH.bombs[#PUSH.bombs + 1] = { part = part, at = 0, radius = radius } end
     end
