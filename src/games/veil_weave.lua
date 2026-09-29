@@ -59,6 +59,7 @@ local CFG = {
     cooldown     = 0.5,     -- presses closer than this are ignored by the game
     meleeRange   = 15,      -- mob must be this close when its swing starts (Bones / Hivelings lunge in from 11-14)
     targetCheck  = true,    -- skip swings aimed at an Explorer / summon / other player in front of you
+    swingReach   = 9,       -- studs: a normal swing only lands if the mob is this close when it hits
     meleeFacing  = 180,     -- off: mobs turn mid-swing; swings that started >80 deg away hit you as often (15-22%) as ones facing you (17%)
     melee        = true,
     projectiles  = true,
@@ -1423,7 +1424,7 @@ local function refreshVictims()
 end
 
 -- -> the model the mob is more likely swinging at than you, or nil
-local TARGET_MARGIN = 1.5     -- studs (a degree of facing counts as 0.1 stud)
+local TARGET_MARGIN = 0.5     -- studs (a degree of facing counts as 0.1 stud); user: never weave swings at summons
 local function aimedElsewhere(model, mroot)
     local me = root()
     if not (me and mroot and mroot.Parent) then return nil end
@@ -1672,8 +1673,31 @@ local function onMobAnim(model, mroot, track)
     local stillBeyond = STILL_ONLY_BEYOND[id]
     local stillOnly = stillBeyond and (mroot.Position - r.Position).Magnitude > stillBeyond
     local hh = impacts[#impacts]
+    -- REACH (user 2026-09-29: "weaving air"): clean recorded hits of the shared swing landed
+    -- within 8.3 studs 90% of the time (246 hits, p95 11 = lag/lunges). Swings without their
+    -- own ATTACK_RANGE (those lunge in) are only woven while the mob will actually be within
+    -- reach when it lands: live distance minus how fast it's closing on you x time left.
+    local useReach = not ranged and not ATTACK_RANGE[id]
     hh.cond = function()
         if stillOnly and myHorizontalSpeed() >= 8 then return false end
+        if useReach and CFG.swingReach < 30 then
+            local me = root()
+            if me and mroot.Parent then
+                local to = me.Position - mroot.Position
+                local d = Vector3.new(to.X, 0, to.Z).Magnitude
+                local rel = mroot.AssemblyLinearVelocity - me.AssemblyLinearVelocity
+                local closing = d > 0.1 and Vector3.new(rel.X, 0, rel.Z):Dot(Vector3.new(to.X, 0, to.Z).Unit) or 0
+                local left = math.max(0, hh.t - now())
+                local atHit = math.max(0, d - math.max(0, closing) * left)
+                if atHit > CFG.swingReach then
+                    if not hh.reachLogged then
+                        hh.reachLogged = true
+                        dlog("REACH %s (%.1f studs at impact > %.1f)", hh.reason, atHit, CFG.swingReach)
+                    end
+                    return false
+                end
+            end
+        end
         local other = CFG.targetCheck and aimedElsewhere(model, mroot)
         if other then
             if not hh.elseLogged then hh.elseLogged = true; dlog("ELSEWHERE %s (aimed at %s)", hh.reason, other.Name) end
@@ -2939,6 +2963,8 @@ function Weave.feature()
               onChange = function(v) CFG.melee = v and true or false end },
             { type = "slider", name = "Melee range (studs)", key = "melee_range", min = 6, max = 25, step = 1,
               default = 15, onChange = function(v) CFG.meleeRange = v end },
+            { type = "slider", name = "Swing reach (studs)", key = "swing_reach", min = 5, max = 30, step = 0.5,
+              default = 9, onChange = function(v) CFG.swingReach = v end },
             { type = "toggle", name = "Ignore swings at others", key = "target_check", default = true,
               onChange = function(v) CFG.targetCheck = v and true or false end },
             { type = "toggle", name = "Projectiles", key = "projectiles", default = true,
