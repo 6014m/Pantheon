@@ -44,7 +44,11 @@ local CFG = {
     onlyNew     = true,    -- trash only items that arrive after Auto Trash is on
 }
 
-local RANK = { common = 1, uncommon = 2, rare = 3, elite = 4, legendary = 5, mythic = 6, godly = 6 }
+-- the game's own tier order (InventoryGui.Handler sort table). The prompt's name colour is
+-- generated from this same Rarity value (InteractHandler: GetAttribute("Rarity") -> RarityAnim
+-- colour: white / #1EFF00 / #0070FF / #A335EE / #FF8000 / red), so reading it = reading the colour.
+local RANK = { common = 1, uncommon = 2, rare = 3, elite = 4, legendary = 5, mythic = 6, godly = 7,
+               christmas = 8, unobtainable = 9 }
 
 local CATS = {
     weapon = "Weapons", weapons = "Weapons", summon = "Summons", summons = "Summons",
@@ -215,7 +219,12 @@ local function wantDrop(m)
     if not (arg and m:FindFirstChild("IsInteractable")) then return nil end
     if arg.Value == "PickupSilver" then return CFG.silver and 0 or nil end
     if arg.Value ~= "PickupDrop" then return nil end
-    local rank = RANK[string.lower(tostring(m:GetAttribute("Rarity") or "Common"))] or 1
+    local rv = m:GetAttribute("Rarity")
+    if rv == nil then
+        local c = m:FindFirstChild("Rarity")
+        rv = c and c:IsA("StringValue") and c.Value or "Common"
+    end
+    local rank = RANK[string.lower(tostring(rv))] or 1
     local cat = dropCategory(m)
     if anyMatch(CFG.skipRules, m.Name, cat, rank) then return nil end
     if #CFG.pickRules > 0 and not anyMatch(CFG.pickRules, m.Name, cat, rank) then return nil end
