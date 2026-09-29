@@ -268,6 +268,13 @@ local CHANNELS = {
 local JUMP_ATTACKS = {
     -- The Bell leap smash (JumpIndi): leaps in from 55-88 studs, Smash 0.68-0.76, 60.5 dmg at 0.90
     ["124469150178302"] = { impacts = { 0.85 }, range = 100, name = "The Bell leap smash", double = true },
+    -- The Bell's TANTRUM 77689631365456 (user: "2 slams then a bell ring which does a shit ton of
+    -- damage in an AoE"): JumpIndi at 0, Smash1/Smash2 + JumpIndi at 1.02 -> 55 at 1.12-1.14,
+    -- Rumble 1.52, GrabStab 2.64, then the BELL RING (BellSound3 + Explode + Geyser 3.06-3.10) ->
+    -- 88 at 3.18-3.22 + a burn (5 of 5 recorded). The slams are double jumped (free: fight 4 jumped
+    -- them 2/2 with no damage) and the stamina is saved for a DASH through the ring.
+    ["77689631365456"]  = { impacts = { 1.13 }, range = 80, name = "The Bell tantrum slams", double = true,
+                            thenDash = { 3.20 } },
     -- 2nd recorded fight: the slam's 47 dmg landed 1.34-1.60 s in (8 hits) -> 1.45
     -- double = always the double jump (user 2026-09-28: "a regular jump barely ever works for the
     -- festering wound")
@@ -306,11 +313,6 @@ local DASH_ATTACKS = {
     ["126421074291598"] = { impact = 1.15, range = 95, name = "The Bell swing" },   -- fight 2: 4 of 5 hits started 61-68 out (was 60 -> ignored)
     ["116385041102685"] = { impact = 0.76, range = 90, name = "The Bell kick" },   -- fight 2: Kick 0.63, 60.5 dmg at 0.76
     ["82316911117911"]  = { impact = 0.78, range = 90, name = "The Bell grab" },
-    -- The Bell's TANTRUM (user 2026-09-29: "he slams his hammer into the ground 3 times"): one anim,
-    -- Smash1/Smash2 + JumpIndi at 1.02 -> 55 at 1.12-1.14, Rumble 1.52, GrabStab 2.64, Explode +
-    -- Geyser 3.06 -> 88 at 3.20 + a burn. A double jump did NOT stop the first hit (fight 3), so
-    -- both hits are dashed.
-    ["77689631365456"]  = { impacts = { 1.14, 3.20 }, range = 80, name = "The Bell hammer tantrum" },
     -- Cursed Hammer LEAP SLAM 136161739984425 = its unweavable (user 2026-09-27). The game says so:
     -- it opens with the "Indicator" sound (like the Husk slam / Crowned smash) where weavable
     -- specials play "WeaveIndi" (its spin dash 90831939847969: 5 weaves caught, 0 hits). "Go" at
@@ -1581,6 +1583,7 @@ local function onMobAnim(model, mroot, track)
         -- that ate the cooldown (user: "sometimes it starts to weave it randomly")
         local last = 0
         for _, dt in ipairs(jumpAtk.impacts) do last = math.max(last, dt) end
+        for _, dt in ipairs(jumpAtk.thenDash or {}) do last = math.max(last, dt) end
         channelUntil[model] = math.max(channelUntil[model] or 0, now() + last + 0.4)
         local r0 = root()
         if r0 and mroot.Parent and (mroot.Position - r0.Position).Magnitude <= jumpAtk.range then
@@ -1589,6 +1592,12 @@ local function onMobAnim(model, mroot, track)
                     mroot.Position, "jump:" .. id)
                 impacts[#impacts].jump = true
                 impacts[#impacts].double = jumpAtk.double
+            end
+            -- a follow-up that's dashed (the Bell's ring after its tantrum slams)
+            for i, dt in ipairs(jumpAtk.thenDash or {}) do
+                impacts[#impacts + 1] = { t = now() + dt, reason = string.format("%s dash %d", jumpAtk.name, i), kind = "melee",
+                                          from = mroot.Position, key = "jumpdash:" .. id .. ":" .. i, unweavable = true,
+                                          dashDir = "Away from the attack" }
             end
             -- a follow-up in the same anim that's weaved, not jumped (Smelter vertical)
             for i, dt in ipairs(jumpAtk.thenWeave or {}) do
