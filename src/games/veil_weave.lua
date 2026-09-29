@@ -1245,7 +1245,9 @@ local function tryDash(t, h, primary)
     end
     -- A small Dissonant's death blast (a few 5-dmg ticks) must not spend your LAST dash while a
     -- boss is around (Bell fight 5: it did, 0.03 s before the Bell's 77-dmg grab -> NODASH)
-    if h.key == "death blast" and st < DASH.cost * 2 + CFG.dashReserve
+    -- (user 2026-09-29: with an AoE DoT + Symbiotic Bloom the Dissonants HEAL you -> never dash
+    -- their small blasts while a boss is around, whatever your stamina; the Brute's still counts)
+    if h.key == "death blast"
        and string.find(h.reason, "Dissonant", 1, true) and not string.find(h.reason, "Brute", 1, true) then
         local me = root()
         for model, mr in pairs(mobRoots) do
