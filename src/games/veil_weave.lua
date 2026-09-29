@@ -273,8 +273,11 @@ local JUMP_ATTACKS = {
     -- Rumble 1.52, GrabStab 2.64, then the BELL RING (BellSound3 + Explode + Geyser 3.06-3.10) ->
     -- 88 at 3.18-3.22 + a burn (5 of 5 recorded). The slams are double jumped (free: fight 4 jumped
     -- them 2/2 with no damage) and the stamina is saved for a DASH through the ring.
+    -- fight 5: jumping slam 1 left you to land into the 2nd slam (Rumble 1.52) -> 55 at 1.87 +
+    -- ragdoll; and the ring hit 0.09 s into a dash's i-frames (dash doesn't stop it) -> slam 2 is
+    -- dashed, the ring is WOVEN (untested -- check the next fight)
     ["77689631365456"]  = { impacts = { 1.13 }, range = 80, name = "The Bell tantrum slams", double = true,
-                            thenDash = { 3.20 } },
+                            thenDash = { 1.87 }, thenWeave = { 3.20 } },
     -- 2nd recorded fight: the slam's 47 dmg landed 1.34-1.60 s in (8 hits) -> 1.45
     -- double = always the double jump (user 2026-09-28: "a regular jump barely ever works for the
     -- festering wound")
@@ -1239,6 +1242,19 @@ local function tryDash(t, h, primary)
             dlog("NODASH %s (stamina %.0f)", h.reason, st)
         end
         return false
+    end
+    -- A small Dissonant's death blast (a few 5-dmg ticks) must not spend your LAST dash while a
+    -- boss is around (Bell fight 5: it did, 0.03 s before the Bell's 77-dmg grab -> NODASH)
+    if h.key == "death blast" and st < DASH.cost * 2 + CFG.dashReserve
+       and string.find(h.reason, "Dissonant", 1, true) and not string.find(h.reason, "Brute", 1, true) then
+        local me = root()
+        for model, mr in pairs(mobRoots) do
+            if me and mr.Parent and string.sub(model.Name, 1, 4) == "The "
+               and (mr.Position - me.Position).Magnitude < 120 then
+                if not h.saveLogged then h.saveLogged = true; dlog("SAVEDASH %s (boss near, stamina %.0f)", h.reason, st) end
+                return false
+            end
+        end
     end
     local pe = pingExtra()
     local earliest = math.max(t, (dashes[#dashes] or -math.huge) + DASH.cooldown,
@@ -2515,14 +2531,17 @@ local function step()
                         local when, why
                         if not launching and gap <= 12 then
                             local eta = gap <= 0.5 and 0.02 or (c > 2 and gap / c or math.huge)
-                            if eta <= 0.5 then when, why = t + eta, string.format("white star touching in %.2fs (%.1f studs)", eta, gap) end
+                            -- (never closer than 0.15 s out: a dash planned for sooner can't be scheduled)
+                            if eta <= 0.5 then when, why = t + math.max(eta, 0.15), string.format("white star touching in %.2fs (%.1f studs)", eta, gap) end
                         end
                         -- (fight 3: 84 stars went off 3.26-5.92 s after spawning, bulk 4.25-5.0, and the
                         -- one that started the death combo hit from 13.6 studs at age 3.6 -- no single
                         -- fuse moment a 0.7 s dash could sit on) -> from STAR_ARMED s on, a star within
                         -- STAR_BLAST studs gets a dash AWAY from it now: out of the blast + i-frames
                         if not when and age >= STAR_ARMED and d <= STAR_BLAST then
-                            when, why = t + 0.05, string.format("white star armed %.1fs, %.1f studs -> dash away", age, d)
+                            -- (t + 0.05 was unschedulable: tryDash's window closes DASH.from before the
+                            -- hit, so all 33 of these in fight 5 were silently dropped)
+                            when, why = t + 0.25, string.format("white star armed %.1fs, %.1f studs -> dash away", age, d)
                         end
                         -- a dash for this star already went out and it's still hanging around you:
                         -- allow another once that dash's i-frames are over

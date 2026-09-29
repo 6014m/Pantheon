@@ -69,7 +69,13 @@ TAIL = '''
             local inner = rec.stop
             rec.stop = function(reason)
                 inner(reason)
-                if not stopping then pcall(Pantheon.feature.setEnabled, ID, false) end
+                -- flip the toggle off only when THIS recorder stopped on its own. A new recorder
+                -- starting stops the old one with reason "restarted" -- that used to switch the
+                -- toggle off while the new one kept recording (user: "the on/off button is stuck
+                -- on off even when the gui exists")
+                if not stopping and reason ~= "restarted" and G().VeilCombatRecorder == rec then
+                    pcall(Pantheon.feature.setEnabled, ID, false)
+                end
             end
         end
 
