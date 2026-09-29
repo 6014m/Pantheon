@@ -1,4 +1,4 @@
--- The Veil: Auto Pickup + Auto Trash.
+-- The Veil: Auto Pickup + Auto Trash, with their own "Veil Loot" menu.
 --
 -- How the game does it (decompiled InteractHandler / InventoryGui.Handler, 2026-09-29):
 --   * Drops are models in workspace.Drops named after the item: attribute Rarity, Folder
@@ -11,118 +11,375 @@
 --     model the filter picked, so the pile doesn't matter.
 --   * Trash = Remotes.TrashItemsEvent:FireServer({ tool, tool, ... }) with your Backpack
 --     Tools, the same call the inventory's trash slot makes.
+--   * The prompt's name colour is generated from the drop's Rarity value (RarityAnim), so
+--     reading Rarity = reading the colour.
 --
--- Filters (both features): comma / semicolon / new-line separated rules.
---   Tomes Elite+        every tome of Elite grade or better
---   Weapons Legendary   weapons of exactly Legendary grade
---   Evasion Scarf       that item, any grade
---   Elite+              anything Elite or better (same as "any Elite+")
--- Categories are the inventory tabs: Weapons, Summons, Accessories, Outfits, Potions,
--- Tomes, Gems, Items, Trinkets. A drop on the ground only carries its name + rarity, so the
--- category comes from a name table (fan Trello lists) plus whatever this learns from items
--- landing in your Backpack (the game's own IsAccessory / IsOutfit / ... tags).
+-- The menu (user: "select from a list of known items instead of typing it in"):
+--   * By category: one grade picker per inventory tab (Tomes -> Elite+ etc.).
+--   * Items: a searchable list of every known item; click one to cycle its state
+--     (pickup list: Pick / Never, trash list: Trash / Keep). An item's own state beats
+--     its category's grade.
+-- Known items = the fan Trello's item lists (name, tab, grade) plus everything this sees on
+-- the ground or in your Backpack (saved), so the list grows as you play.
 
 local Players   = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local RS        = game:GetService("ReplicatedStorage")
 
-local log     = require("core.log")
-local persist = require("core.persist")
+local log        = require("core.log")
+local persist    = require("core.persist")
+local window     = require("ui.window")
+local container  = require("ui.container")
+local feature    = require("ui.feature")
+local components = require("ui.components")
+local theme      = require("ui.theme")
 
 local LP = Players.LocalPlayer
 
 local Loot = {}
 
 local CFG = {
-    pickup      = false,
-    pickRules   = {},      -- empty = everything
-    skipRules   = {},
-    silver      = true,
-    range       = 10,      -- the game's own prompt reach
-    trash       = false,
-    trashRules  = {},
-    onlyNew     = true,    -- trash only items that arrive after Auto Trash is on
+    pickup  = false,
+    silver  = true,
+    range   = 10,      -- the game's own prompt reach
+    trash   = false,
+    onlyNew = true,    -- trash only items that arrive after Auto Trash is on
 }
 
--- the game's own tier order (InventoryGui.Handler sort table). The prompt's name colour is
--- generated from this same Rarity value (InteractHandler: GetAttribute("Rarity") -> RarityAnim
--- colour: white / #1EFF00 / #0070FF / #A335EE / #FF8000 / red), so reading it = reading the colour.
-local RANK = { common = 1, uncommon = 2, rare = 3, elite = 4, legendary = 5, mythic = 6, godly = 7,
-               christmas = 8, unobtainable = 9 }
-
-local CATS = {
-    weapon = "Weapons", weapons = "Weapons", summon = "Summons", summons = "Summons",
-    accessory = "Accessories", accessories = "Accessories", outfit = "Outfits", outfits = "Outfits",
-    potion = "Potions", potions = "Potions", tome = "Tomes", tomes = "Tomes", gem = "Gems", gems = "Gems",
-    item = "Items", items = "Items", trinket = "Trinkets", trinkets = "Trinkets",
+-- the game's own tier order (InventoryGui.Handler sort table)
+local TIERS = { "Common", "Uncommon", "Rare", "Elite", "Legendary", "Mythic", "Godly", "Christmas", "Unobtainable" }
+local RANK = {}
+for i, t in ipairs(TIERS) do RANK[string.lower(t)] = i end
+-- RarityAnim colours (prompt text)
+local TIER_COLOR = {
+    Common = Color3.fromRGB(255, 255, 255), Uncommon = Color3.fromRGB(30, 255, 0),
+    Rare = Color3.fromRGB(0, 112, 255), Elite = Color3.fromRGB(163, 53, 238),
+    Legendary = Color3.fromRGB(255, 128, 0), Mythic = Color3.fromRGB(255, 0, 0),
+    Godly = Color3.fromRGB(255, 0, 0),
 }
 
--- name -> category, from the fan Trello's lists (Melee + Magic = Weapons). Learned
--- categories (from real Backpack tools) win over this.
+local CATEGORIES = { "Weapons", "Summons", "Accessories", "Outfits", "Potions", "Tomes", "Gems",
+                     "Items", "Trinkets", "Other" }
+
+-- Grade pickers. Pickup: "Off" / "Any" / "<tier>+". Trash: "Off" / "<tier> & below" (never
+-- above Elite: Legendary+ only goes when you mark that exact item).
+local PICK_GRADES  = { "Any", "Off", "Uncommon+", "Rare+", "Elite+", "Legendary+", "Mythic+" }
+local TRASH_GRADES = { "Off", "Common", "Uncommon & below", "Rare & below", "Elite & below" }
+
+-- fan Trello item lists: { name, tab, grade } (Melee + Magic = Weapons)
 local KNOWN = {
-    Weapons = { ["Armageddon"]=1, ["Auroran Lance"]=1, ["Bare Blade"]=1, ["Basher"]=1, ["Biome Blade"]=1, ["Bladecrest Oathsword"]=1, ["Bonesaber"]=1, ["Breaker Blade"]=1, ["Brimlash"]=1, ["Butcherer"]=1, ["Candlewick"]=1, ["Carnage"]=1, ["Cobalt Kunai"]=1, ["Crescent Vigil"]=1, ["Cursed Hammer"]=1, ["Dagger"]=1, ["Deadlight"]=1, ["Diamond Staff"]=1, ["Dread's Decree"]=1, ["Elegy Of The Tides"]=1, ["Emerald Staff"]=1, ["Enchanted Sword"]=1, ["Flare Bolt"]=1, ["Flint Cutlass"]=1, ["Fork Of Doom"]=1, ["Frigid Mallet"]=1, ["Frost Dancer"]=1, ["Gem Crusher"]=1, ["Geode Dagger"]=1, ["Gloomhook"]=1, ["Greatsword"]=1, ["Hellspiller"]=1, ["Hexed Wraithblade"]=1, ["Hiveling Arm"]=1, ["Ice Bolt"]=1, ["Icepiercer"]=1, ["Inferno Fork"]=1, ["Influx Waver"]=1, ["Jolly Striper"]=1, ["Keblade"]=1, ["Kiribachi"]=1, ["Magicial Harp"]=1, ["Malignant Bane"]=1, ["Melting Pot"]=1, ["Midnight Fractal"]=1, ["Mindbreaker"]=1, ["Mourning Wake"]=1, ["Mournmight"]=1, ["Muramasa"]=1, ["Navy Tuskblade"]=1, ["Noble Longsword"]=1, ["Pillarfall"]=1, ["Quicksilver"]=1, ["Rapier"]=1, ["Rimeblade"]=1, ["Rosespike Staff"]=1, ["Ruby Staff"]=1, ["Sahara Slicer"]=1, ["Sanguine Dirk"]=1, ["Sapphire Staff"]=1, ["Scourge Of Disease"]=1, ["Seraphim"]=1, ["Shadowbeam Staff"]=1, ["Shadowflame Knife"]=1, ["Shatterpoint"]=1, ["Shrouded Tanto"]=1, ["Soul Ringer"]=1, ["Soul Silencer"]=1, ["Sovereign"]=1, ["Spear"]=1, ["Spellweaver"]=1, ["Staff Of Sparkling"]=1, ["Staff Of The False Sun"]=1, ["Starfury"]=1, ["Storm Ruler"]=1, ["Suniron"]=1, ["Sword"]=1, ["Testament's Edge"]=1, ["Tidal Anchor"]=1, ["Topaz Staff"]=1, ["Veering Wind"]=1, ["Venom Fang"]=1, ["Verdant Thorn"]=1, ["Viperpoint"]=1, ["Voidlance"]=1, ["Wanderer's Blade"]=1, ["Water Bolt"]=1, ["Weeping Sore"]=1, ["Wind Blade"]=1, ["Witchlight"]=1, ["Withersting"]=1 },
-    Summons = { ["Catapult"]=1, ["Extraterrestrial Transmitter"]=1, ["Goblin Scepter"]=1, ["Heaven's Lament"]=1, ["Imp Staff"]=1, ["Necronomical Skull"]=1, ["Nimbus Rod"]=1, ["Rot Polyp Wand"]=1, ["Staff Of Voidmending"]=1, ["Suspicious Boulder"]=1, ["Willow Lantern"]=1 },
-    Accessories = { ["Aglet"]=1, ["Anklet Of Wind"]=1, ["Arcane Rune"]=1, ["Backpack"]=1, ["Balloon"]=1, ["Band Of Stamina"]=1, ["Band of Efficiency"]=1, ["Black Belt"]=1, ["Blood Pact"]=1, ["Bone Gauntlet"]=1, ["Brain of Confusion"]=1, ["Chaos Stone"]=1, ["Chestplate"]=1, ["Cloud In A Bottle"]=1, ["Cowl"]=1, ["Cyst Worm"]=1, ["DPS Meter"]=1, ["Dark Amulet"]=1, ["Deadweight"]=1, ["Decaying Spine"]=1, ["Disco Ball"]=1, ["Evasion Scarf"]=1, ["Explorer Hat"]=1, ["Fabled Crown"]=1, ["Fairy Light"]=1, ["Festered Shield"]=1, ["Flesh Knuckles"]=1, ["Floaty"]=1, ["Furystone"]=1, ["Gentleman's Fedora"]=1, ["Gilded Diamond Timepiece"]=1, ["Gladiator's Locket"]=1, ["Golden Beetle"]=1, ["Hell pauldron"]=1, ["Hermes Boots"]=1, ["Lantern"]=1, ["Lifeform Analyzer"]=1, ["Lucky Coin"]=1, ["Magma Stone"]=1, ["Mana Flower"]=1, ["Necronomical Scroll"]=1, ["Negative Cap"]=1, ["Night Stone"]=1, ["Occult Skull Crown"]=1, ["Philosopher's Stone"]=1, ["Portable Harmonic Fleshing"]=1, ["Power Cell"]=1, ["Power Glove"]=1, ["Prosthetic Arm"]=1, ["Putrid Scent"]=1, ["Pygmy Necklace"]=1, ["Radar"]=1, ["Ragged Cloth"]=1, ["Rampaging Ribcage"]=1, ["Ring Of Retribution"]=1, ["Rover Drive"]=1, ["Runner Helmet"]=1, ["Runner's Handbook"]=1, ["Shackles"]=1, ["Shades"]=1, ["Shako"]=1, ["Shiny Stone"]=1, ["Spore Sac"]=1, ["Starfish"]=1, ["Summon Rune"]=1, ["Tainted Elixir"]=1, ["The Angry Mask"]=1, ["The Bell"]=1, ["The Convergence"]=1, ["The Dice"]=1, ["The Laughing Mask"]=1, ["The Sleeping Mask"]=1, ["The Weeping Mask"]=1, ["The Weightless Crown"]=1, ["Tophat"]=1, ["Tribal Visage"]=1, ["Turtle Shell"]=1, ["Vampiric Talisman"]=1 },
-    Outfits = { ["Accursed Robes"]=1, ["Blacksmith's Kit"]=1, ["Burdenmail"]=1, ["Collared Tunic"]=1, ["Crimson Cowl"]=1, ["Crusader Curiass"]=1, ["Desecrated Carapace"]=1, ["Ebon Cloak"]=1, ["Ember Cloak"]=1, ["Experimental Chemist"]=1, ["Fighter Gi"]=1, ["Fissure's Agility"]=1, ["Fissure's Protection"]=1, ["Formal Attire"]=1, ["Formal Finery"]=1, ["Hardened Cloak"]=1, ["Heavy Scale"]=1, ["Hoarapace"]=1, ["Ivory Shell"]=1, ["Miasmic Blight"]=1, ["Night Raiment"]=1, ["Night Weave"]=1, ["Nimble Ward"]=1, ["Pale Vanguard"]=1, ["Rage Pelt"]=1, ["Rags"]=1, ["Ranger Tunic"]=1, ["Runner's Outfit"]=1, ["Sanctifying Luminousness"]=1, ["Sanguine Garb"]=1, ["Sanguine Vestments"]=1, ["Silver Aegis"]=1, ["Sky Garments"]=1, ["Sorcerer's Mantle"]=1, ["Soul Shroud"]=1, ["Spider Silk"]=1, ["Suite"]=1, ["Surgecloth"]=1, ["Thick Cloak"]=1, ["Thief's Gear"]=1, ["Thin Hide"]=1, ["Unyielding Darkness"]=1, ["Veil's Aberration"]=1 },
-    Potions = { ["Flask Of Grace"]=1, ["Health Potion"]=1, ["Ironskin Potion"]=1, ["Nightcall Potion"]=1, ["Regeneration Potion"]=1, ["Sanity Potion"]=1, ["Stamina Regeneration Potion"]=1, ["Swiftness Potion"]=1, ["Wrath Potion"]=1 },
-    Gems = { ["Aquamarine"]=1, ["Azure Ruby"]=1, ["Blood"]=1, ["Diamond"]=1, ["Divine Topaz"]=1, ["Emerald"]=1, ["Iridescent Gem"]=1, ["Onyx"]=1, ["Opal"]=1, ["Rot Gem"]=1, ["Ruby"]=1, ["Saphire"]=1, ["Shadow Diamond"]=1, ["Star Gem"]=1, ["Topaz"]=1 },
-    Items = { ["Aegis Banner"]=1, ["Bag"]=1, ["Brewery Staff"]=1, ["Festered Meat"]=1, ["Fire Essence"]=1, ["Firework"]=1, ["Giant Smiley Bomb"]=1, ["Idol of Hatred"]=1, ["Omniwarp"]=1, ["Smoldering Horn"]=1, ["Star Fruit"]=1, ["Stone Accord"]=1, ["Suspicious Invitation"]=1, ["Tesla"]=1, ["The First Light"]=1, ["Thunder Quartz"]=1, ["Whoopie Cushion"]=1 },
-    Trinkets = { ["Amulet"]=1, ["Goblet"]=1, ["Old Amulet"]=1, ["Old Ring"]=1, ["Ring"]=1 },
+    { "Accursed Robes", "Outfits", "Elite" },
+    { "Aegis Banner", "Items", "Rare" },
+    { "Aglet", "Accessories", "Common" },
+    { "Amulet", "Trinkets", "Common" },
+    { "Anklet Of Wind", "Accessories", "Rare" },
+    { "Aquamarine", "Gems", "Elite" },
+    { "Arcane Rune", "Accessories", "Rare" },
+    { "Armageddon", "Weapons", "Legendary" },
+    { "Auroran Lance", "Weapons", "Rare" },
+    { "Azure Ruby", "Gems", "Elite" },
+    { "Backpack", "Accessories", "Uncommon" },
+    { "Bag", "Items", "Common" },
+    { "Balloon", "Accessories", "Uncommon" },
+    { "Band Of Stamina", "Accessories", "Uncommon" },
+    { "Band of Efficiency", "Accessories", "Rare" },
+    { "Bare Blade", "Weapons", "Uncommon" },
+    { "Basher", "Weapons", "Uncommon" },
+    { "Biome Blade", "Weapons", "Elite" },
+    { "Black Belt", "Accessories", "Rare" },
+    { "Blacksmith's Kit", "Outfits", "Rare" },
+    { "Bladecrest Oathsword", "Weapons", "Rare" },
+    { "Blood", "Gems", "Rare" },
+    { "Blood Pact", "Accessories", "Elite" },
+    { "Bone Gauntlet", "Accessories", "Uncommon" },
+    { "Bonesaber", "Weapons", "Uncommon" },
+    { "Brain of Confusion", "Accessories", "Elite" },
+    { "Breaker Blade", "Weapons", "Elite" },
+    { "Brewery Staff", "Items", "Elite" },
+    { "Brimlash", "Weapons", "Elite" },
+    { "Burdenmail", "Outfits", "Elite" },
+    { "Butcherer", "Weapons", "Rare" },
+    { "Candlewick", "Weapons", "Elite" },
+    { "Carnage", "Weapons", "Legendary" },
+    { "Catapult", "Summons", "Uncommon" },
+    { "Chaos Stone", "Accessories", "Legendary" },
+    { "Chestplate", "Accessories", "Uncommon" },
+    { "Cloud In A Bottle", "Accessories", "Uncommon" },
+    { "Cobalt Kunai", "Weapons", "Rare" },
+    { "Collared Tunic", "Outfits", "Rare" },
+    { "Cowl", "Accessories", "Common" },
+    { "Crescent Vigil", "Weapons", "Rare" },
+    { "Crimson Cowl", "Outfits", "Elite" },
+    { "Crusader Curiass", "Outfits", "Elite" },
+    { "Cursed Hammer", "Weapons", "Elite" },
+    { "Cyst Worm", "Accessories", "Rare" },
+    { "DPS Meter", "Accessories", "Rare" },
+    { "Dagger", "Weapons", "Common" },
+    { "Dark Amulet", "Accessories", "Rare" },
+    { "Deadlight", "Weapons", "Elite" },
+    { "Deadweight", "Accessories", "Elite" },
+    { "Decaying Spine", "Accessories", "Rare" },
+    { "Desecrated Carapace", "Outfits", "Elite" },
+    { "Diamond", "Gems", "Uncommon" },
+    { "Diamond Staff", "Weapons", "Uncommon" },
+    { "Disco Ball", "Accessories", "Rare" },
+    { "Divine Topaz", "Gems", "Legendary" },
+    { "Dread's Decree", "Weapons", "Elite" },
+    { "Ebon Cloak", "Outfits", "Rare" },
+    { "Elegy Of The Tides", "Weapons", "Legendary" },
+    { "Ember Cloak", "Outfits", "Rare" },
+    { "Emerald", "Gems", "Uncommon" },
+    { "Emerald Staff", "Weapons", "" },
+    { "Enchanted Sword", "Weapons", "Elite" },
+    { "Evasion Scarf", "Accessories", "Elite" },
+    { "Experimental Chemist", "Outfits", "Elite" },
+    { "Explorer Hat", "Accessories", "" },
+    { "Extraterrestrial Transmitter", "Summons", "Elite" },
+    { "Fabled Crown", "Accessories", "Elite" },
+    { "Fairy Light", "Accessories", "Rare" },
+    { "Festered Meat", "Items", "Elite" },
+    { "Festered Shield", "Accessories", "Rare" },
+    { "Fighter Gi", "Outfits", "Rare" },
+    { "Fire Essence", "Items", "Rare" },
+    { "Firework", "Items", "Uncommon" },
+    { "Fissure's Agility", "Outfits", "Rare" },
+    { "Fissure's Protection", "Outfits", "Rare" },
+    { "Flare Bolt", "Weapons", "Rare" },
+    { "Flask Of Grace", "Potions", "Rare" },
+    { "Flesh Knuckles", "Accessories", "Elite" },
+    { "Flint Cutlass", "Weapons", "Uncommon" },
+    { "Floaty", "Accessories", "Uncommon" },
+    { "Fork Of Doom", "Weapons", "Rare" },
+    { "Formal Attire", "Outfits", "" },
+    { "Formal Finery", "Outfits", "Rare" },
+    { "Frigid Mallet", "Weapons", "Uncommon" },
+    { "Frost Dancer", "Weapons", "Elite" },
+    { "Furystone", "Accessories", "Rare" },
+    { "Gem Crusher", "Weapons", "Rare" },
+    { "Gentleman's Fedora", "Accessories", "Uncommon" },
+    { "Geode Dagger", "Weapons", "Uncommon" },
+    { "Giant Smiley Bomb", "Items", "Elite" },
+    { "Gilded Diamond Timepiece", "Accessories", "Legendary" },
+    { "Gladiator's Locket", "Accessories", "Rare" },
+    { "Gloomhook", "Weapons", "Rare" },
+    { "Goblet", "Trinkets", "Common" },
+    { "Goblin Scepter", "Summons", "Elite" },
+    { "Golden Beetle", "Accessories", "Rare" },
+    { "Greatsword", "Weapons", "Common" },
+    { "Hardened Cloak", "Outfits", "Uncommon" },
+    { "Health Potion", "Potions", "Common" },
+    { "Heaven's Lament", "Summons", "" },
+    { "Heavy Scale", "Outfits", "Rare" },
+    { "Hell pauldron", "Accessories", "Elite" },
+    { "Hellspiller", "Weapons", "Elite" },
+    { "Hermes Boots", "Accessories", "Uncommon" },
+    { "Hexed Wraithblade", "Weapons", "Elite" },
+    { "Hiveling Arm", "Weapons", "Uncommon" },
+    { "Hoarapace", "Outfits", "Elite" },
+    { "Ice Bolt", "Weapons", "Rare" },
+    { "Icepiercer", "Weapons", "Rare" },
+    { "Idol of Hatred", "Items", "Uncommon" },
+    { "Imp Staff", "Summons", "Rare" },
+    { "Inferno Fork", "Weapons", "Elite" },
+    { "Influx Waver", "Weapons", "Elite" },
+    { "Iridescent Gem", "Gems", "Legendary" },
+    { "Ironskin Potion", "Potions", "Uncommon" },
+    { "Ivory Shell", "Outfits", "Elite" },
+    { "Jolly Striper", "Weapons", "Rare" },
+    { "Keblade", "Weapons", "Rare" },
+    { "Kiribachi", "Weapons", "Rare" },
+    { "Lantern", "Accessories", "Common" },
+    { "Lifeform Analyzer", "Accessories", "Rare" },
+    { "Lucky Coin", "Accessories", "Legendary" },
+    { "Magicial Harp", "Weapons", "Elite" },
+    { "Magma Stone", "Accessories", "Rare" },
+    { "Malignant Bane", "Weapons", "Elite" },
+    { "Mana Flower", "Accessories", "Uncommon" },
+    { "Melting Pot", "Weapons", "Rare" },
+    { "Miasmic Blight", "Outfits", "Elite" },
+    { "Midnight Fractal", "Weapons", "Rare" },
+    { "Mindbreaker", "Weapons", "Elite" },
+    { "Mourning Wake", "Weapons", "Elite" },
+    { "Mournmight", "Weapons", "Elite" },
+    { "Muramasa", "Weapons", "Uncommon" },
+    { "Navy Tuskblade", "Weapons", "Uncommon" },
+    { "Necronomical Scroll", "Accessories", "Elite" },
+    { "Necronomical Skull", "Summons", "Rare" },
+    { "Negative Cap", "Accessories", "Elite" },
+    { "Night Raiment", "Outfits", "Elite" },
+    { "Night Stone", "Accessories", "Rare" },
+    { "Night Weave", "Outfits", "Elite" },
+    { "Nightcall Potion", "Potions", "Rare" },
+    { "Nimble Ward", "Outfits", "Rare" },
+    { "Nimbus Rod", "Summons", "Rare" },
+    { "Noble Longsword", "Weapons", "Uncommon" },
+    { "Occult Skull Crown", "Accessories", "Elite" },
+    { "Old Amulet", "Trinkets", "Common" },
+    { "Old Ring", "Trinkets", "Common" },
+    { "Omniwarp", "Items", "Mythic" },
+    { "Onyx", "Gems", "Elite" },
+    { "Opal", "Gems", "Elite" },
+    { "Pale Vanguard", "Outfits", "Elite" },
+    { "Philosopher's Stone", "Accessories", "Elite" },
+    { "Pillarfall", "Weapons", "Elite" },
+    { "Portable Harmonic Fleshing", "Accessories", "Elite" },
+    { "Power Cell", "Accessories", "Rare" },
+    { "Power Glove", "Accessories", "Elite" },
+    { "Prosthetic Arm", "Accessories", "Elite" },
+    { "Putrid Scent", "Accessories", "Rare" },
+    { "Pygmy Necklace", "Accessories", "Rare" },
+    { "Quicksilver", "Weapons", "Rare" },
+    { "Radar", "Accessories", "Rare" },
+    { "Rage Pelt", "Outfits", "Rare" },
+    { "Ragged Cloth", "Accessories", "Common" },
+    { "Rags", "Outfits", "Common" },
+    { "Rampaging Ribcage", "Accessories", "Legendary" },
+    { "Ranger Tunic", "Outfits", "Rare" },
+    { "Rapier", "Weapons", "Common" },
+    { "Regeneration Potion", "Potions", "Uncommon" },
+    { "Rimeblade", "Weapons", "Rare" },
+    { "Ring", "Trinkets", "Common" },
+    { "Ring Of Retribution", "Accessories", "Legendary" },
+    { "Rosespike Staff", "Weapons", "" },
+    { "Rot Gem", "Gems", "Rare" },
+    { "Rot Polyp Wand", "Summons", "Rare" },
+    { "Rover Drive", "Accessories", "Rare" },
+    { "Ruby", "Gems", "Uncommon" },
+    { "Ruby Staff", "Weapons", "Uncommon" },
+    { "Runner Helmet", "Accessories", "Uncommon" },
+    { "Runner's Handbook", "Accessories", "Rare" },
+    { "Runner's Outfit", "Outfits", "Uncommon" },
+    { "Sahara Slicer", "Weapons", "Uncommon" },
+    { "Sanctifying Luminousness", "Outfits", "Legendary" },
+    { "Sanguine Dirk", "Weapons", "Uncommon" },
+    { "Sanguine Garb", "Outfits", "Rare" },
+    { "Sanguine Vestments", "Outfits", "Elite" },
+    { "Sanity Potion", "Potions", "Uncommon" },
+    { "Saphire", "Gems", "Uncommon" },
+    { "Sapphire Staff", "Weapons", "" },
+    { "Scourge Of Disease", "Weapons", "Legendary" },
+    { "Seraphim", "Weapons", "Legendary" },
+    { "Shackles", "Accessories", "Rare" },
+    { "Shades", "Accessories", "Uncommon" },
+    { "Shadow Diamond", "Gems", "Legendary" },
+    { "Shadowbeam Staff", "Weapons", "Elite" },
+    { "Shadowflame Knife", "Weapons", "Elite" },
+    { "Shako", "Accessories", "Elite" },
+    { "Shatterpoint", "Weapons", "Elite" },
+    { "Shiny Stone", "Accessories", "Rare" },
+    { "Shrouded Tanto", "Weapons", "Elite" },
+    { "Silver Aegis", "Outfits", "Elite" },
+    { "Sky Garments", "Outfits", "Rare" },
+    { "Smoldering Horn", "Items", "Elite" },
+    { "Sorcerer's Mantle", "Outfits", "Rare" },
+    { "Soul Ringer", "Weapons", "Elite" },
+    { "Soul Shroud", "Outfits", "Legendary" },
+    { "Soul Silencer", "Weapons", "Rare" },
+    { "Sovereign", "Weapons", "Rare" },
+    { "Spear", "Weapons", "Common" },
+    { "Spellweaver", "Weapons", "Legendary" },
+    { "Spider Silk", "Outfits", "Elite" },
+    { "Spore Sac", "Accessories", "Elite" },
+    { "Staff Of Sparkling", "Weapons", "Common" },
+    { "Staff Of The False Sun", "Weapons", "Legendary" },
+    { "Staff Of Voidmending", "Summons", "Legendary" },
+    { "Stamina Regeneration Potion", "Potions", "Uncommon" },
+    { "Star Fruit", "Items", "Rare" },
+    { "Star Gem", "Gems", "Rare" },
+    { "Starfish", "Accessories", "Uncommon" },
+    { "Starfury", "Weapons", "Rare" },
+    { "Stone Accord", "Items", "Uncommon" },
+    { "Storm Ruler", "Weapons", "Rare" },
+    { "Suite", "Outfits", "Elite" },
+    { "Summon Rune", "Accessories", "Rare" },
+    { "Suniron", "Weapons", "Rare" },
+    { "Surgecloth", "Outfits", "Elite" },
+    { "Suspicious Boulder", "Summons", "Elite" },
+    { "Suspicious Invitation", "Items", "Elite" },
+    { "Swiftness Potion", "Potions", "Uncommon" },
+    { "Sword", "Weapons", "Common" },
+    { "Tainted Elixir", "Accessories", "Elite" },
+    { "Tesla", "Items", "Rare" },
+    { "Testament's Edge", "Weapons", "Rare" },
+    { "The Angry Mask", "Accessories", "Elite" },
+    { "The Bell", "Accessories", "Elite" },
+    { "The Convergence", "Accessories", "Mythic" },
+    { "The Dice", "Accessories", "Legendary" },
+    { "The First Light", "Items", "" },
+    { "The Laughing Mask", "Accessories", "Elite" },
+    { "The Sleeping Mask", "Accessories", "Elite" },
+    { "The Weeping Mask", "Accessories", "Elite" },
+    { "The Weightless Crown", "Accessories", "Legendary" },
+    { "Thick Cloak", "Outfits", "Uncommon" },
+    { "Thief's Gear", "Outfits", "Uncommon" },
+    { "Thin Hide", "Outfits", "Common" },
+    { "Thunder Quartz", "Items", "Rare" },
+    { "Tidal Anchor", "Weapons", "Rare" },
+    { "Topaz", "Gems", "Uncommon" },
+    { "Topaz Staff", "Weapons", "Uncommon" },
+    { "Tophat", "Accessories", "Uncommon" },
+    { "Tribal Visage", "Accessories", "Elite" },
+    { "Trinkets", "Items", "" },
+    { "Turtle Shell", "Accessories", "Elite" },
+    { "Unyielding Darkness", "Outfits", "Legendary" },
+    { "Vampiric Talisman", "Accessories", "Legendary" },
+    { "Veering Wind", "Weapons", "Rare" },
+    { "Veil's Aberration", "Outfits", "Legendary" },
+    { "Venom Fang", "Weapons", "Rare" },
+    { "Verdant Thorn", "Weapons", "" },
+    { "Viperpoint", "Weapons", "Rare" },
+    { "Voidlance", "Weapons", "Elite" },
+    { "Wanderer's Blade", "Weapons", "Uncommon" },
+    { "Water Bolt", "Weapons", "Rare" },
+    { "Weeping Sore", "Weapons", "Elite" },
+    { "Whoopie Cushion", "Items", "Common" },
+    { "Willow Lantern", "Summons", "Rare" },
+    { "Wind Blade", "Weapons", "Uncommon" },
+    { "Witchlight", "Weapons", "Elite" },
+    { "Withersting", "Weapons", "Elite" },
+    { "Wrath Potion", "Potions", "Uncommon" },
 }
-local learnedCat = {}   -- lowercased name -> category
 
--- Never trashed unless a rule names them exactly: class currencies.
-local PROTECT = { ["stone accord"] = true, ["idol of hatred"] = true }
+------------------------------------------------------------------ item catalogue
+local items = {}          -- lower name -> { name, cat, rarity }
+local function baseName(name) return (string.gsub(string.lower(name), "^enhanced ", "")) end
+local function displayBase(name) return (string.gsub(name, "^Enhanced ", "")) end
 
------------------------------------------------------------------- rules
-local function trim(s) return (string.gsub(s, "^%s*(.-)%s*$", "%1")) end
+for _, k in ipairs(KNOWN) do
+    items[string.lower(k[1])] = { name = k[1], cat = k[2], rarity = k[3] ~= "" and k[3] or nil, known = true }
+end
 
-local function parseRules(text)
-    local rules = {}
-    for raw in string.gmatch((text or "") .. ",", "([^,;\n]*)[,;\n]") do
-        local r = trim(raw)
-        if r ~= "" then
-            local rule = { text = r }
-            local body, grade, plus = string.match(r, "^(.-)%s*(%a+)(%+?)$")
-            if body and RANK[string.lower(grade)] then
-                rule.rank = RANK[string.lower(grade)]
-                rule.orBetter = plus == "+"
-                r = trim(body)
-            end
-            local l = string.lower(r)
-            if l == "" or l == "any" or l == "all" or l == "*" or l == "everything" then
-                rule.any = true
-            elseif CATS[l] then
-                rule.cat = CATS[l]
-            else
-                rule.name = l
-            end
-            rules[#rules + 1] = rule
+local SAVE_ITEMS = "veil.loot.items"
+local saveQueued = false
+local function saveItems()
+    if saveQueued then return end
+    saveQueued = true
+    task.delay(2, function()
+        saveQueued = false
+        local parts = {}
+        for _, it in pairs(items) do
+            if it.learned then parts[#parts + 1] = it.name .. "|" .. (it.cat or "") .. "|" .. (it.rarity or "") end
         end
-    end
-    return rules
+        table.sort(parts)
+        pcall(persist.set, SAVE_ITEMS, table.concat(parts, ";"))
+    end)
 end
 
-local function baseName(name)
-    local l = string.lower(name)
-    return (string.gsub(l, "^enhanced ", ""))
-end
-
-local function ruleMatches(rule, name, cat, rank)
-    if rule.rank then
-        if rule.orBetter then if rank < rule.rank then return false end
-        elseif rank ~= rule.rank then return false end
+local listDirty = false
+-- learn/refresh an item; cat or rarity may be nil (unknown)
+local function noteItem(name, cat, rarity)
+    local n = baseName(name)
+    local it = items[n]
+    if not it then
+        it = { name = displayBase(name) }
+        items[n] = it
+        listDirty = true
     end
-    if rule.any then return true end
-    if rule.cat then return cat == rule.cat end
-    return rule.name == baseName(name)
-end
-
-local function anyMatch(rules, name, cat, rank)
-    for _, r in ipairs(rules) do
-        if ruleMatches(r, name, cat, rank) then return r end
-    end
-    return nil
+    local changed = false
+    if cat and cat ~= "Other" and it.cat ~= cat then it.cat = cat; changed = true end
+    if rarity and it.rarity ~= rarity then it.rarity = rarity; changed = true end
+    if changed then it.learned = true; listDirty = true; saveItems() end
+    return it
 end
 
 ------------------------------------------------------------------ categories
@@ -157,33 +414,70 @@ local function toolCategory(t)
     return "Items"
 end
 
-local function saveLearned()
-    local parts = {}
-    for n, c in pairs(learnedCat) do parts[#parts + 1] = n .. "=" .. c end
-    table.sort(parts)
-    pcall(persist.set, "veil.loot.learned_cats", table.concat(parts, ";"))
+local function toolRarity(t)
+    local r = t:FindFirstChild("Rarity")
+    local s = r and r:IsA("StringValue") and r.Value or t:GetAttribute("Rarity")
+    return (s and s ~= "") and tostring(s) or "Common"
 end
 
-local function learnTool(t)
-    if not t:IsA("Tool") then return end
-    local n, c = baseName(t.Name), toolCategory(t)
-    if learnedCat[n] ~= c then learnedCat[n] = c; saveLearned() end
+local function dropRarity(m)
+    local rv = m:GetAttribute("Rarity")
+    if rv == nil then
+        local c = m:FindFirstChild("Rarity")
+        rv = c and c:IsA("StringValue") and c.Value or "Common"
+    end
+    return tostring(rv)
 end
 
-local knownLower
 local function dropCategory(m)
     local at = m:FindFirstChild("AtTrinketSpawn")
     if at and at:IsA("BoolValue") and at.Value then return "Trinkets" end
-    local n = baseName(m.Name)
-    if learnedCat[n] then return learnedCat[n] end
-    if string.find(n, "tome", 1, true) then return "Tomes" end
-    if not knownLower then
-        knownLower = {}
-        for cat, set in pairs(KNOWN) do
-            for name in pairs(set) do knownLower[string.lower(name)] = cat end
-        end
+    local it = items[baseName(m.Name)]
+    if it and it.cat then return it.cat end
+    if string.find(string.lower(m.Name), "tome", 1, true) then return "Tomes" end
+    return "Other"
+end
+
+------------------------------------------------------------------ rules (menu state)
+-- lists.pick / lists.trash = { cats = { [cat] = grade }, items = { [lower name] = state } }
+local lists = {
+    pick  = { cats = {}, items = {} },
+    trash = { cats = {}, items = {} },
+}
+for _, c in ipairs(CATEGORIES) do lists.pick.cats[c] = "Any"; lists.trash.cats[c] = "Off" end
+
+local function saveList(which)
+    local l = lists[which]
+    local cp, ip = {}, {}
+    for c, g in pairs(l.cats) do cp[#cp + 1] = c .. "=" .. g end
+    for n, st in pairs(l.items) do ip[#ip + 1] = n .. "=" .. st end
+    pcall(persist.set, "veil.loot." .. which .. ".cats", table.concat(cp, ";"))
+    pcall(persist.set, "veil.loot." .. which .. ".items", table.concat(ip, ";"))
+end
+
+local function loadList(which)
+    local l = lists[which]
+    local ok, s = pcall(persist.get, "veil.loot." .. which .. ".cats")
+    if ok and type(s) == "string" then
+        for c, g in string.gmatch(s, "([^=;]+)=([^;]+)") do l.cats[c] = g end
     end
-    return knownLower[n] or "Unknown"
+    local ok2, s2 = pcall(persist.get, "veil.loot." .. which .. ".items")
+    if ok2 and type(s2) == "string" then
+        for n, st in string.gmatch(s2, "([^=;]+)=([^;]+)") do l.items[n] = st end
+    end
+end
+
+-- "Rare+" -> 3 ; "Any" -> 1 ; "Off" -> nil
+local function pickMin(g)
+    if g == "Any" then return 1 end
+    local t = g and string.match(g, "^(%a+)%+$")
+    return t and RANK[string.lower(t)] or nil
+end
+-- "Uncommon & below" -> 2 ; "Common" -> 1 ; "Off" -> nil
+local function trashMax(g)
+    if g == "Common" then return 1 end
+    local t = g and string.match(g, "^(%a+) & below$")
+    return t and RANK[string.lower(t)] or nil
 end
 
 ------------------------------------------------------------------ helpers
@@ -214,21 +508,19 @@ local ignored   = setmetatable({}, { __mode = "k" })   -- drops you let go of yo
 local lostAt    = {}                                   -- lowercased name -> time it left your bag
 local lastFire  = 0
 
+-- -> rank to grab it with, or nil
 local function wantDrop(m)
     local arg = m:FindFirstChild("Argument")
     if not (arg and m:FindFirstChild("IsInteractable")) then return nil end
     if arg.Value == "PickupSilver" then return CFG.silver and 0 or nil end
     if arg.Value ~= "PickupDrop" then return nil end
-    local rv = m:GetAttribute("Rarity")
-    if rv == nil then
-        local c = m:FindFirstChild("Rarity")
-        rv = c and c:IsA("StringValue") and c.Value or "Common"
-    end
-    local rank = RANK[string.lower(tostring(rv))] or 1
-    local cat = dropCategory(m)
-    if anyMatch(CFG.skipRules, m.Name, cat, rank) then return nil end
-    if #CFG.pickRules > 0 and not anyMatch(CFG.pickRules, m.Name, cat, rank) then return nil end
-    return rank
+    local rarity = dropRarity(m)
+    local rank = RANK[string.lower(rarity)] or 1
+    local st = lists.pick.items[baseName(m.Name)]
+    if st == "never" then return nil end
+    if st == "pick" then return rank + 100 end           -- marked items first
+    local min = pickMin(lists.pick.cats[dropCategory(m)])
+    return (min and rank >= min) and rank or nil
 end
 
 local function pickupStep()
@@ -270,10 +562,19 @@ local function pickupStep()
     pcall(function() ev:FireServer(arg.Value, best) end)
 end
 
--- a drop that shows up right where you just let go of that same item is yours: leave it
 local function onDropAdded(m)
-    local n = baseName(m.Name)
-    local at = lostAt[n]
+    -- learn its name + grade for the menu (after the Rarity attribute settles)
+    task.delay(0.5, function()
+        if m.Parent then
+            local arg = m:FindFirstChild("Argument")
+            if arg and arg.Value == "PickupDrop" then
+                local cat = dropCategory(m)
+                noteItem(m.Name, cat ~= "Other" and cat or nil, dropRarity(m))
+            end
+        end
+    end)
+    -- a drop that shows up right where you just let go of that same item is yours: leave it
+    local at = lostAt[baseName(m.Name)]
     if at and os.clock() - at < 4 then
         task.defer(function()
             local root = myRoot()
@@ -288,11 +589,8 @@ local trashOk   = setmetatable({}, { __mode = "k" })   -- tools that arrived whi
 local seenTool  = setmetatable({}, { __mode = "k" })   -- every tool ever seen (equipping re-adds it)
 local lastTrash = 0
 
-local function toolRank(t)
-    local r = t:FindFirstChild("Rarity")
-    local s = r and r:IsA("StringValue") and r.Value or t:GetAttribute("Rarity") or "Common"
-    return RANK[string.lower(tostring(s))] or 1
-end
+-- Never trashed by a category grade, only when you mark the item itself: class currencies.
+local PROTECT = { ["stone accord"] = true, ["idol of hatred"] = true }
 
 local function shouldTrash(t)
     if not t:IsA("Tool") then return false end
@@ -301,16 +599,18 @@ local function shouldTrash(t)
     if t:FindFirstChild("CannotBeDropped") then return false end
     local enh = t:GetAttribute("Enhancements")
     if type(enh) == "string" and enh ~= "" then return false end
-    local rank, cat = toolRank(t), toolCategory(t)
-    local rule = anyMatch(CFG.trashRules, t.Name, cat, rank)
-    if not rule then return false end
-    -- Legendary+ and class currencies only go when a rule names the item itself
-    if (rank >= 5 or PROTECT[baseName(t.Name)]) and not rule.name then return false end
-    return true
+    local n = baseName(t.Name)
+    local st = lists.trash.items[n]
+    if st == "keep" then return false end
+    if st == "trash" then return true end
+    if PROTECT[n] then return false end
+    local max = trashMax(lists.trash.cats[toolCategory(t)])
+    local rank = RANK[string.lower(toolRarity(t))] or 1
+    return max ~= nil and rank <= max and rank <= RANK.elite
 end
 
 local function trashStep()
-    if not CFG.trash or #CFG.trashRules == 0 then return end
+    if not CFG.trash then return end
     local t = os.clock()
     if t - lastTrash < 1 then return end
     if LP:GetAttribute("GearRestoring") == true then return end
@@ -329,6 +629,20 @@ local function trashStep()
 end
 
 ------------------------------------------------------------------ lifecycle
+local function learnTool(t)
+    if t:IsA("Tool") then noteItem(t.Name, toolCategory(t), toolRarity(t)) end
+end
+
+local function watchLostFrom(parent, isBag)
+    conns[#conns + 1] = parent.ChildRemoved:Connect(function(t)
+        if not t:IsA("Tool") then return end
+        local bag = LP:FindFirstChild("Backpack")
+        -- moving between hand and bag isn't losing it
+        if (isBag and LP.Character and t.Parent == LP.Character) or (not isBag and t.Parent == bag) then return end
+        lostAt[baseName(t.Name)] = os.clock()
+    end)
+end
+
 local function hookBag(bag)
     if not bag then return end
     for _, t in ipairs(bag:GetChildren()) do seenTool[t] = true; pcall(learnTool, t) end
@@ -340,11 +654,7 @@ local function hookBag(bag)
         end
         task.delay(0.5, function() pcall(learnTool, t) end)   -- Rarity / tags settle a beat later
     end)
-    conns[#conns + 1] = bag.ChildRemoved:Connect(function(t)
-        if t:IsA("Tool") and not (LP.Character and t.Parent == LP.Character) then
-            lostAt[baseName(t.Name)] = os.clock()
-        end
-    end)
+    watchLostFrom(bag, true)
 end
 
 local function anyOn() return CFG.pickup or CFG.trash end
@@ -356,20 +666,8 @@ function Loot.start()
     conns[#conns + 1] = LP.ChildAdded:Connect(function(c)
         if c.Name == "Backpack" then hookBag(c) end
     end)
-    conns[#conns + 1] = LP.CharacterAdded:Connect(function(ch)
-        conns[#conns + 1] = ch.ChildRemoved:Connect(function(t)
-            if t:IsA("Tool") and t.Parent ~= LP:FindFirstChild("Backpack") then
-                lostAt[baseName(t.Name)] = os.clock()    -- dropped from your hand (Backspace)
-            end
-        end)
-    end)
-    if LP.Character then
-        conns[#conns + 1] = LP.Character.ChildRemoved:Connect(function(t)
-            if t:IsA("Tool") and t.Parent ~= LP:FindFirstChild("Backpack") then
-                lostAt[baseName(t.Name)] = os.clock()
-            end
-        end)
-    end
+    conns[#conns + 1] = LP.CharacterAdded:Connect(function(ch) watchLostFrom(ch, false) end)
+    if LP.Character then watchLostFrom(LP.Character, false) end
     local drops = Workspace:FindFirstChild("Drops")
     if drops then conns[#conns + 1] = drops.ChildAdded:Connect(onDropAdded) end
     task.spawn(function()
@@ -391,27 +689,197 @@ local function refresh()
     if anyOn() then Loot.start() else Loot.stop() end
 end
 
-function Loot.loadSaved()
-    local ok, s = pcall(persist.get, "veil.loot.learned_cats")
-    if ok and type(s) == "string" then
-        for n, c in string.gmatch(s, "([^=;]+)=([^;]+)") do learnedCat[n] = c end
+------------------------------------------------------------------ menu
+local STATE_CYCLE = { pick = { false, "pick", "never" }, trash = { false, "trash", "keep" } }
+local STATE_LOOK = {
+    pick  = { label = "PICK",  color = Color3.fromRGB(60, 222, 60) },
+    never = { label = "NEVER", color = Color3.fromRGB(222, 60, 60) },
+    trash = { label = "TRASH", color = Color3.fromRGB(222, 60, 60) },
+    keep  = { label = "KEEP",  color = Color3.fromRGB(60, 222, 60) },
+}
+local MAX_ROWS = 40
+
+local ui = { mode = "pick", search = "", catFilter = "All", show = "All items" }
+
+-- none -> first mark -> second mark -> none
+local function nextState(which, cur)
+    local cyc = STATE_CYCLE[which]
+    local i = 1
+    for k = 1, 3 do if (cyc[k] or nil) == cur then i = k end end
+    return cyc[(i % 3) + 1] or nil
+end
+
+local function newList(parent)
+    local f = Instance.new("Frame")
+    f.Size = UDim2.new(1, 0, 0, 0)
+    f.AutomaticSize = Enum.AutomaticSize.Y
+    f.BackgroundTransparency = 1
+    f.Parent = parent
+    local l = Instance.new("UIListLayout", f)
+    l.SortOrder = Enum.SortOrder.LayoutOrder
+    l.Padding = UDim.new(0, theme.rowGap or 1)
+    return f
+end
+
+-- give each row of a list its creation order (components don't set LayoutOrder)
+local function stamp(parent, obj)
+    local root = type(obj) == "table" and obj.frame or obj
+    local n = 0
+    for _, c in ipairs(parent:GetChildren()) do if c:IsA("GuiObject") then n += 1 end end
+    if root then root.LayoutOrder = n end
+    return obj
+end
+
+local catHost, itemHost, countLabel
+local rebuildItems
+
+local function rebuildCats()
+    if not catHost then return end
+    for _, c in ipairs(catHost:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
+    local which = ui.mode
+    local opts = which == "pick" and PICK_GRADES or TRASH_GRADES
+    for _, cat in ipairs(CATEGORIES) do
+        stamp(catHost, components.Dropdown(catHost, {
+            label = cat == "Other" and "Other / unknown" or cat,
+            options = opts,
+            default = lists[which].cats[cat],
+            onChange = function(v)
+                lists[which].cats[cat] = v
+                saveList(which)
+            end,
+        }))
     end
 end
 
-function Loot.pickupFeature()
+local function itemRow(parent, it, which, idx)
+    local n = string.lower(it.name)
+    local row = Instance.new("TextButton")
+    row.Size = UDim2.new(1, 0, 0, 22)
+    row.BackgroundColor3 = theme.bgAlt
+    row.BorderSizePixel = 0
+    row.AutoButtonColor = true
+    row.Text = ""
+    row.LayoutOrder = idx
+    row.Parent = parent
+
+    local name = Instance.new("TextLabel")
+    name.Size = UDim2.new(1, -60, 1, 0)
+    name.Position = UDim2.fromOffset(8, 0)
+    name.BackgroundTransparency = 1
+    name.Font = theme.font
+    name.TextSize = 11
+    name.TextXAlignment = Enum.TextXAlignment.Left
+    name.TextTruncate = Enum.TextTruncate.AtEnd
+    name.Text = it.name
+    name.TextColor3 = TIER_COLOR[it.rarity or ""] or theme.fgDim
+    name.Parent = row
+
+    local tag = Instance.new("TextLabel")
+    tag.Size = UDim2.new(0, 50, 1, 0)
+    tag.Position = UDim2.new(1, -54, 0, 0)
+    tag.BackgroundTransparency = 1
+    tag.Font = theme.fontBold
+    tag.TextSize = 10
+    tag.TextXAlignment = Enum.TextXAlignment.Right
+    tag.Parent = row
+
+    local function paint()
+        local st = lists[which].items[n]
+        local look = st and STATE_LOOK[st]
+        tag.Text = look and look.label or ""
+        tag.TextColor3 = look and look.color or theme.fgDim
+    end
+    paint()
+    row.MouseButton1Click:Connect(function()
+        lists[which].items[n] = nextState(which, lists[which].items[n])
+        saveList(which)
+        paint()
+    end)
+end
+
+rebuildItems = function()
+    if not itemHost then return end
+    listDirty = false
+    for _, c in ipairs(itemHost:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
+    local which = ui.mode
+    local q = string.lower(ui.search or "")
+    local matches = {}
+    for n, it in pairs(items) do
+        local okCat = ui.catFilter == "All" or (it.cat or "Other") == ui.catFilter
+        local okQ = q == "" or string.find(n, q, 1, true) ~= nil
+        local okShow = ui.show == "All items" or lists[which].items[n] ~= nil
+        if okCat and okQ and okShow then matches[#matches + 1] = it end
+    end
+    table.sort(matches, function(a, b)
+        local ra, rb = RANK[string.lower(a.rarity or "")] or 0, RANK[string.lower(b.rarity or "")] or 0
+        if ra ~= rb then return ra > rb end
+        return a.name < b.name
+    end)
+    for i = 1, math.min(#matches, MAX_ROWS) do itemRow(itemHost, matches[i], which, i) end
+    if countLabel then
+        countLabel.Text = #matches > MAX_ROWS
+            and ("showing " .. MAX_ROWS .. " of " .. #matches .. ", search to narrow")
+            or (#matches .. " item" .. (#matches == 1 and "" or "s"))
+    end
+end
+
+local function buildEditor(parent)
+    local root = newList(parent)
+
+    stamp(root, components.Section(root, "Editing"))
+    stamp(root, components.Dropdown(root, {
+        label = "List", options = { "Pickup", "Trash" }, default = "Pickup",
+        onChange = function(v)
+            ui.mode = v == "Trash" and "trash" or "pick"
+            rebuildCats(); rebuildItems()
+        end,
+    }))
+
+    stamp(root, components.Section(root, "By category"))
+    catHost = stamp(root, newList(root))
+
+    stamp(root, components.Section(root, "Items (click to mark)"))
+    local search = stamp(root, components.TextBox(root, { label = "Search", placeholder = "item name" }))
+    local box = search.frame:FindFirstChildWhichIsA("TextBox")
+    if box then
+        box:GetPropertyChangedSignal("Text"):Connect(function()
+            ui.search = box.Text
+            rebuildItems()
+        end)
+    end
+    local catOpts = { "All" }
+    for _, c in ipairs(CATEGORIES) do catOpts[#catOpts + 1] = c end
+    stamp(root, components.Dropdown(root, {
+        label = "Category", options = catOpts, default = "All",
+        onChange = function(v) ui.catFilter = v; rebuildItems() end,
+    }))
+    stamp(root, components.Dropdown(root, {
+        label = "Show", options = { "All items", "Marked only" }, default = "All items",
+        onChange = function(v) ui.show = v; rebuildItems() end,
+    }))
+    countLabel = stamp(root, components.Label(root, ""))
+    itemHost = stamp(root, newList(root))
+
+    rebuildCats()
+    rebuildItems()
+    -- new items seen in play show up in the list
+    task.spawn(function()
+        while itemHost and itemHost.Parent do
+            task.wait(3)
+            if listDirty then pcall(rebuildItems) end
+        end
+    end)
+    return root
+end
+
+local function pickupFeature()
     return {
         id          = "veil.auto_pickup",
         name        = "Auto Pickup",
-        description = "Picks up drops within reach for you, and it picks the exact item your filter wants even when it's buried in a pile (the game's E only grabs the nearest one). Pickup filter = what to grab; leave it empty to grab everything. Rules are separated by commas: a category (Weapons, Summons, Accessories, Outfits, Potions, Tomes, Gems, Items, Trinkets), an item name, or 'any', each optionally followed by a grade: 'Elite' = exactly Elite, 'Elite+' = Elite or better. Example: Tomes Elite+, Evasion Scarf, Legendary+. Never pick up = same rules, for things to leave on the ground (wins over the pickup filter). Anything you drop yourself is left alone. Reach = how close a drop has to be (10 = the game's own prompt reach).",
+        description = "Picks up drops within reach for you, and grabs the exact item your list wants even when it's buried in a pile (the game's E only grabs the nearest one). What it grabs is set below in this menu: a grade per category (e.g. Tomes -> Elite+) and single items you mark PICK or NEVER (an item's mark beats its category). Marked items are grabbed first, then the highest grade. Anything you drop yourself is left alone. Reach = how close a drop has to be (10 = the game's own prompt reach).",
         default     = false,
         onToggle    = function(v) CFG.pickup = v and true or false; refresh() end,
         settings = {
-            { type = "textbox", name = "Pickup filter (empty = everything)", key = "rules",
-              placeholder = "Tomes Elite+, Evasion Scarf, Legendary+", default = "",
-              onChange = function(v) CFG.pickRules = parseRules(v) end },
-            { type = "textbox", name = "Never pick up", key = "skip",
-              placeholder = "Trinkets Common, Hiveling Arm", default = "",
-              onChange = function(v) CFG.skipRules = parseRules(v) end },
             { type = "toggle", name = "Pick up silver", key = "silver", default = true,
               onChange = function(v) CFG.silver = v and true or false end },
             { type = "slider", name = "Reach (studs)", key = "range", min = 4, max = 10, step = 0.5, default = 10,
@@ -420,25 +888,43 @@ function Loot.pickupFeature()
     }
 end
 
-function Loot.trashFeature()
+local function trashFeature()
     return {
         id          = "veil.auto_trash",
         name        = "Auto Trash",
-        description = "Trashes Backpack items that match your trash filter, the same way the inventory's trash slot does (a few at a time, once a second). Uses the same rules as Auto Pickup, e.g. Trinkets Common, Weapons Uncommon, Hiveling Arm. Never touches favourited items, enhanced items, whatever you're holding, or items the game won't let you drop. Legendary+ items, Stone Accords and Idols of Hatred only go if a rule names that exact item. Only new items = only trash things you get after turning this on, so nothing already in your bag is at risk.",
+        description = "Trashes Backpack items the same way the inventory's trash slot does (a few at a time, once a second). What it trashes is set below in this menu (switch List to Trash): a grade per category (e.g. Trinkets -> Common) and single items you mark TRASH or KEEP. Never touches favourited items, enhanced items, whatever you're holding, or items the game won't let you drop. Categories only ever trash up to Elite; Legendary+ items, Stone Accords and Idols of Hatred only go if you mark that exact item TRASH. Only new items = only trash things you get after turning this on, so nothing already in your bag is at risk.",
         default     = false,
         onToggle    = function(v) CFG.trash = v and true or false; refresh() end,
         settings = {
-            { type = "textbox", name = "Trash filter", key = "rules",
-              placeholder = "Trinkets Common, Weapons Uncommon", default = "",
-              onChange = function(v) CFG.trashRules = parseRules(v) end },
             { type = "toggle", name = "Only new items", key = "only_new", default = true,
               onChange = function(v) CFG.onlyNew = v and true or false end },
         },
     }
 end
 
-Loot._parseRules = parseRules     -- mocktest hooks
-Loot._anyMatch   = anyMatch
-Loot._dropCategory = dropCategory
+function Loot.register()
+    local ok, s = pcall(persist.get, SAVE_ITEMS)
+    if ok and type(s) == "string" then
+        for name, cat, rar in string.gmatch(s, "([^|;]+)|([^|;]*)|([^|;]*)") do
+            local it = noteItem(name, cat ~= "" and cat or nil, rar ~= "" and rar or nil)
+            it.learned = true
+        end
+    end
+    loadList("pick")
+    loadList("trash")
+    local box = container.new(window.parent(), "Veil Loot")
+    box:add(feature.declare(pickupFeature()).root)
+    box:add(feature.declare(trashFeature()).root)
+    box:add(buildEditor(box.features))
+end
+
+function Loot.destroy()
+    Loot.stop()
+    catHost, itemHost, countLabel = nil, nil, nil
+end
+
+Loot._nextState = nextState    -- mocktest hooks
+Loot._pickMin   = pickMin
+Loot._trashMax  = trashMax
 
 return Loot

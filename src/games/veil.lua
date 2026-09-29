@@ -309,9 +309,7 @@ function Veil.register()
     weave.loadSaved(persist)
     box:add(feature.declare(weave.feature()).root)
     box:add(feature.declare(sprint.feature()).root)
-    loot.loadSaved()
-    box:add(feature.declare(loot.pickupFeature()).root)
-    box:add(feature.declare(loot.trashFeature()).root)
+    loot.register()   -- its own "Veil Loot" menu
 
     log.info("The Veil module registered -- Bot Mode filter + Auto Weave")
 end
@@ -321,7 +319,7 @@ end
 function Veil.destroy()
     pcall(weave.stop)
     pcall(sprint.stop)
-    pcall(loot.stop)
+    pcall(loot.destroy)
     pcall(setClearFog, false)
     if removeFilter then
         pcall(removeFilter)
