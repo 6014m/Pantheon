@@ -35,6 +35,7 @@ local log       = require("core.log")
 local persist   = require("core.persist")
 local weave     = require("games.veil_weave")
 local sprint    = require("games.veil_sprint")
+local loot      = require("games.veil_loot")
 
 local Workspace = game:GetService("Workspace")
 local Lighting  = game:GetService("Lighting")
@@ -308,6 +309,9 @@ function Veil.register()
     weave.loadSaved(persist)
     box:add(feature.declare(weave.feature()).root)
     box:add(feature.declare(sprint.feature()).root)
+    loot.loadSaved()
+    box:add(feature.declare(loot.pickupFeature()).root)
+    box:add(feature.declare(loot.trashFeature()).root)
 
     log.info("The Veil module registered -- Bot Mode filter + Auto Weave")
 end
@@ -317,6 +321,7 @@ end
 function Veil.destroy()
     pcall(weave.stop)
     pcall(sprint.stop)
+    pcall(loot.stop)
     pcall(setClearFog, false)
     if removeFilter then
         pcall(removeFilter)
