@@ -56,7 +56,7 @@ TAIL = '''
             -- instance that started it is unloaded or replaced, stop even if onUnload never ran
             -- (only when the hub handle is visible from here -- otherwise this would stop it at once)
             local owner = G().Pantheon
-            if type(owner) == "table" and type(owner.shutdown) == "function" then
+            if type(owner) == "table" then
                 task.spawn(function()
                     while rec.running do
                         task.wait(1)
