@@ -309,7 +309,7 @@ function Veil.register()
     weave.loadSaved(persist)
     box:add(feature.declare(weave.feature()).root)
     box:add(feature.declare(sprint.feature()).root)
-    loot.register()   -- its own "Veil Loot" menu
+    loot.register(box)   -- Auto Pickup / Auto Trash + the Loot Filter pop-up
 
     log.info("The Veil module registered -- Bot Mode filter + Auto Weave")
 end

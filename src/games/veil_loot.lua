@@ -1,4 +1,4 @@
--- The Veil: Auto Pickup + Auto Trash, with their own "Veil Loot" menu.
+-- The Veil: Auto Pickup + Auto Trash, set up in a pop-up Loot Filter window.
 --
 -- How the game does it (decompiled InteractHandler / InventoryGui.Handler, 2026-09-29):
 --   * Drops are models in workspace.Drops named after the item: attribute Rarity, Folder
@@ -14,7 +14,7 @@
 --   * The prompt's name colour is generated from the drop's Rarity value (RarityAnim), so
 --     reading Rarity = reading the colour.
 --
--- The menu (user: "select from a list of known items instead of typing it in"):
+-- The Loot Filter window (user: "select from a list of known items instead of typing it in"):
 --   * By category: one grade picker per inventory tab (Tomes -> Elite+ etc.).
 --   * Items: a searchable list of every known item; click one to cycle its state
 --     (pickup list: Pick / Never, trash list: Trash / Keep). An item's own state beats
@@ -28,8 +28,6 @@ local RS        = game:GetService("ReplicatedStorage")
 
 local log        = require("core.log")
 local persist    = require("core.persist")
-local window     = require("ui.window")
-local container  = require("ui.container")
 local feature    = require("ui.feature")
 local components = require("ui.components")
 local theme      = require("ui.theme")
@@ -689,7 +687,16 @@ local function refresh()
     if anyOn() then Loot.start() else Loot.stop() end
 end
 
------------------------------------------------------------------- menu
+------------------------------------------------------------------ Loot Filter window
+-- A pop-up window like the Tech Builder's (user: "like how tech builder has its own gui pop
+-- up from a click of a button"): opened from the "Open Loot Filter" button in The Veil menu.
+--   header : title, Pickup / Trash tabs, close
+--   left   : one grade button per category (click = next grade, right-click = previous)
+--   right  : search + category filter + "marked only", then every known item in its rarity
+--            colour; click an item to cycle its mark
+local UIS = game:GetService("UserInputService")
+local env = require("core.env")
+
 local STATE_CYCLE = { pick = { false, "pick", "never" }, trash = { false, "trash", "keep" } }
 local STATE_LOOK = {
     pick  = { label = "PICK",  color = Color3.fromRGB(60, 222, 60) },
@@ -697,9 +704,10 @@ local STATE_LOOK = {
     trash = { label = "TRASH", color = Color3.fromRGB(222, 60, 60) },
     keep  = { label = "KEEP",  color = Color3.fromRGB(60, 222, 60) },
 }
-local MAX_ROWS = 40
 
-local ui = { mode = "pick", search = "", catFilter = "All", show = "All items" }
+local ui = { mode = "pick", search = "", catFilter = "All", markedOnly = false }
+local gui, rootFrame, catPane, itemScroll, countLabel, tabBtns, hintLabel
+local winConns = {}
 
 -- none -> first mark -> second mark -> none
 local function nextState(which, cur)
@@ -709,80 +717,76 @@ local function nextState(which, cur)
     return cyc[(i % 3) + 1] or nil
 end
 
-local function newList(parent)
-    local f = Instance.new("Frame")
-    f.Size = UDim2.new(1, 0, 0, 0)
-    f.AutomaticSize = Enum.AutomaticSize.Y
-    f.BackgroundTransparency = 1
-    f.Parent = parent
-    local l = Instance.new("UIListLayout", f)
-    l.SortOrder = Enum.SortOrder.LayoutOrder
-    l.Padding = UDim.new(0, theme.rowGap or 1)
-    return f
+local function corner(o, r) local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 6); c.Parent = o end
+local function stroke(o, col) local s = Instance.new("UIStroke"); s.Color = col or theme.border; s.Thickness = 1; s.Parent = o end
+
+local function btn(parent, text, size, pos, color)
+    local b = Instance.new("TextButton")
+    b.Size = size; b.Position = pos or UDim2.new()
+    b.BackgroundColor3 = color or theme.bgAlt; b.BorderSizePixel = 0; b.AutoButtonColor = true
+    b.Text = text; b.TextColor3 = theme.fg; b.Font = theme.fontBold; b.TextSize = 11
+    b.Parent = parent
+    corner(b, 5)
+    return b
 end
 
--- give each row of a list its creation order (components don't set LayoutOrder)
-local function stamp(parent, obj)
-    local root = type(obj) == "table" and obj.frame or obj
-    local n = 0
-    for _, c in ipairs(parent:GetChildren()) do if c:IsA("GuiObject") then n += 1 end end
-    if root then root.LayoutOrder = n end
-    return obj
+local function gradeColor(g)
+    local t = g and string.match(g, "^(%a+)")
+    return TIER_COLOR[t or ""] or (g == "Off" and theme.fgDim or theme.fg)
 end
 
-local catHost, itemHost, countLabel
 local rebuildItems
 
 local function rebuildCats()
-    if not catHost then return end
-    for _, c in ipairs(catHost:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
+    if not catPane then return end
+    for _, c in ipairs(catPane:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
     local which = ui.mode
     local opts = which == "pick" and PICK_GRADES or TRASH_GRADES
-    for _, cat in ipairs(CATEGORIES) do
-        stamp(catHost, components.Dropdown(catHost, {
-            label = cat == "Other" and "Other / unknown" or cat,
-            options = opts,
-            default = lists[which].cats[cat],
-            onChange = function(v)
-                lists[which].cats[cat] = v
-                saveList(which)
-            end,
-        }))
+    for i, cat in ipairs(CATEGORIES) do
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, 0, 0, 26); row.BackgroundColor3 = theme.bgAlt; row.BorderSizePixel = 0
+        row.LayoutOrder = i; row.Parent = catPane
+        corner(row, 5)
+        local l = Instance.new("TextLabel")
+        l.Size = UDim2.new(0.45, -8, 1, 0); l.Position = UDim2.fromOffset(8, 0); l.BackgroundTransparency = 1
+        l.Text = cat; l.TextColor3 = theme.fg; l.Font = theme.font; l.TextSize = 12
+        l.TextXAlignment = Enum.TextXAlignment.Left; l.Parent = row
+        local b = btn(row, "", UDim2.new(0.55, -6, 1, -6), UDim2.new(0.45, 0, 0, 3), theme.bgDark)
+        local function paint()
+            local g = lists[which].cats[cat]
+            b.Text = g; b.TextColor3 = gradeColor(g)
+        end
+        local function step(dir)
+            local cur, idx = lists[which].cats[cat], 1
+            for k, o in ipairs(opts) do if o == cur then idx = k end end
+            idx = ((idx - 1 + dir) % #opts) + 1
+            lists[which].cats[cat] = opts[idx]
+            saveList(which); paint()
+        end
+        b.MouseButton1Click:Connect(function() step(1) end)
+        b.MouseButton2Click:Connect(function() step(-1) end)
+        paint()
     end
 end
 
-local function itemRow(parent, it, which, idx)
+local function itemRow(it, which, idx)
     local n = string.lower(it.name)
     local row = Instance.new("TextButton")
-    row.Size = UDim2.new(1, 0, 0, 22)
-    row.BackgroundColor3 = theme.bgAlt
-    row.BorderSizePixel = 0
-    row.AutoButtonColor = true
-    row.Text = ""
-    row.LayoutOrder = idx
-    row.Parent = parent
-
+    row.Size = UDim2.new(1, -6, 0, 22); row.BackgroundColor3 = theme.bgAlt; row.BorderSizePixel = 0
+    row.AutoButtonColor = true; row.Text = ""; row.LayoutOrder = idx; row.Parent = itemScroll
+    corner(row, 4)
     local name = Instance.new("TextLabel")
-    name.Size = UDim2.new(1, -60, 1, 0)
-    name.Position = UDim2.fromOffset(8, 0)
-    name.BackgroundTransparency = 1
-    name.Font = theme.font
-    name.TextSize = 11
-    name.TextXAlignment = Enum.TextXAlignment.Left
-    name.TextTruncate = Enum.TextTruncate.AtEnd
-    name.Text = it.name
-    name.TextColor3 = TIER_COLOR[it.rarity or ""] or theme.fgDim
-    name.Parent = row
-
+    name.Size = UDim2.new(1, -150, 1, 0); name.Position = UDim2.fromOffset(8, 0); name.BackgroundTransparency = 1
+    name.Font = theme.font; name.TextSize = 12; name.TextXAlignment = Enum.TextXAlignment.Left
+    name.TextTruncate = Enum.TextTruncate.AtEnd; name.Text = it.name
+    name.TextColor3 = TIER_COLOR[it.rarity or ""] or theme.fgDim; name.Parent = row
+    local info = Instance.new("TextLabel")
+    info.Size = UDim2.new(0, 90, 1, 0); info.Position = UDim2.new(1, -150, 0, 0); info.BackgroundTransparency = 1
+    info.Font = theme.font; info.TextSize = 10; info.TextColor3 = theme.fgDim
+    info.TextXAlignment = Enum.TextXAlignment.Right; info.Text = it.cat or "?"; info.Parent = row
     local tag = Instance.new("TextLabel")
-    tag.Size = UDim2.new(0, 50, 1, 0)
-    tag.Position = UDim2.new(1, -54, 0, 0)
-    tag.BackgroundTransparency = 1
-    tag.Font = theme.fontBold
-    tag.TextSize = 10
-    tag.TextXAlignment = Enum.TextXAlignment.Right
-    tag.Parent = row
-
+    tag.Size = UDim2.new(0, 50, 1, 0); tag.Position = UDim2.new(1, -56, 0, 0); tag.BackgroundTransparency = 1
+    tag.Font = theme.fontBold; tag.TextSize = 11; tag.TextXAlignment = Enum.TextXAlignment.Right; tag.Parent = row
     local function paint()
         local st = lists[which].items[n]
         local look = st and STATE_LOOK[st]
@@ -792,91 +796,192 @@ local function itemRow(parent, it, which, idx)
     paint()
     row.MouseButton1Click:Connect(function()
         lists[which].items[n] = nextState(which, lists[which].items[n])
-        saveList(which)
-        paint()
+        saveList(which); paint()
     end)
 end
 
 rebuildItems = function()
-    if not itemHost then return end
+    if not itemScroll then return end
     listDirty = false
-    for _, c in ipairs(itemHost:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
+    for _, c in ipairs(itemScroll:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
     local which = ui.mode
     local q = string.lower(ui.search or "")
     local matches = {}
     for n, it in pairs(items) do
-        local okCat = ui.catFilter == "All" or (it.cat or "Other") == ui.catFilter
-        local okQ = q == "" or string.find(n, q, 1, true) ~= nil
-        local okShow = ui.show == "All items" or lists[which].items[n] ~= nil
-        if okCat and okQ and okShow then matches[#matches + 1] = it end
+        if (ui.catFilter == "All" or (it.cat or "Other") == ui.catFilter)
+           and (q == "" or string.find(n, q, 1, true) ~= nil)
+           and (not ui.markedOnly or lists[which].items[n] ~= nil) then
+            matches[#matches + 1] = it
+        end
     end
     table.sort(matches, function(a, b)
         local ra, rb = RANK[string.lower(a.rarity or "")] or 0, RANK[string.lower(b.rarity or "")] or 0
         if ra ~= rb then return ra > rb end
         return a.name < b.name
     end)
-    for i = 1, math.min(#matches, MAX_ROWS) do itemRow(itemHost, matches[i], which, i) end
-    if countLabel then
-        countLabel.Text = #matches > MAX_ROWS
-            and ("showing " .. MAX_ROWS .. " of " .. #matches .. ", search to narrow")
-            or (#matches .. " item" .. (#matches == 1 and "" or "s"))
-    end
+    for i, it in ipairs(matches) do itemRow(it, which, i) end
+    if countLabel then countLabel.Text = #matches .. " item" .. (#matches == 1 and "" or "s") end
 end
 
-local function buildEditor(parent)
-    local root = newList(parent)
+local function setMode(m)
+    ui.mode = m
+    for k, b in pairs(tabBtns) do b.BackgroundColor3 = (k == m) and theme.accent or theme.bgDark end
+    if hintLabel then
+        hintLabel.Text = m == "pick"
+            and "Pickup: the grade to grab per category. Click an item: PICK > NEVER > clear."
+            or "Trash: the grade to throw out per category. Click an item: TRASH > KEEP > clear."
+    end
+    rebuildCats(); rebuildItems()
+end
 
-    stamp(root, components.Section(root, "Editing"))
-    stamp(root, components.Dropdown(root, {
-        label = "List", options = { "Pickup", "Trash" }, default = "Pickup",
-        onChange = function(v)
-            ui.mode = v == "Trash" and "trash" or "pick"
-            rebuildCats(); rebuildItems()
-        end,
-    }))
+local function ensureGui()
+    if gui and gui.Parent then return end
+    gui = Instance.new("ScreenGui")
+    gui.Name = "_" .. math.random(100000, 999999)
+    gui.ResetOnSpawn = false
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.Parent = env.guiParent()
+    if env.protectGui then env.protectGui(gui) end
 
-    stamp(root, components.Section(root, "By category"))
-    catHost = stamp(root, newList(root))
+    rootFrame = Instance.new("Frame")
+    rootFrame.Size = UDim2.fromOffset(600, 440)
+    rootFrame.Position = UDim2.new(0.5, -300, 0.5, -220)
+    rootFrame.BackgroundColor3 = theme.bg; rootFrame.BorderSizePixel = 0; rootFrame.Visible = false; rootFrame.Active = true
+    rootFrame.Parent = gui
+    corner(rootFrame, 10); stroke(rootFrame, theme.accent)
 
-    stamp(root, components.Section(root, "Items (click to mark)"))
-    local search = stamp(root, components.TextBox(root, { label = "Search", placeholder = "item name" }))
-    local box = search.frame:FindFirstChildWhichIsA("TextBox")
-    if box then
-        box:GetPropertyChangedSignal("Text"):Connect(function()
-            ui.search = box.Text
-            rebuildItems()
+    -- header: drag, title, tabs, close
+    local header = Instance.new("Frame")
+    header.Size = UDim2.new(1, 0, 0, 30); header.BackgroundColor3 = theme.accent; header.BorderSizePixel = 0
+    header.Parent = rootFrame
+    corner(header, 10)
+    local dragBtn = Instance.new("TextButton")
+    dragBtn.Size = UDim2.fromScale(1, 1); dragBtn.BackgroundTransparency = 1; dragBtn.Text = ""
+    dragBtn.AutoButtonColor = false; dragBtn.ZIndex = 2; dragBtn.Parent = header
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(0, 160, 1, 0); title.Position = UDim2.fromOffset(12, 0); title.BackgroundTransparency = 1
+    title.Text = "Loot Filter"; title.TextColor3 = theme.fg; title.Font = theme.fontBold; title.TextSize = 13
+    title.TextXAlignment = Enum.TextXAlignment.Left; title.ZIndex = 3; title.Parent = header
+    tabBtns = {}
+    tabBtns.pick = btn(header, "Pickup", UDim2.fromOffset(80, 22), UDim2.new(0.5, -84, 0.5, -11), theme.bgDark)
+    tabBtns.trash = btn(header, "Trash", UDim2.fromOffset(80, 22), UDim2.new(0.5, 4, 0.5, -11), theme.bgDark)
+    tabBtns.pick.ZIndex = 4; tabBtns.trash.ZIndex = 4
+    tabBtns.pick.MouseButton1Click:Connect(function() setMode("pick") end)
+    tabBtns.trash.MouseButton1Click:Connect(function() setMode("trash") end)
+    local close = btn(header, "X", UDim2.fromOffset(26, 22), UDim2.new(1, -30, 0.5, -11), theme.danger)
+    close.ZIndex = 4
+    close.MouseButton1Click:Connect(function() Loot.closeFilter() end)
+    do
+        local dragging, dStart, sPos = false, nil, nil
+        dragBtn.InputBegan:Connect(function(i)
+            if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+                dragging, dStart, sPos = true, i.Position, rootFrame.Position
+            end
+        end)
+        winConns[#winConns + 1] = UIS.InputChanged:Connect(function(i)
+            if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+                local d = i.Position - dStart
+                rootFrame.Position = UDim2.new(sPos.X.Scale, sPos.X.Offset + d.X, sPos.Y.Scale, sPos.Y.Offset + d.Y)
+            end
+        end)
+        winConns[#winConns + 1] = UIS.InputEnded:Connect(function(i)
+            if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then dragging = false end
         end)
     end
+
+    hintLabel = Instance.new("TextLabel")
+    hintLabel.Size = UDim2.new(1, -16, 0, 18); hintLabel.Position = UDim2.fromOffset(10, 34)
+    hintLabel.BackgroundTransparency = 1; hintLabel.TextColor3 = theme.fgDim; hintLabel.Font = theme.font
+    hintLabel.TextSize = 11; hintLabel.TextXAlignment = Enum.TextXAlignment.Left; hintLabel.Parent = rootFrame
+
+    -- LEFT: categories
+    local leftTitle = Instance.new("TextLabel")
+    leftTitle.Size = UDim2.fromOffset(200, 18); leftTitle.Position = UDim2.fromOffset(10, 54)
+    leftTitle.BackgroundTransparency = 1; leftTitle.Text = "BY CATEGORY"; leftTitle.TextColor3 = theme.accent
+    leftTitle.Font = theme.fontBold; leftTitle.TextSize = 11; leftTitle.TextXAlignment = Enum.TextXAlignment.Left
+    leftTitle.Parent = rootFrame
+    catPane = Instance.new("Frame")
+    catPane.Size = UDim2.new(0, 200, 1, -100); catPane.Position = UDim2.fromOffset(10, 74)
+    catPane.BackgroundTransparency = 1; catPane.Parent = rootFrame
+    local cl = Instance.new("UIListLayout", catPane); cl.SortOrder = Enum.SortOrder.LayoutOrder; cl.Padding = UDim.new(0, 3)
+    local tip = Instance.new("TextLabel")
+    tip.Size = UDim2.fromOffset(200, 16); tip.Position = UDim2.new(0, 10, 1, -22)
+    tip.BackgroundTransparency = 1; tip.Text = "click = next grade, right-click = back"; tip.TextColor3 = theme.fgDim
+    tip.Font = theme.font; tip.TextSize = 10; tip.TextXAlignment = Enum.TextXAlignment.Left; tip.Parent = rootFrame
+
+    -- RIGHT: search + filters + item list
+    local right = Instance.new("Frame")
+    right.Size = UDim2.new(1, -236, 1, -64); right.Position = UDim2.fromOffset(224, 54)
+    right.BackgroundColor3 = theme.bgDark; right.BorderSizePixel = 0; right.Parent = rootFrame
+    corner(right, 8)
+    local search = Instance.new("TextBox")
+    search.Size = UDim2.new(1, -16, 0, 24); search.Position = UDim2.fromOffset(8, 8)
+    search.BackgroundColor3 = theme.bgAlt; search.BorderSizePixel = 0; search.ClearTextOnFocus = false
+    search.PlaceholderText = "Search items..."; search.PlaceholderColor3 = theme.fgDim; search.Text = ""
+    search.TextColor3 = theme.fg; search.Font = theme.font; search.TextSize = 12
+    search.TextXAlignment = Enum.TextXAlignment.Left; search.Parent = right
+    corner(search, 5)
+    local sp = Instance.new("UIPadding", search); sp.PaddingLeft = UDim.new(0, 8)
+    search:GetPropertyChangedSignal("Text"):Connect(function() ui.search = search.Text; rebuildItems() end)
+
     local catOpts = { "All" }
     for _, c in ipairs(CATEGORIES) do catOpts[#catOpts + 1] = c end
-    stamp(root, components.Dropdown(root, {
-        label = "Category", options = catOpts, default = "All",
-        onChange = function(v) ui.catFilter = v; rebuildItems() end,
-    }))
-    stamp(root, components.Dropdown(root, {
-        label = "Show", options = { "All items", "Marked only" }, default = "All items",
-        onChange = function(v) ui.show = v; rebuildItems() end,
-    }))
-    countLabel = stamp(root, components.Label(root, ""))
-    itemHost = stamp(root, newList(root))
+    local catBtn = btn(right, "Category: All", UDim2.new(0.5, -12, 0, 22), UDim2.fromOffset(8, 38), theme.bgAlt)
+    local function stepCat(dir)
+        local idx = 1
+        for k, o in ipairs(catOpts) do if o == ui.catFilter then idx = k end end
+        idx = ((idx - 1 + dir) % #catOpts) + 1
+        ui.catFilter = catOpts[idx]; catBtn.Text = "Category: " .. ui.catFilter
+        rebuildItems()
+    end
+    catBtn.MouseButton1Click:Connect(function() stepCat(1) end)
+    catBtn.MouseButton2Click:Connect(function() stepCat(-1) end)
+    local markBtn = btn(right, "Show: all", UDim2.new(0.3, -4, 0, 22), UDim2.new(0.5, 0, 0, 38), theme.bgAlt)
+    markBtn.MouseButton1Click:Connect(function()
+        ui.markedOnly = not ui.markedOnly
+        markBtn.Text = ui.markedOnly and "Show: marked" or "Show: all"
+        rebuildItems()
+    end)
+    countLabel = Instance.new("TextLabel")
+    countLabel.Size = UDim2.new(0.2, -8, 0, 22); countLabel.Position = UDim2.new(0.8, 0, 0, 38)
+    countLabel.BackgroundTransparency = 1; countLabel.TextColor3 = theme.fgDim; countLabel.Font = theme.font
+    countLabel.TextSize = 11; countLabel.TextXAlignment = Enum.TextXAlignment.Right; countLabel.Parent = right
 
-    rebuildCats()
-    rebuildItems()
-    -- new items seen in play show up in the list
+    itemScroll = Instance.new("ScrollingFrame")
+    itemScroll.Size = UDim2.new(1, -12, 1, -72); itemScroll.Position = UDim2.fromOffset(8, 66)
+    itemScroll.BackgroundTransparency = 1; itemScroll.BorderSizePixel = 0; itemScroll.ScrollBarThickness = 4
+    itemScroll.ScrollBarImageColor3 = theme.accent
+    itemScroll.CanvasSize = UDim2.new(); itemScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    itemScroll.Parent = right
+    local il = Instance.new("UIListLayout", itemScroll); il.SortOrder = Enum.SortOrder.LayoutOrder; il.Padding = UDim.new(0, 2)
+
+    -- items seen in play appear while the window is open
     task.spawn(function()
-        while itemHost and itemHost.Parent do
+        while gui and gui.Parent do
             task.wait(3)
-            if listDirty then pcall(rebuildItems) end
+            if listDirty and rootFrame.Visible then pcall(rebuildItems) end
         end
     end)
-    return root
+end
+
+function Loot.openFilter()
+    local ok, err = pcall(function()
+        ensureGui()
+        setMode(ui.mode)
+        rootFrame.Visible = true
+    end)
+    if not ok then warn("[Pantheon] Loot Filter open error: " .. tostring(err)) end
+end
+
+function Loot.closeFilter()
+    if rootFrame then rootFrame.Visible = false end
 end
 
 local function pickupFeature()
     return {
         id          = "veil.auto_pickup",
         name        = "Auto Pickup",
-        description = "Picks up drops within reach for you, and grabs the exact item your list wants even when it's buried in a pile (the game's E only grabs the nearest one). What it grabs is set below in this menu: a grade per category (e.g. Tomes -> Elite+) and single items you mark PICK or NEVER (an item's mark beats its category). Marked items are grabbed first, then the highest grade. Anything you drop yourself is left alone. Reach = how close a drop has to be (10 = the game's own prompt reach).",
+        description = "Picks up drops within reach for you, and grabs the exact item your filter wants even when it's buried in a pile (the game's E only grabs the nearest one). What it grabs is set in the Loot Filter window (Open Loot Filter): a grade per category (e.g. Tomes -> Elite+) and single items you mark PICK or NEVER (an item's mark beats its category). Marked items are grabbed first, then the highest grade. Anything you drop yourself is left alone. Reach = how close a drop has to be (10 = the game's own prompt reach).",
         default     = false,
         onToggle    = function(v) CFG.pickup = v and true or false; refresh() end,
         settings = {
@@ -884,6 +989,7 @@ local function pickupFeature()
               onChange = function(v) CFG.silver = v and true or false end },
             { type = "slider", name = "Reach (studs)", key = "range", min = 4, max = 10, step = 0.5, default = 10,
               onChange = function(v) CFG.range = v end },
+            { type = "button", name = "Open Loot Filter", onClick = function() Loot.openFilter() end },
         },
     }
 end
@@ -892,17 +998,19 @@ local function trashFeature()
     return {
         id          = "veil.auto_trash",
         name        = "Auto Trash",
-        description = "Trashes Backpack items the same way the inventory's trash slot does (a few at a time, once a second). What it trashes is set below in this menu (switch List to Trash): a grade per category (e.g. Trinkets -> Common) and single items you mark TRASH or KEEP. Never touches favourited items, enhanced items, whatever you're holding, or items the game won't let you drop. Categories only ever trash up to Elite; Legendary+ items, Stone Accords and Idols of Hatred only go if you mark that exact item TRASH. Only new items = only trash things you get after turning this on, so nothing already in your bag is at risk.",
+        description = "Trashes Backpack items the same way the inventory's trash slot does (a few at a time, once a second). What it trashes is set in the Loot Filter window's Trash tab: a grade per category (e.g. Trinkets -> Common) and single items you mark TRASH or KEEP. Never touches favourited items, enhanced items, whatever you're holding, or items the game won't let you drop. Categories only ever trash up to Elite; Legendary+ items, Stone Accords and Idols of Hatred only go if you mark that exact item TRASH. Only new items = only trash things you get after turning this on, so nothing already in your bag is at risk.",
         default     = false,
         onToggle    = function(v) CFG.trash = v and true or false; refresh() end,
         settings = {
             { type = "toggle", name = "Only new items", key = "only_new", default = true,
               onChange = function(v) CFG.onlyNew = v and true or false end },
+            { type = "button", name = "Open Loot Filter", onClick = function() Loot.openFilter() end },
         },
     }
 end
 
-function Loot.register()
+-- Adds Auto Pickup, Auto Trash and an "Open Loot Filter" button to The Veil's menu.
+function Loot.register(box)
     local ok, s = pcall(persist.get, SAVE_ITEMS)
     if ok and type(s) == "string" then
         for name, cat, rar in string.gmatch(s, "([^|;]+)|([^|;]*)|([^|;]*)") do
@@ -912,15 +1020,17 @@ function Loot.register()
     end
     loadList("pick")
     loadList("trash")
-    local box = container.new(window.parent(), "Veil Loot")
     box:add(feature.declare(pickupFeature()).root)
     box:add(feature.declare(trashFeature()).root)
-    box:add(buildEditor(box.features))
+    box:add(components.Button(box.features, { text = "Open Loot Filter", onClick = function() Loot.openFilter() end }))
 end
 
 function Loot.destroy()
     Loot.stop()
-    catHost, itemHost, countLabel = nil, nil, nil
+    for _, c in ipairs(winConns) do pcall(function() c:Disconnect() end) end
+    table.clear(winConns)
+    if gui then pcall(function() gui:Destroy() end) end
+    gui, rootFrame, catPane, itemScroll, countLabel, hintLabel = nil, nil, nil, nil, nil, nil
 end
 
 Loot._nextState = nextState    -- mocktest hooks
