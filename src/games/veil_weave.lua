@@ -94,7 +94,7 @@ local CFG = {
 local ATTACKS = {
     -- The Bell (megaboss, fight 2026-09-29): it plays an indicator sound as each attack starts --
     -- WeaveIndi / JumpIndi / DodgeIndi -- that says which evasion the attack wants.
-    ["81529985859552"]  = 0.82,  -- The Bell stab (WeaveIndi): dashes in from 55-76 studs, Stab 0.71-0.73, 71.5 dmg at 0.83
+    ["81529985859552"]  = 0.86,  -- The Bell stab (WeaveIndi): dashes in from 55-76 studs, Stab 0.71; fight 2: 33 plays, hits 0.85-0.94
     ["107426583476702"] = 0.58,  -- shared swing: Skeleton, Armored Skeleton, Wraith, Hivelings, Alien...
     ["110285618672790"] = 0.57,  -- Ancient Bones
     ["102522251341739"] = 0.65,  -- Ancient Bones
@@ -268,6 +268,9 @@ local CHANNELS = {
 local JUMP_ATTACKS = {
     -- The Bell leap smash (JumpIndi): leaps in from 55-88 studs, Smash 0.68-0.76, 60.5 dmg at 0.90
     ["124469150178302"] = { impacts = { 0.85 }, range = 100, name = "The Bell leap smash", double = true },
+    -- The Bell delayed smash (fight 2, unlocked later): JumpIndi plays ~1.0 s IN, Smash1/2 at 1.02,
+    -- 55 dmg at 1.12-1.13 (2 of 2 hit)
+    ["77689631365456"]  = { impacts = { 1.12 }, range = 60, name = "The Bell delayed smash", double = true },
     -- 2nd recorded fight: the slam's 47 dmg landed 1.34-1.60 s in (8 hits) -> 1.45
     -- double = always the double jump (user 2026-09-28: "a regular jump barely ever works for the
     -- festering wound")
@@ -304,7 +307,7 @@ local DASH_ATTACKS = {
     -- (Windup at start, Grab 0.58-0.63, grabbed at 0.81, then a 77 slam at 1.53 you can't
     -- weave out of -- a weave pressed while held was refused) is dashed before it grabs.
     ["126421074291598"] = { impact = 1.15, range = 60, name = "The Bell swing" },
-    ["116385041102685"] = { impact = 0.68, range = 80, name = "The Bell kick" },
+    ["116385041102685"] = { impact = 0.76, range = 80, name = "The Bell kick" },   -- fight 2: Kick 0.63, 60.5 dmg at 0.76
     ["82316911117911"]  = { impact = 0.78, range = 80, name = "The Bell grab" },
     -- Cursed Hammer LEAP SLAM 136161739984425 = its unweavable (user 2026-09-27). The game says so:
     -- it opens with the "Indicator" sound (like the Husk slam / Crowned smash) where weavable
@@ -2133,6 +2136,8 @@ end
 local MY_WEAPON_PARTS = { ShatterStab = true, ShatterProjectile = true, Vine = true }
 
 local STAR_CONTACT = 4     -- studs, star centre to yours at contact (4-stud ball + your body)
+local STAR_FUSE    = 4.3   -- s after spawning most stars go off (fight 2: 96 stars, 3.2-5.8)
+local STAR_BLAST   = 10    -- studs: explosions further than this from you didn't hurt
 
 local function onPart(part)
     if not (running and CFG.enabled) or not part:IsA("BasePart") then return end
@@ -2451,30 +2456,47 @@ local function step()
                             end)
                         end
                     elseif rec.star then
-                        -- gap to contact (star 4-stud ball + your body) and how fast it's closing,
-                        -- both measured frame to frame, so your own running/dashing is in it
-                        local gap = (pos - me).Magnitude - STAR_CONTACT
+                        -- fight 2 (2026-09-29): 722 STAR triggers -- a star is THROWN out at 150-300
+                        -- stud/s before it slows and drifts in, and that launch read as "about to
+                        -- hit" from 90 studs (dashes while he was only summoning them). Now: ignored
+                        -- for its first 0.9 s and whenever it moves > 70 stud/s. Then two triggers:
+                        --  contact -- it drifts into you (dash just before it touches)
+                        --  fuse    -- most go off ~4.3 s after spawning (3.2-5.8); the 17-stud blast
+                        --             only hurt within ~10 studs, so a star still that close at 3.9 s
+                        --             gets a dash timed over the detonation
+                        local d = (pos - me).Magnitude
+                        local gap = d - STAR_CONTACT
                         local closing = rec.lastGap and (rec.lastGap - gap) / dt or 0
-                        rec.closing = rec.closing and (rec.closing * 0.5 + closing * 0.5) or closing
                         rec.lastGap = gap
-                        local c = rec.closing
-                        local eta = c > 2 and math.max(gap, 0) / c or math.huge
-                        if gap <= 0.5 then eta = 0.02 end
+                        local launching = age < 0.9 or speed > 70
+                        if launching then
+                            rec.closing = nil
+                        else
+                            rec.closing = rec.closing and (rec.closing * 0.5 + closing * 0.5) or closing
+                        end
+                        local c = rec.closing or 0
                         local h = rec.impact
-                        if eta <= 0.7 then
+                        local when, why
+                        if not launching and gap <= 12 then
+                            local eta = gap <= 0.5 and 0.02 or (c > 2 and gap / c or math.huge)
+                            if eta <= 0.5 then when, why = t + eta, string.format("white star touching in %.2fs (%.1f studs)", eta, gap) end
+                        end
+                        if not when and age >= STAR_FUSE - 0.4 and d <= STAR_BLAST then
+                            when, why = math.max(t + 0.05, rec.first + STAR_FUSE), string.format("white star fuse (%.1f studs)", d)
+                        end
+                        if when then
                             if h and h.t > t then
-                                h.t = t + eta                          -- homing: keep it current
+                                if when < h.t then h.t = when end
                             elseif not h then
-                                impacts[#impacts + 1] = { t = t + eta, reason = string.format("white star %.1f studs, closing %.0f", gap, c),
-                                                          kind = "melee", from = pos, key = "WhiteStar", unweavable = true,
-                                                          dashDir = "Away from the attack" }
+                                impacts[#impacts + 1] = { t = when, reason = why, kind = "melee", from = pos, key = "WhiteStar",
+                                                          unweavable = true, dashDir = "Away from the attack" }
                                 rec.impact = impacts[#impacts]
-                                dlog("STAR %.1f studs away, closing %.0f stud/s, contact in %.2f", gap, c, eta)
+                                dlog("STAR %s", why)
                             end
-                        elseif h and h.t > t + 0.05 and (c < 0 or eta > 1.2) and not attempt then
-                            for i, x in ipairs(impacts) do if x == h then table.remove(impacts, i); break end end
+                        elseif h and h.t > t + 0.05 and d > STAR_BLAST + 4 and not attempt then
+                            for i2, x in ipairs(impacts) do if x == h then table.remove(impacts, i2); break end end
                             rec.impact = nil
-                            dlog("CANCEL white star veered off (%.1f studs, closing %.0f)", gap, c)
+                            dlog("CANCEL white star drifted off (%.1f studs)", d)
                         end
                     elseif rec.proximity then
                         -- follow it in: weave just before it reaches you
