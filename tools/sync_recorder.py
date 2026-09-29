@@ -54,14 +54,17 @@ TAIL = '''
             if not rec then return end
             -- backup for "unexecute Pantheon = recorder stops too" (user 2026-09-29): if the Pantheon
             -- instance that started it is unloaded or replaced, stop even if onUnload never ran
+            -- (only when the hub handle is visible from here -- otherwise this would stop it at once)
             local owner = G().Pantheon
-            task.spawn(function()
-                while rec.running do
-                    task.wait(1)
-                    local now = G().Pantheon
-                    if now ~= owner or not now then pcall(rec.stop, "Pantheon unloaded"); break end
-                end
-            end)
+            if type(owner) == "table" and type(owner.shutdown) == "function" then
+                task.spawn(function()
+                    while rec.running do
+                        task.wait(1)
+                        local cur = G().Pantheon
+                        if cur ~= owner or not cur then pcall(rec.stop, "Pantheon unloaded"); break end
+                    end
+                end)
+            end
             -- another instance taking over stops it from inside: flip the toggle off too
             local inner = rec.stop
             rec.stop = function(reason)
