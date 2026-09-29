@@ -92,6 +92,9 @@ local CFG = {
 
 -- attack animation -> seconds from anim start to damage (median of clean hits on you)
 local ATTACKS = {
+    -- The Bell (megaboss, fight 2026-09-29): it plays an indicator sound as each attack starts --
+    -- WeaveIndi / JumpIndi / DodgeIndi -- that says which evasion the attack wants.
+    ["81529985859552"]  = 0.82,  -- The Bell stab (WeaveIndi): dashes in from 55-76 studs, Stab 0.71-0.73, 71.5 dmg at 0.83
     ["107426583476702"] = 0.58,  -- shared swing: Skeleton, Armored Skeleton, Wraith, Hivelings, Alien...
     ["110285618672790"] = 0.57,  -- Ancient Bones
     ["102522251341739"] = 0.65,  -- Ancient Bones
@@ -153,6 +156,7 @@ local NO_FACING = {
 
 -- attacks that reach further than CFG.meleeRange (the mob lunges in while swinging)
 local ATTACK_RANGE = {
+    ["81529985859552"]  = 90,    -- The Bell stab: it closes 55-76 studs itself
     ["117802002100480"] = 18,    -- Minotaur swing starts 11-14 studs out, closing ~15 stud/s
     ["131201775492062"] = 20,    -- Enchanted Sword slash reached 19 studs
     ["120338508145604"] = 14,    -- Cursed Hammer smash lunges in (closing ~15 stud/s)
@@ -262,6 +266,8 @@ local CHANNELS = {
 -- 106952798050011 ~2 s before): shockwave (TripleSmashEffects, 85 wide) ~1.2 s in. His root
 -- never leaves the ground (the jump is only the animation), so it's timed from the anim.
 local JUMP_ATTACKS = {
+    -- The Bell leap smash (JumpIndi): leaps in from 55-88 studs, Smash 0.68-0.76, 60.5 dmg at 0.90
+    ["124469150178302"] = { impacts = { 0.85 }, range = 100, name = "The Bell leap smash", double = true },
     -- 2nd recorded fight: the slam's 47 dmg landed 1.34-1.60 s in (8 hits) -> 1.45
     -- double = always the double jump (user 2026-09-28: "a regular jump barely ever works for the
     -- festering wound")
@@ -293,6 +299,13 @@ local JUMP_ATTACKS = {
 -- DASH_ATTACKS: always dashed (never weaved), timed from the anim. (130122482089218 used to
 -- be dashed here as the "vertical leap slam" -- it's the two-stage, see JUMP_ATTACKS.)
 local DASH_ATTACKS = {
+    -- The Bell, DodgeIndi = dash: swing 126421074291598 (DodgeSwing 1.03, 71.5 dmg at 1.17),
+    -- kick 116385041102685 (Kick sound 0.61; no hit recorded -> ~0.68). Its grab 82316911117911
+    -- (Windup at start, Grab 0.58-0.63, grabbed at 0.81, then a 77 slam at 1.53 you can't
+    -- weave out of -- a weave pressed while held was refused) is dashed before it grabs.
+    ["126421074291598"] = { impact = 1.15, range = 60, name = "The Bell swing" },
+    ["116385041102685"] = { impact = 0.68, range = 80, name = "The Bell kick" },
+    ["82316911117911"]  = { impact = 0.78, range = 80, name = "The Bell grab" },
     -- Cursed Hammer LEAP SLAM 136161739984425 = its unweavable (user 2026-09-27). The game says so:
     -- it opens with the "Indicator" sound (like the Husk slam / Crowned smash) where weavable
     -- specials play "WeaveIndi" (its spin dash 90831939847969: 5 weaves caught, 0 hits). "Go" at
@@ -1843,7 +1856,9 @@ local function scanMobs()
     end
     -- bosses may live outside the Monsters folder
     for _, m in ipairs(Workspace:GetChildren()) do
-        if m:IsA("Model") and isSlammer(m.Name) then pcall(hookMob, m) end
+        -- (also any "The ..." boss parked outside Monsters, e.g. The Bell -- unconfirmed where it lives)
+        if m:IsA("Model") and (isSlammer(m.Name) or (string.sub(m.Name, 1, 4) == "The "
+           and m:FindFirstChildOfClass("Humanoid"))) then pcall(hookMob, m) end
     end
 end
 
@@ -2231,7 +2246,7 @@ end
 
 -- mobs whose fast movement is never a weavable rush (user: the Minotaur's charge is not
 -- weavable; its swing is timed from its anim)
-local NO_RUSH = { Minotaur = true }
+local NO_RUSH = { Minotaur = true, ["The Bell"] = true }   -- the Bell's lunges are its timed attacks
 
 -- YOUR velocity matters as much as the mob's (user 2026-09-29: "rush attacks are still
 -- inaccurate as hell, especially if I'm moving"): arrival time and "does it pass through me"
