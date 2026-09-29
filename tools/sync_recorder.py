@@ -24,7 +24,8 @@ HEAD = '''-- [Veil] Combat Recorder  (Pantheon ADDON build)
 -- Passive: watches mob attacks, hits you take, your dashes/weaves, and writes
 -- workspace/Veil_Combat/{summary,timeline,events}_<time>.* (same files as the
 -- standalone script, so boss_watch.py / miss_report.py read them unchanged).
--- Keys while recording: End = stop, Insert = MARK line, Delete = flush now.
+-- Keys while recording: Insert = MARK line, Delete = flush now. (End does NOT stop the addon
+-- build -- use its toggle, or unload Pantheon, which stops it.)
 --
 -- Deploy: place in your executor's  Pantheon/addons/  folder (ships as veil_combat_recorder.lua).
 
@@ -38,6 +39,7 @@ Pantheon.register({
         local function G() return getgenv and getgenv() or _G end
 
         local function launch()
+        G().VCR_ADDON = true   -- tells the body it's the addon build (End doesn't stop it)
 -- ======================================================= standalone body
 '''
 
@@ -50,7 +52,17 @@ TAIL = '''
             if not ok then ctx:notify("start failed: " .. tostring(err), 6); return end
             local rec = G().VeilCombatRecorder
             if not rec then return end
-            -- End key / another instance taking over stops it from inside: flip the toggle off too
+            -- backup for "unexecute Pantheon = recorder stops too" (user 2026-09-29): if the Pantheon
+            -- instance that started it is unloaded or replaced, stop even if onUnload never ran
+            local owner = G().Pantheon
+            task.spawn(function()
+                while rec.running do
+                    task.wait(1)
+                    local now = G().Pantheon
+                    if now ~= owner or not now then pcall(rec.stop, "Pantheon unloaded"); break end
+                end
+            end)
+            -- another instance taking over stops it from inside: flip the toggle off too
             local inner = rec.stop
             rec.stop = function(reason)
                 inner(reason)
@@ -71,7 +83,7 @@ TAIL = '''
         m:feature({
             id          = ID,
             name        = "Record Fights",
-            description = "Records fights for Auto Weave tuning: mob attack animations, projectiles and hitboxes near you, every hit you take (and which attack did it), plus your own dashes and weaves. Touches nothing -- it only watches and writes to workspace/Veil_Combat. While on: End = stop, Insert = drop a MARK line, Delete = flush files.",
+            description = "Records fights for Auto Weave tuning: mob attack animations, projectiles and hitboxes near you, every hit you take (and which attack did it), plus your own dashes and weaves. Touches nothing -- it only watches and writes to workspace/Veil_Combat. While on: Insert = drop a MARK line, Delete = flush files. Turn this off (or unload Pantheon) to stop it.",
             default     = false,
             onToggle    = function(v) if v then start() else stop() end end,
         })
