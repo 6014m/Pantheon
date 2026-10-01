@@ -284,8 +284,13 @@ local JUMP_ATTACKS = {
     -- lands, like the Wound's punches). So: after slam 2's dash, keep dashing AWAY until clear
     -- or the ring has gone off, and walk out too (escape push). No weave for the ring.
     ["77689631365456"]  = { impacts = { 1.13 }, range = 80, name = "The Bell tantrum slams", double = true,
-                            thenDash = { 1.87 },
-                            thenEscape = { from = 1.95, till = 3.25, clear = 60, name = "The Bell ring" } },
+    -- fight 2026-10-01 (lost at the very end to exactly this): slam 2 hit 55 at 1.76, 0.09 s into
+    -- the 1.67 dash (again), the knock-down made the two timed escape dashes count as "already
+    -- protected" so NEITHER went out, and the ring landed 88 + 247 at 39 studs. So no timed
+    -- dashes at all any more: walk out from the first frame (push), and from 1.25 s -- right
+    -- after slam 1's jump -- dash away back to back (i-frames 1.25-2.0 span slam 2's 1.35-1.88),
+    -- retrying refused presses, until you're clear or the ring has gone off.
+                            thenEscape = { from = 1.25, till = 3.25, clear = 60, name = "The Bell ring" } },
     -- 2nd recorded fight: the slam's 47 dmg landed 1.34-1.60 s in (8 hits) -> 1.45
     -- double = always the double jump (user 2026-09-28: "a regular jump barely ever works for the
     -- festering wound")
@@ -946,14 +951,33 @@ local jumps = {}
 -- the first tap until the second tap is out (you're airborne), then give them back
 local CAS = game:GetService("ContextActionService")
 local M1_GUARD = "PantheonJumpM1Guard"
-local function guardM1(on)
+-- (user 2026-10-01: "we need more m1 eating because our jump often times just doesnt fire at
+-- the right time or isnt a double jump".) What was wrong with the old on/off guard:
+--   * a HELD left button kept swinging straight through it (only new clicks were blocked), and
+--     the block also ate the button's RELEASE, so the game went on thinking it was held;
+--   * each guard had its own 1.6 s "off" timer, so an earlier jump's timer switched the block
+--     off in the middle of the next jump.
+-- Now: one shared deadline (guardM1(seconds) extends it, guardM1(false) ends it), the held
+-- button is let go for the game before the block goes up, and releases always pass through.
+local function guardM1(secs)
+    if not secs then DASH.m1Until = 0; return end
+    DASH.m1Until = math.max(DASH.m1Until or 0, now() + secs)
+    if DASH.m1On then return end
+    DASH.m1On = true
+    if UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+        local p = UIS:GetMouseLocation()
+        pcall(function() VIM:SendMouseButtonEvent(p.X, p.Y, 0, false, game, 0) end)
+    end
     pcall(function()
-        if on then
-            CAS:BindActionAtPriority(M1_GUARD, function() return Enum.ContextActionResult.Sink end, false,
-                Enum.ContextActionPriority.High.Value + 1000, Enum.UserInputType.MouseButton1)
-        else
-            CAS:UnbindAction(M1_GUARD)
-        end
+        CAS:BindActionAtPriority(M1_GUARD, function(_, state)
+            if state == Enum.UserInputState.Begin then return Enum.ContextActionResult.Sink end
+            return Enum.ContextActionResult.Pass
+        end, false, Enum.ContextActionPriority.High.Value + 1000, Enum.UserInputType.MouseButton1)
+    end)
+    task.spawn(function()
+        while now() < (DASH.m1Until or 0) do task.wait(0.03) end
+        pcall(function() CAS:UnbindAction(M1_GUARD) end)
+        DASH.m1On = false
     end)
 end
 
@@ -1016,8 +1040,7 @@ local function sendDoubleJump(timeLeft, wantDouble)
     local single = not (wantDouble or CFG.jumpStyle == "Double jump") or not doubleJumpReady()
     if single and CFG.jumpStyle == "Double jump" then dlog("JUMP single (double jump cooling down %.2f s)", djUntil - now()) end
     local sp = Enum.KeyCode.Space
-    guardM1(true)
-    task.delay(1.6, function() guardM1(false) end)   -- safety: never leave clicks blocked
+    guardM1(1.6)                                      -- at most: never leave clicks blocked
     task.spawn(function()
         local c = LP.Character
         local hum = c and c:FindFirstChildOfClass("Humanoid")
@@ -1027,12 +1050,14 @@ local function sendDoubleJump(timeLeft, wantDouble)
             pcall(function() VIM:SendKeyEvent(false, sp, false, game) end)
         end
         local t0 = now()
-        if hum and not canJump(hum) and (timeLeft or 1) < 0.55 then
-            -- mid-swing and the hit is close: no time to wait the lock out
+        -- mid-swing: wait the lock out if there's time for it...
+        if hum and not canJump(hum) and (timeLeft or 1) >= 0.55 then waitCanJump(hum, 0.25) end
+        if hum and not canJump(hum) then
+            -- ...and if the swing still locks jumping, cancel it (before, the tap went out
+            -- anyway after the wait and did nothing: the jump that "just doesn't fire")
             dlog("M1CANCEL swing locked jumping -> cancelled + lifted (hit in %.2f)", timeLeft or -1)
             cancelSwingAndLift(hum)
         else
-            waitCanJump(hum, 0.25)
             t0 = now()
             tap()
         end
@@ -1043,6 +1068,19 @@ local function sendDoubleJump(timeLeft, wantDouble)
         if single then guardM1(false); return end
         task.wait(0.12)
         waitCanJump(hum, 0.3)
+        if hum and not canJump(hum) then
+            -- a swing got in between the taps: stop it, or the second tap is silent (single jump)
+            dlog("M1CANCEL swing locked the 2nd jump -> cancelled")
+            local animator = hum:FindFirstChildOfClass("Animator")
+            for _, tr in ipairs(animator and animator:GetPlayingAnimationTracks() or {}) do
+                local pr = tr.Priority
+                local n = tr.Animation and tr.Animation.Name or ""
+                if (pr == Enum.AnimationPriority.Action or pr == Enum.AnimationPriority.Action2
+                    or pr == Enum.AnimationPriority.Action3 or pr == Enum.AnimationPriority.Action4)
+                   and not string.find(n, "Weave") then pcall(function() tr:Stop(0.05) end) end
+            end
+            waitCanJump(hum, 0.1)
+        end
         tap()
         guardM1(false)                                -- airborne: your M1s are back
     end)
@@ -1451,6 +1489,31 @@ local function plan(t)
         end
         return
     end
+    -- FLEE (the Bell's ring): only distance saves you, so dash away again the moment the last
+    -- dash's cooldown is over -- not a timed hit, so i-frames / knock-down immunity never cancel
+    -- it and a refused press is simply pressed again next frame.
+    local fl = DASH.flee
+    if fl then
+        local off = me and fl.root.Parent and (me.Position - fl.root.Position)
+        if not off or t > fl.till or Vector3.new(off.X, 0, off.Z).Magnitude > fl.clear then
+            dlog("FLEE %s over (%s)", fl.name, (off and t <= fl.till) and "clear" or "time up")
+            DASH.flee = nil
+        elseif t >= fl.from and t >= (dashes[#dashes] or -math.huge) + DASH.cooldown + 0.03
+               and CFG.dash and alive() and not UIS:GetFocusedTextBox() then
+            local st = stamina()
+            if st >= DASH.cost + CFG.dashReserve then
+                attempt = { started = t, lastPress = t, deadline = t + 0.25, reason = fl.name .. " (flee)", dash = true,
+                            from = fl.root.Position, dashDir = "Away from the attack" }
+                dlog("PRESS dash for %s (flee, %.0f studs out of %.0f, stamina %.0f)", fl.name,
+                    Vector3.new(off.X, 0, off.Z).Magnitude, fl.clear, st)
+                sendDash(fl.root.Position, "Away from the attack")
+                return
+            elseif not fl.dry then
+                fl.dry = true
+                dlog("NODASH %s (flee, stamina %.0f)", fl.name, st)
+            end
+        end
+    end
     local open = {}
     for _, h in ipairs(impacts) do
         if not handled(h) and (not h.cond or h.cond()) then open[#open + 1] = h end
@@ -1461,10 +1524,10 @@ local function plan(t)
     -- undashable (slam-downs): double jump so you're airborne when it lands. Your clicks are
     -- blocked 0.6 s before the jump so the swing in progress ends first (user-verified)
     for _, h in ipairs(open) do
-        if h.jump and not h.guarded and h.t - t <= JUMP.lead + 0.6 then   -- (the longer lead: guard either way)
-            h.guarded = true
-            guardM1(true)
-            task.delay(1.6, function() guardM1(false) end)
+        -- from 0.9 s before the jump goes out until the hit has landed, re-asserted every frame
+        if h.jump and h.t - t <= JUMP.lead + 0.9 then
+            if not h.guarded then h.guarded = true; dlog("M1GUARD %s (lands in %.2f)", h.reason, h.t - t) end
+            guardM1(math.max(0.1, h.t - t + 0.1))
         end
     end
     for _, h in ipairs(open) do
@@ -1524,6 +1587,7 @@ local function plan(t)
             if tryDash(t, h, true) then return end
             if h.unweavable then
                 -- a channel (Minotaur charge) with no dash available: a weave is useless, drop it
+                dlog("DROP %s (no dash possible, hit in %.2f)", h.reason, h.t - t)
                 for i, x in ipairs(impacts) do if x == h then table.remove(impacts, i); break end end
                 return
             end
@@ -1783,25 +1847,12 @@ local function onMobAnim(model, mroot, track)
             if esc then
                 local t0e = now()
                 local clear = math.max(esc.clear, DASH.reach[id] or 0)
-                local k = 0
-                for press = esc.from, esc.till - 0.3, DASH.cooldown + 0.07 do
-                    k += 1
-                    impacts[#impacts + 1] = { t = t0e + press + DASH.lead, reason = string.format("%s (dash away %d)", esc.name, k),
-                                              kind = "melee", from = mroot.Position, key = "jumpescape:" .. id .. ":" .. k,
-                                              unweavable = true, dashDir = "Away from the attack",
-                                              root = mroot, range = clear }   -- dropped once you're clear
-                    DASH.own(impacts[#impacts], model)
-                end
-                -- and walk out of it for the rest of the move (pushed like the Wound's punches)
+                DASH.flee = { root = mroot, from = t0e + esc.from, till = t0e + esc.till, clear = clear, name = esc.name }
+                -- and walk out of it for the whole move (pushed like the Wound's punches)
                 if CFG.escapePush then
-                    task.delay(esc.from, function()
-                        if not mroot.Parent then return end
-                        DASH.escapes[#DASH.escapes + 1] = { root = mroot, till = t0e + esc.till, id = id, clear = clear }
-                        local me = root()
-                        dlog("ESCAPE %s: %.0f studs away, reach %.0f", esc.name,
-                            me and (mroot.Position - me.Position).Magnitude or -1, clear)
-                    end)
+                    DASH.escapes[#DASH.escapes + 1] = { root = mroot, till = t0e + esc.till, id = id, clear = clear }
                 end
+                dlog("ESCAPE %s: %.0f studs away, reach %.0f", esc.name, (mroot.Position - r0.Position).Magnitude, clear)
             end
             -- a follow-up in the same anim that's weaved, not jumped (Smelter vertical)
             for i, dt in ipairs(jumpAtk.thenWeave or {}) do
@@ -3246,6 +3297,8 @@ function Weave.stop()
     table.clear(pillars)
     table.clear(DASH.orbs)
     table.clear(DASH.escapes)
+    DASH.flee = nil
+    guardM1(false)
     pcall(Weave._pvpStop)
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     table.clear(conns)
