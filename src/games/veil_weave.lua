@@ -874,6 +874,17 @@ end
 local function sendDash(threat, mode)
     lastInject = now()
     if not mode and CFG.dashDir == "Around the enemy" and threat and DASH.strafe(threat) then return end
+    -- "setting" = a timed boss attack that's dodged by the dash itself (Smelter fire burst, the
+    -- Bell's swing / kick / grab): it goes where your Dash direction setting says (user
+    -- 2026-10-01: "the only attacks we should be dashing away from automatically is tantrums").
+    -- Tantrums / get-away moves pass "Away from the attack" and ignore the setting.
+    if mode == "setting" then
+        mode = CFG.dashDir
+        if mode == "Around the enemy" then
+            if threat and DASH.strafe(threat) then return end
+            mode = "Away from the attack"                -- couldn't strafe: away is the safe fallback
+        end
+    end
     local r = root()
     local c = LP.Character
     local hum = c and c:FindFirstChildOfClass("Humanoid")
@@ -1174,7 +1185,7 @@ local function confirmDash(t)
     if attempt and attempt.dash then
         weaves += 1
         if CFG.verbose then log.info(string.format("[Weave] #%d DASH %s", weaves, attempt.reason)) end
-        dlog("DASH %s dir=%s", attempt.reason, tostring(attempt.dashDir or CFG.dashDir))
+        dlog("DASH %s dir=%s", attempt.reason, tostring((attempt.dashDir ~= "setting" and attempt.dashDir) or CFG.dashDir))
         attempt = nil
     end
 end
@@ -1843,7 +1854,7 @@ local function onMobAnim(model, mroot, track)
             for i, dt in ipairs(jumpAtk.thenDash or {}) do
                 impacts[#impacts + 1] = { t = now() + dt, reason = string.format("%s dash %d", jumpAtk.name, i), kind = "melee",
                                           from = mroot.Position, key = "jumpdash:" .. id .. ":" .. i, unweavable = true,
-                                          dashDir = "Away from the attack" }
+                                          dashDir = "setting" }
             end
             -- a follow-up that only distance escapes (the Bell's ring): dash away again and
             -- again, each dash as soon as the last one's cooldown is over, until you're clear
@@ -1873,7 +1884,7 @@ local function onMobAnim(model, mroot, track)
             for i, dt in ipairs(dashAtk.impacts or { dashAtk.impact }) do
                 impacts[#impacts + 1] = { t = now() + dt, reason = dashAtk.impacts and (dashAtk.name .. " hit " .. i) or dashAtk.name,
                                           kind = "melee", from = mroot.Position, key = "dash:" .. id .. ":" .. i,
-                                          unweavable = true, dashDir = "Away from the attack" }
+                                          unweavable = true, dashDir = "setting" }
             end
         end
         return
