@@ -810,7 +810,7 @@ function DASH.strafe(threat, face)
         task.wait(0.08)
         pcall(function() VIM:SendKeyEvent(false, CFG.dashKey, false, game) end)
     end
-    if DASH.strafing then                                -- a retry press: same session
+    if DASH.strafing and now() < DASH.strafeUntil then   -- a retry press: same session
         DASH.strafeUntil = now() + 0.4
         DASH.strafeFaceEnd = math.max(DASH.strafeFaceEnd or 0, now() + 0.4)
         pcall(function() aimState.strafeFaceUntil = os.clock() + 0.4 end)
@@ -842,12 +842,16 @@ function DASH.strafe(threat, face)
     if math.abs(df) >= math.abs(dr) then key = df > 0 and Enum.KeyCode.W or Enum.KeyCode.S
     else key = dr > 0 and Enum.KeyCode.D or Enum.KeyCode.A end
 
+    -- (a new dash can start while the last one's facing is still held: the newest session owns
+    -- the teardown)
+    local session = (DASH.strafeSession or 0) + 1
+    DASH.strafeSession = session
     DASH.strafing, DASH.strafeUntil = true, now() + 0.4
     -- the lock lasts the WHOLE dash (user: "it needs to be rotation locked onto the opponent for
     -- the entire dash duration"): 0.4 s to begin with, then stretched to the dash's real end
     -- when the game confirms it (DodgeUntil, see Weave.start) -- the user's dash runs ~0.7 s,
     -- so the old fixed 0.4 s let go halfway through. The movement key is only held for 0.4 s.
-    DASH.strafeFaceEnd = now() + 0.4
+    DASH.strafeFaceEnd = math.max(DASH.strafeFaceEnd or 0, now() + 0.4)
     pcall(function()
         aimState.strafeFace = (face and face.Parent) and face or threat
         aimState.strafeFaceUntil = os.clock() + 0.4
@@ -883,6 +887,7 @@ function DASH.strafe(threat, face)
         end
         -- ...the facing only once the dash itself is over
         while now() < DASH.strafeFaceEnd do task.wait(math.max(0.01, DASH.strafeFaceEnd - now())) end
+        if DASH.strafeSession ~= session then return end
         pcall(function() RS_D:UnbindFromRenderStep(bind) end)
         if not dashFace.active then pcall(function() hum.AutoRotate = true end) end
         DASH.strafing = false
