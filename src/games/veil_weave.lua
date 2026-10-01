@@ -812,6 +812,7 @@ function DASH.strafe(threat, face)
     end
     if DASH.strafing then                                -- a retry press: same session
         DASH.strafeUntil = now() + 0.4
+        DASH.strafeFaceEnd = math.max(DASH.strafeFaceEnd or 0, now() + 0.4)
         pcall(function() aimState.strafeFaceUntil = os.clock() + 0.4 end)
         task.spawn(press)
         return true
@@ -842,6 +843,11 @@ function DASH.strafe(threat, face)
     else key = dr > 0 and Enum.KeyCode.D or Enum.KeyCode.A end
 
     DASH.strafing, DASH.strafeUntil = true, now() + 0.4
+    -- the lock lasts the WHOLE dash (user: "it needs to be rotation locked onto the opponent for
+    -- the entire dash duration"): 0.4 s to begin with, then stretched to the dash's real end
+    -- when the game confirms it (DodgeUntil, see Weave.start) -- the user's dash runs ~0.7 s,
+    -- so the old fixed 0.4 s let go halfway through. The movement key is only held for 0.4 s.
+    DASH.strafeFaceEnd = now() + 0.4
     pcall(function()
         aimState.strafeFace = (face and face.Parent) and face or threat
         aimState.strafeFaceUntil = os.clock() + 0.4
@@ -861,7 +867,7 @@ function DASH.strafe(threat, face)
     pcall(function() RS_D:UnbindFromRenderStep(bind) end)
     RS_D:BindToRenderStep(bind, Enum.RenderPriority.Last.Value, function()
         local rr = root()
-        if not rr or dashFace.active or now() > DASH.strafeUntil then return end
+        if not rr or dashFace.active or now() > DASH.strafeFaceEnd then return end
         local fp = (face and face.Parent) and face.Position or threat
         local at = Vector3.new(fp.X, rr.Position.Y, fp.Z)
         if (at - rr.Position).Magnitude > 0.5 then pcall(function() rr.CFrame = CFrame.lookAt(rr.Position, at) end) end
@@ -869,14 +875,17 @@ function DASH.strafe(threat, face)
     task.spawn(press)
     task.spawn(function()
         while now() < DASH.strafeUntil do task.wait(math.max(0.01, DASH.strafeUntil - now())) end
-        pcall(function() RS_D:UnbindFromRenderStep(bind) end)
+        -- movement back to you...
         if not keyWasDown then pcall(function() VIM:SendKeyEvent(false, key, false, game) end) end
         pcall(function() CAS_D:UnbindAction(MOVE_GUARD .. "Strafe") end)
-        if not dashFace.active then pcall(function() hum.AutoRotate = true end) end
-        DASH.strafing = false
         for _, k in ipairs(held) do
             if UIS:IsKeyDown(k) then pcall(function() VIM:SendKeyEvent(true, k, false, game) end) end
         end
+        -- ...the facing only once the dash itself is over
+        while now() < DASH.strafeFaceEnd do task.wait(math.max(0.01, DASH.strafeFaceEnd - now())) end
+        pcall(function() RS_D:UnbindFromRenderStep(bind) end)
+        if not dashFace.active then pcall(function() hum.AutoRotate = true end) end
+        DASH.strafing = false
     end)
     dlog("STRAFE %s around the attacker (room right %.0f, left %.0f)", key.Name, roomR, roomL)
     return true
@@ -3289,6 +3298,15 @@ function Weave.start()
                     DASH.to = math.clamp(len - 0.04, 0.15, 1.5)
                     DASH.lead = math.clamp(DASH.to / 2, 0.1, 0.5)
                     dlog("DASHLEN i-frames %.2f s -> window %.2f, lead %.2f", len, DASH.to, DASH.lead)
+                    -- a strafe dash: keep Rotation Lock on the attacker until this dash ends
+                    if DASH.strafing then
+                        DASH.strafeFaceEnd = math.max(DASH.strafeFaceEnd or 0, now() + len + 0.05)
+                        pcall(function()
+                            aimState.strafeFaceUntil = math.max(aimState.strafeFaceUntil or 0, os.clock() + len + 0.05)
+                            aimState.dashBodyUntil = math.max(aimState.dashBodyUntil or 0, os.clock() + len + 0.05)
+                        end)
+                        dlog("STRAFELOCK facing held %.2f s (whole dash)", len + 0.05)
+                    end
                 end
             end
         end)
