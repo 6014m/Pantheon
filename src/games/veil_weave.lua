@@ -1002,6 +1002,7 @@ local function guardM1(secs)
     DASH.m1On = true
     if UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
         local p = UIS:GetMouseLocation()
+        pcall(function() require("games.veil_m1").noteFake(false) end)   -- not YOUR release (M1 Continuation)
         pcall(function() VIM:SendMouseButtonEvent(p.X, p.Y, 0, false, game, 0) end)
     end
     pcall(function()
@@ -1014,6 +1015,8 @@ local function guardM1(secs)
         while now() < (DASH.m1Until or 0) do task.wait(0.03) end
         pcall(function() CAS:UnbindAction(M1_GUARD) end)
         DASH.m1On = false
+        -- still holding the button? M1 Continuation (if it's on) starts the hold again
+        pcall(function() require("games.veil_m1").resume("jump guard over") end)
     end)
 end
 
