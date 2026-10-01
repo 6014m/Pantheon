@@ -73,6 +73,10 @@ local state = {
     -- Lock-On (camera) and Rotation Lock (body) yield so they don't fight it.
     techCamOverride  = false,
     techBodyOverride = false,
+    -- Auto Weave's "Around the enemy" dash: until strafeFaceUntil (os.clock()) Rotation Lock
+    -- faces strafeFace (the attacker's root part, or a point) whatever its own toggles say
+    strafeFace = nil,
+    strafeFaceUntil = 0,
     dashBodyUntil = 0,        -- os.clock(): Auto Weave's escape dash is facing the body; lock-on/rotation yield
     -- Tech Builder: a tech with "Ignore welds" set turns this on while it runs, so
     -- isGrabbing() reports false and Lock-On/Rotation stay active even when welded.

@@ -56,8 +56,19 @@ local function getHumanoids()
     return myHum, tHum
 end
 
+-- Auto Weave's "Around the enemy" dash borrows the lock for the length of the dash: face the
+-- attacker (its root part, or the point the attack came from) even with Lock-On / Rotation
+-- Lock switched off, no target selected and the hotkey up.
+local function strafeFace()
+    if os.clock() >= (state.strafeFaceUntil or 0) then return nil end
+    local f = state.strafeFace
+    if typeof(f) == "Instance" then return f.Parent and f.Position or nil end
+    return f
+end
+
 local function shouldRotate()
     if state.techBodyOverride then return false end
+    if strafeFace() then return true end
     if os.clock() < (state.dashBodyUntil or 0) then return false end   -- Auto Weave escape dash owns the body   -- a Tech Builder step is driving the body; yield
     if not state.lockon_enabled then return false end
     if not state.rotationLockEnabled then return false end
@@ -157,8 +168,9 @@ local function step()
     if not myRoot or not myHum then return end
     if myHum.Health <= 0 then deactivate(); return end  -- never rotate a dead body
 
-    local tRoot = rootOf(targetCharacter())
-    if not tRoot then return end
+    local face = strafeFace()
+    local tRoot = not face and rootOf(targetCharacter()) or nil
+    if not face and not tRoot then return end
 
     if bgSuppressed(myHum, myRoot) then
         deactivate()
@@ -168,8 +180,11 @@ local function step()
     -- Lead the target the same way [[modules.aim.lockon]] does, so the body
     -- faces where they'll be at impact, not where they were on the last
     -- network update. Critical for block timing on fast-moving attackers.
-    local tVel = tRoot.AssemblyLinearVelocity
-    local predicted = tRoot.Position + (tVel * state.getLeadTime())
+    local predicted = face
+    if not predicted then
+        local tVel = tRoot.AssemblyLinearVelocity
+        predicted = tRoot.Position + (tVel * state.getLeadTime())
+    end
     local dir = predicted - myRoot.Position
     local flat = Vector3.new(dir.X, 0, dir.Z)
     -- Only skip when the target is genuinely co-located with us (a 0.1

@@ -798,7 +798,12 @@ local dashFace = { active = false, untilT = 0, autoRotate = true, hum = nil, dir
 -- Side = the one with more room; about even -> the way you're already drifting, else right.
 -- Returns false when it can't (no camera, standing on the attacker, an escape dash is turning
 -- you): the caller falls back to a plain dash.
-function DASH.strafe(threat)
+-- The facing is done by Rotation Lock itself (user 2026-10-01: "the dash around thing isnt
+-- using rotation lock on the enemy in question" -- the first version only wrote the CFrame once
+-- a frame at render time and the dash turned you anyway): aimState.strafeFace hands it the
+-- attacker's root part (face; else the point the attack came from) for the dash, so it holds
+-- the body with its rigid AlignOrientation + per-physics-step writes, and follows the enemy.
+function DASH.strafe(threat, face)
     local function press()
         task.wait(0.03)                                  -- let the key + turn land first
         pcall(function() VIM:SendKeyEvent(true, CFG.dashKey, false, game) end)
@@ -807,6 +812,7 @@ function DASH.strafe(threat)
     end
     if DASH.strafing then                                -- a retry press: same session
         DASH.strafeUntil = now() + 0.4
+        pcall(function() aimState.strafeFaceUntil = os.clock() + 0.4 end)
         task.spawn(press)
         return true
     end
@@ -836,7 +842,11 @@ function DASH.strafe(threat)
     else key = dr > 0 and Enum.KeyCode.D or Enum.KeyCode.A end
 
     DASH.strafing, DASH.strafeUntil = true, now() + 0.4
-    pcall(function() aimState.dashBodyUntil = os.clock() + 0.4 end)   -- lock-on rotation yields: this does the facing
+    pcall(function()
+        aimState.strafeFace = (face and face.Parent) and face or threat
+        aimState.strafeFaceUntil = os.clock() + 0.4
+        aimState.dashBodyUntil = os.clock() + 0.4        -- shiftlock yields (Rotation Lock checks strafeFace first)
+    end)
     local held, keyWasDown = {}, UIS:IsKeyDown(key)
     local blocked = {}
     for _, k in ipairs(MOVE_INPUTS) do if k ~= key then blocked[#blocked + 1] = k end end
@@ -852,7 +862,8 @@ function DASH.strafe(threat)
     RS_D:BindToRenderStep(bind, Enum.RenderPriority.Last.Value, function()
         local rr = root()
         if not rr or dashFace.active or now() > DASH.strafeUntil then return end
-        local at = Vector3.new(threat.X, rr.Position.Y, threat.Z)
+        local fp = (face and face.Parent) and face.Position or threat
+        local at = Vector3.new(fp.X, rr.Position.Y, fp.Z)
         if (at - rr.Position).Magnitude > 0.5 then pcall(function() rr.CFrame = CFrame.lookAt(rr.Position, at) end) end
     end)
     task.spawn(press)
@@ -871,9 +882,9 @@ function DASH.strafe(threat)
     return true
 end
 
-local function sendDash(threat, mode)
+local function sendDash(threat, mode, face)
     lastInject = now()
-    if not mode and CFG.dashDir == "Around the enemy" and threat and DASH.strafe(threat) then return end
+    if not mode and CFG.dashDir == "Around the enemy" and threat and DASH.strafe(threat, face) then return end
     -- "setting" = a timed boss attack that's dodged by the dash itself (Smelter fire burst, the
     -- Bell's swing / kick / grab): it goes where your Dash direction setting says (user
     -- 2026-10-01: "the only attacks we should be dashing away from automatically is tantrums").
@@ -881,7 +892,7 @@ local function sendDash(threat, mode)
     if mode == "setting" then
         mode = CFG.dashDir
         if mode == "Around the enemy" then
-            if threat and DASH.strafe(threat) then return end
+            if threat and DASH.strafe(threat, face) then return end
             mode = "Away from the attack"                -- couldn't strafe: away is the safe fallback
         end
     end
@@ -1453,9 +1464,9 @@ local function tryDash(t, h, primary)
     if t >= math.clamp(h.t - DASH.lead - pe, loNow, hi) then
         if UIS:GetFocusedTextBox() or not alive() then return false end
         attempt = { started = t, lastPress = t, deadline = hi, reason = h.reason, dash = true, from = h.from,
-                    dashDir = h.dashDir }
+                    dashDir = h.dashDir, face = h.owner and mobRoots[h.owner] or h.faceRoot or h.root }
         dlog("PRESS dash for %s (hit in %.2f, stamina %.0f)", h.reason, h.t - t, stamina())
-        sendDash(h.from, h.dashDir)
+        sendDash(h.from, h.dashDir, attempt.face)
     end
     return true
 end
@@ -1500,7 +1511,7 @@ local function plan(t)
             attempt = nil
         elseif t - attempt.lastPress >= RETRY then
             attempt.lastPress = t
-            if attempt.dash then sendDash(attempt.from, attempt.dashDir) else sendKey() end
+            if attempt.dash then sendDash(attempt.from, attempt.dashDir, attempt.face) else sendKey() end
         end
         return
     end
@@ -2119,8 +2130,13 @@ local function hookMob(model)
     mobRoots[model] = mroot
     if animator then list[#list + 1] = animator.AnimationPlayed:Connect(function(tr)
         DASH.owner = model
+        local n0 = #impacts
         local ok, err = pcall(onMobAnim, model, mroot, tr)
         DASH.owner = nil
+        -- hits it queued without an owner (timed dash attacks): still remember who to face
+        for i = n0 + 1, #impacts do
+            if not impacts[i].owner then impacts[i].faceRoot = mroot end
+        end
         if not ok and CFG.verbose then log.warn("[Weave] anim: " .. tostring(err)) end
     end) end
     if deathBlastReach(model.Name) then
