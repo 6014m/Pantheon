@@ -74,6 +74,7 @@ local CFG = {
     dashKey      = Enum.KeyCode.Q,
     dashReserve  = 0,       -- stamina to leave for yourself
     dashBackup   = true,    -- also dash when a weave can't make it (only with a spare dash banked)
+    bossFocus    = true,    -- while you're fighting a boss its attacks come first (see DASH.fighting)
     tankHits     = 5,       -- user (2026-09-27): "we can tank at least 5 hits before dashing" -- in
     tankWindow   = 4,       --   crowds it dashed far too much. Only a boss's must-dash move (a real
                             --   unweavable) dashes straight away; every other dash waits until you've
@@ -610,6 +611,37 @@ end
 -- DASH.orbDashAt = ground distance at which a gas ball gets jumped + dashed into (orbDashedAt = last)
 local DASH = { hits = {}, orbs = {}, orbReach = 12, orbDashAt = 14, orbDashedAt = nil, rushVel = setmetatable({}, { __mode = "k" }), escapes = {}, reach = {}, from = 0.05, to = 0.40, lead = 0.20, cost = 50, cooldown = 0.45, afterWeave = 0.25 }
 local dashes = {}          -- confirmed dash start times
+
+-- ---- boss first ----------------------------------------------------------------
+-- (user 2026-09-30: "i seem to get worse at dodging whenever i have summons around and other
+-- enemies so our priority whenever were actively fighting a boss is the bosses attacks. now
+-- just coz there is a boss doesnt always mean im fighting that boss".) The logs agree: in boss
+-- fights ~120 hits landed right after a weave went to a small mob, 25 of them boss hits the
+-- weave was then on cooldown for (a whiffed weave locks it out ~1.4 s).
+-- "Fighting" = the boss started an attack that can reach you in the last 8 s; standing back
+-- and watching never sets it. While it's set, a lesser mob's hit gives way to the boss's
+-- (see plan() and tryDash()). Fields of DASH, not locals: this chunk is at the 200-local limit.
+-- DASH.owner = the mob whose attack animation is being read right now (stamped on its hits)
+DASH.bossNames = { ["Hiveling Titan"] = true, ["Smelter Demon"] = true, ["Goblin Warlock"] = true,
+                   ["Festering Wound"] = true }
+DASH.boss = { model = nil, till = 0 }
+function DASH.isBoss(model)
+    if not model or isSummon(model) then return false end
+    return DASH.bossNames[model.Name] == true or string.sub(model.Name, 1, 4) == "The "
+end
+function DASH.fighting(t)
+    local b = DASH.boss.model
+    if not b or t > DASH.boss.till or not b.Parent then return nil end
+    return b
+end
+-- hit h comes from this mob; a boss's hit means you're fighting it
+function DASH.own(h, model)
+    h.owner = model
+    if not DASH.isBoss(model) then return end
+    local t = now()
+    if DASH.fighting(t) ~= model then dlog("BOSSFIGHT %s", model.Name) end
+    DASH.boss.model, DASH.boss.till = model, t + 8
+end
 local lastInject = -math.huge
 
 -- The game keeps Stamina in a sub-folder of your character; the old direct-child lookup
@@ -1215,6 +1247,7 @@ end
 -- kind: "melee" (timed from an animation) or "land" (projectile / bomb / explosion)
 local function want(impact, reason, kind, from, key)
     impacts[#impacts + 1] = { t = impact, reason = reason, kind = kind or "melee", from = from, key = key }
+    if DASH.owner then DASH.own(impacts[#impacts], DASH.owner) end
 end
 
 -- Dash for hit h if a weave can't: returns true when a dash will take care of it (now or
@@ -1227,6 +1260,14 @@ local function tryDash(t, h, primary)
         return false
     end
     if not primary and not CFG.dashBackup then return false end
+    -- boss first: while you're fighting a boss, a lesser mob's hit never gets a backup dash,
+    -- and its unweavable only gets one that leaves a dash banked for the boss
+    local boss = CFG.bossFocus and DASH.fighting(t)
+    local lesser = boss and h.owner and h.owner ~= boss and not DASH.isBoss(h.owner)
+    if lesser and not primary then
+        if not h.yieldLogged then h.yieldLogged = true; dlog("YIELD dash %s (fighting %s)", h.reason, boss.Name) end
+        return false
+    end
     if not h.unweavable and CFG.tankHits > 0 then
         -- tank it: only dash once you've already eaten tankHits hits recently
         local n = 0
@@ -1237,7 +1278,7 @@ local function tryDash(t, h, primary)
         end
     end
     local st = stamina()
-    if st < DASH.cost + CFG.dashReserve + (primary and 0 or DASH.cost) then
+    if st < DASH.cost + CFG.dashReserve + ((primary and not lesser) and 0 or DASH.cost) then
         if primary then
             dlog("NODASH %s (stamina %.0f)", h.reason, st)
         end
@@ -1357,6 +1398,36 @@ local function plan(t)
     -- it) lost the jump twice in the 2026-09-27 fight
     for i = #open, 1, -1 do if open[i].jump then table.remove(open, i) end end
     if #open == 0 then return end
+
+    -- BOSS FIRST: with a boss hit coming, a lesser mob's earlier hit is let through unless the
+    -- same weave covers both -- a weave spent on it could still be locked out (a whiff: ~1.4 s)
+    -- when the boss's lands.
+    local boss = CFG.bossFocus and DASH.fighting(t)
+    if boss then
+        local bh
+        for _, h in ipairs(open) do
+            if h.owner == boss and not (h.unweavable or isUnweavable(h.key)) then bh = h; break end
+        end
+        if bh then
+            local bFrom, bTo = win(bh)
+            local ready = math.max(t, weaveReadyAt(t))
+            for i = #open, 1, -1 do
+                local h = open[i]
+                if h.t < bh.t and h.owner and h.owner ~= boss and not DASH.isBoss(h.owner) then
+                    local from, to = win(h)
+                    local lo = math.max(h.t - to, bh.t - bTo, ready)
+                    local hi = math.min(h.t - from, bh.t - bFrom)
+                    if lo > hi - 0.01 and math.max(h.t - to, ready) + WHIFF_LOCK > bh.t - bFrom then
+                        if not h.yieldLogged then
+                            h.yieldLogged = true
+                            dlog("YIELD %s (boss hit in %.2f: %s)", h.reason, bh.t - t, bh.reason)
+                        end
+                        table.remove(open, i)
+                    end
+                end
+            end
+        end
+    end
 
     -- unweavable: dash it (if even a dash can't, a weave is still better than nothing)
     for _, h in ipairs(open) do
@@ -1866,7 +1937,9 @@ local function hookMob(model)
     mobConns[model] = list
     mobRoots[model] = mroot
     if animator then list[#list + 1] = animator.AnimationPlayed:Connect(function(tr)
+        DASH.owner = model
         local ok, err = pcall(onMobAnim, model, mroot, tr)
+        DASH.owner = nil
         if not ok and CFG.verbose then log.warn("[Weave] anim: " .. tostring(err)) end
     end) end
     if deathBlastReach(model.Name) then
@@ -2394,6 +2467,7 @@ local function stepRushes(t, me, myVel)
                                 "melee", pos, "rush:" .. model.Name)
                             rushImpact[model] = impacts[#impacts]
                             impacts[#impacts].rushLive = true
+                            DASH.own(impacts[#impacts], model)
                         end
                     end
                 end
@@ -3088,7 +3162,7 @@ function Weave.feature()
     return {
         id          = "veil.auto_weave",
         name        = "Auto Weave",
-        description = "Presses your weave key so the weave is already active when a hit lands (it dodges everything landing while it's active). Melee swings are timed from the mob's attack animation, projectiles a mob launches are tracked until they're about to reach you (Imp fireballs are timed from when they appear), and the Puppeteer's bombs from their 4 s fuse. Explosions themselves are ignored: their damage lands on the frame they appear, too late to react to. Plans around the ~0.5 s cooldown so staggered hits from several mobs get covered, and retries while you're busy or stunned. Never reacts to your own or your party's stuff; players outside your party count as enemies. Raise 'Press before impact' if hits land right after a weave, lower it if they land before it. SETTINGS: Press before impact = how early a weave goes out (raise if hits land right after it, lower if before). Dash unweavables = dash attacks a weave can't stop (learned in play, or listed under Unweavables). Backup dash = also dash when a weave is on cooldown, only while a spare dash's worth of stamina is left. Unweavables = extra attacks to always dash (anim ids, or Bomb / Giant bomb / Hellfire / ImpFireball). Dash direction = where a dash goes when you aren't holding a movement key. Stamina reserve = stamina Auto Weave leaves for you. Enemy players = players outside your party (and their summons) count as enemies. Bombs & player AoE = Puppeteer bomb fuses and enemy players' area attacks. Player AoE delay = how long an enemy player's AoE takes to land after it appears. Extra attacks = add attack timings by hand as animId=seconds. Enchanted Sword mobility = for get-away moves (e.g. the Festering Wound's rapid ground punches) swap to your Enchanted Sword (if you own one), face away from the boss, launch, and swap back; it has no i-frames, so it never replaces a dash. Reflex weave = weave the moment an explosion lands on you (tested: usually too late). Console log = print every weave and its reason to the console (a decision log is always written to workspace/Veil_Combat).",
+        description = "Presses your weave key so the weave is already active when a hit lands (it dodges everything landing while it's active). Melee swings are timed from the mob's attack animation, projectiles a mob launches are tracked until they're about to reach you (Imp fireballs are timed from when they appear), and the Puppeteer's bombs from their 4 s fuse. Explosions themselves are ignored: their damage lands on the frame they appear, too late to react to. Plans around the ~0.5 s cooldown so staggered hits from several mobs get covered, and retries while you're busy or stunned. Never reacts to your own or your party's stuff; players outside your party count as enemies. Raise 'Press before impact' if hits land right after a weave, lower it if they land before it. SETTINGS: Press before impact = how early a weave goes out (raise if hits land right after it, lower if before). Dash unweavables = dash attacks a weave can't stop (learned in play, or listed under Unweavables). Backup dash = also dash when a weave is on cooldown, only while a spare dash's worth of stamina is left. Boss first = while a boss is attacking you (not just nearby), its attacks come first: a small mob's hit is let through when weaving or dashing it could leave you without a weave or dash for the boss's. Unweavables = extra attacks to always dash (anim ids, or Bomb / Giant bomb / Hellfire / ImpFireball). Dash direction = where a dash goes when you aren't holding a movement key. Stamina reserve = stamina Auto Weave leaves for you. Enemy players = players outside your party (and their summons) count as enemies. Bombs & player AoE = Puppeteer bomb fuses and enemy players' area attacks. Player AoE delay = how long an enemy player's AoE takes to land after it appears. Extra attacks = add attack timings by hand as animId=seconds. Enchanted Sword mobility = for get-away moves (e.g. the Festering Wound's rapid ground punches) swap to your Enchanted Sword (if you own one), face away from the boss, launch, and swap back; it has no i-frames, so it never replaces a dash. Reflex weave = weave the moment an explosion lands on you (tested: usually too late). Console log = print every weave and its reason to the console (a decision log is always written to workspace/Veil_Combat).",
         default     = false,
         onToggle    = function(v)
             CFG.enabled = v and true or false
@@ -3106,6 +3180,8 @@ function Weave.feature()
               default = true, onChange = function(v) CFG.dashBackup = v and true or false end },
             { type = "slider", name = "Tank hits before dashing", key = "tank_hits", min = 0, max = 10, step = 1,
               default = 5, onChange = function(v) CFG.tankHits = v end },
+            { type = "toggle", name = "Boss first", key = "boss_focus", default = true,
+              onChange = function(v) CFG.bossFocus = v and true or false end },
             { type = "textbox", name = "Unweavables", key = "unweavable",
               placeholder = "Bomb, 107426583476702", default = "",
               onChange = function(v) parseUnweavable(v) end },

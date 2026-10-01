@@ -71,7 +71,7 @@ local KNOWN = {
     { "Aegis Banner", "Items", "Rare" },
     { "Aglet", "Accessories", "Common" },
     { "Amulet", "Trinkets", "Common" },
-    { "Anklet Of Wind", "Accessories", "Rare" },
+    { "Anklet of the Wind", "Accessories", "Rare" },
     { "Aquamarine", "Gems", "Elite" },
     { "Arcane Rune", "Accessories", "Rare" },
     { "Armageddon", "Weapons", "Legendary" },
@@ -414,9 +414,18 @@ local function saveItems()
     end)
 end
 
+-- category from the name alone, for items the table doesn't know yet
+local function guessCategory(name)
+    local n = string.lower(name)
+    if string.find(n, "tome", 1, true) then return "Tomes" end
+    if string.find(n, "potion", 1, true) then return "Potions" end
+    return nil
+end
+
 local listDirty = false
--- learn/refresh an item; cat or rarity may be nil (unknown)
-local function noteItem(name, cat, rarity)
+-- learn/refresh an item; cat or rarity may be nil (unknown). weak = cat is only a guess from
+-- a ground drop, so it never replaces a category we already have.
+local function noteItem(name, cat, rarity, weak)
     local n = baseName(name)
     local it = items[n]
     if not it then
@@ -424,8 +433,9 @@ local function noteItem(name, cat, rarity)
         items[n] = it
         listDirty = true
     end
+    if not it.cat and not cat then it.cat = guessCategory(n) end
     local changed = false
-    if cat and cat ~= "Other" and it.cat ~= cat then it.cat = cat; changed = true end
+    if cat and cat ~= "Other" and it.cat ~= cat and not (weak and it.cat) then it.cat = cat; changed = true end
     if rarity and it.rarity ~= rarity then it.rarity = rarity; changed = true end
     if changed then it.learned = true; listDirty = true; saveItems() end
     return it
@@ -463,6 +473,16 @@ local function toolCategory(t)
     return "Items"
 end
 
+-- toolCategory, except its catch-all "Items" gives way to a category we already know
+local function itemCategory(t)
+    local cat = toolCategory(t)
+    if cat == "Items" then
+        local it = items[baseName(t.Name)]
+        if it and it.cat then return it.cat end
+    end
+    return cat
+end
+
 local function toolRarity(t)
     local r = t:FindFirstChild("Rarity")
     local s = r and r:IsA("StringValue") and r.Value or t:GetAttribute("Rarity")
@@ -479,11 +499,13 @@ local function dropRarity(m)
 end
 
 local function dropCategory(m)
-    local at = m:FindFirstChild("AtTrinketSpawn")
-    if at and at:IsA("BoolValue") and at.Value then return "Trinkets" end
     local it = items[baseName(m.Name)]
     if it and it.cat then return it.cat end
-    if string.find(string.lower(m.Name), "tome", 1, true) then return "Tomes" end
+    -- any item can lie at a trinket spawn, so that only names the category of unknown ones
+    local guess = guessCategory(m.Name)
+    if guess then return guess end
+    local at = m:FindFirstChild("AtTrinketSpawn")
+    if at and at:IsA("BoolValue") and at.Value then return "Trinkets" end
     return "Other"
 end
 
@@ -618,7 +640,7 @@ local function onDropAdded(m)
             local arg = m:FindFirstChild("Argument")
             if arg and arg.Value == "PickupDrop" then
                 local cat = dropCategory(m)
-                noteItem(m.Name, cat ~= "Other" and cat or nil, dropRarity(m))
+                noteItem(m.Name, cat ~= "Other" and cat or nil, dropRarity(m), true)
             end
         end
     end)
@@ -653,7 +675,7 @@ local function shouldTrash(t)
     if st == "keep" then return false end
     if st == "trash" then return true end
     if PROTECT[n] then return false end
-    local max = trashMax(lists.trash.cats[toolCategory(t)])
+    local max = trashMax(lists.trash.cats[itemCategory(t)])
     local rank = RANK[string.lower(toolRarity(t))] or 1
     return max ~= nil and rank <= max and rank <= RANK.elite
 end
@@ -679,7 +701,7 @@ end
 
 ------------------------------------------------------------------ lifecycle
 local function learnTool(t)
-    if t:IsA("Tool") then noteItem(t.Name, toolCategory(t), toolRarity(t)) end
+    if t:IsA("Tool") then noteItem(t.Name, itemCategory(t), toolRarity(t)) end
 end
 
 local function watchLostFrom(parent, isBag)
@@ -1065,7 +1087,9 @@ function Loot.register(box)
     local ok, s = pcall(persist.get, SAVE_ITEMS)
     if ok and type(s) == "string" then
         for name, cat, rar in string.gmatch(s, "([^|;]+)|([^|;]*)|([^|;]*)") do
-            local it = noteItem(name, cat ~= "" and cat or nil, rar ~= "" and rar or nil)
+            -- a saved category never replaces the built-in table's (old saves filed
+            -- anything found at a trinket spawn under Trinkets)
+            local it = noteItem(name, cat ~= "" and cat or nil, rar ~= "" and rar or nil, true)
             it.learned = true
         end
     end
