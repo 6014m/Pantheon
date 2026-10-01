@@ -1395,7 +1395,11 @@ local function tryDash(t, h, primary)
         if not h.yieldLogged then h.yieldLogged = true; dlog("YIELD dash %s (fighting %s)", h.reason, boss.Name) end
         return false
     end
-    if not h.unweavable and CFG.tankHits > 0 then
+    -- a BOSS's hit the weave can't make (fight 2026-10-01: a weave whiffed on a Blood Hiveling,
+    -- locked out 1.45 s, and the Smelter Demon's 240 swing was left to land because "tank 5 hits
+    -- before dashing" still applied): never tanked, and it may spend your last dash
+    local bossHit = CFG.bossFocus and h.owner ~= nil and DASH.isBoss(h.owner)
+    if not h.unweavable and CFG.tankHits > 0 and not bossHit then
         -- tank it: only dash once you've already eaten tankHits hits recently
         local n = 0
         for _, ht in ipairs(DASH.hits) do if t - ht <= CFG.tankWindow then n += 1 end end
@@ -1405,8 +1409,8 @@ local function tryDash(t, h, primary)
         end
     end
     local st = stamina()
-    if st < DASH.cost + CFG.dashReserve + ((primary and not lesser) and 0 or DASH.cost) then
-        if primary then
+    if st < DASH.cost + CFG.dashReserve + (((primary or bossHit) and not lesser) and 0 or DASH.cost) then
+        if primary or bossHit then
             dlog("NODASH %s (stamina %.0f)", h.reason, st)
         end
         return false
