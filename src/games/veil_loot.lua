@@ -1095,6 +1095,16 @@ function Loot.register(box)
     end
     loadList("pick")
     loadList("trash")
+    -- one-time marks the user asked for (2026-10-01: "remind me tomorrow to mark band of
+    -- efficiency as pick up im definitely going to forget"): set once, then it's theirs to change
+    local okS, seeded = pcall(persist.get, "veil.loot.seed.band_of_efficiency")
+    if not (okS and seeded) then
+        if lists.pick.items["band of efficiency"] == nil then
+            lists.pick.items["band of efficiency"] = "pick"
+            saveList("pick")
+        end
+        pcall(persist.set, "veil.loot.seed.band_of_efficiency", true)
+    end
     box:add(feature.declare(pickupFeature()).root)
     box:add(feature.declare(trashFeature()).root)
     box:add(components.Button(box.features, { text = "Open Loot Filter", onClick = function() Loot.openFilter() end }))
