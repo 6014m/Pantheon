@@ -148,6 +148,7 @@ end
 -- next frame; if it's off, AutoRotate correctly stays true.
 local function deactivate()
     disableAlign()
+    state.rotationLockFacing = nil
     if s.wasActive then
         local myHum = getHumanoids()
         if myHum then myHum.AutoRotate = true end
@@ -170,7 +171,7 @@ local function step()
 
     local face = strafeFace()
     local tRoot = not face and rootOf(targetCharacter()) or nil
-    if not face and not tRoot then return end
+    if not face and not tRoot then state.rotationLockFacing = nil; return end
 
     if bgSuppressed(myHum, myRoot) then
         deactivate()
@@ -208,6 +209,9 @@ local function step()
     local cf = CFrame.lookAt(myRoot.Position, myRoot.Position + flat)
     local _, yAngle, _ = cf:ToEulerAnglesYXZ()
     myRoot.CFrame = CFrame.new(myRoot.Position) * CFrame.Angles(0, yAngle, 0)
+    -- the direction we're holding, for game modules that have to fight a game's own facing
+    -- engine on our behalf (Huss Valley's Crack Shiftlock reads this)
+    state.rotationLockFacing = flat
 end
 
 function RotationLock.hotkeyPress()
@@ -260,6 +264,7 @@ function RotationLock.init()
 end
 
 function RotationLock.destroy()
+    state.rotationLockFacing = nil
     if s.bound then
         pcall(function() RunService:UnbindFromRenderStep(BIND) end)
         if s.steppedConn then s.steppedConn:Disconnect(); s.steppedConn = nil end

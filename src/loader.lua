@@ -83,6 +83,7 @@ local files = {
     { "games.huss_dash",           "games/huss_dash.lua" },
     { "games.huss_lunge",          "games/huss_lunge.lua" },
     { "games.huss_afk",            "games/huss_afk.lua" },
+    { "games.huss_facing",         "games/huss_facing.lua" },
     { "games.huss",                "games/huss.lua" },
     { "init",                      "init.lua" },
 }

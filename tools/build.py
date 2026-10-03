@@ -61,6 +61,7 @@ BUILD_ORDER = [
     "games/huss_dash",
     "games/huss_lunge",
     "games/huss_afk",
+    "games/huss_facing",
     "games/huss",
     "init",
 ]
