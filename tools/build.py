@@ -59,6 +59,7 @@ BUILD_ORDER = [
     "games/veil_ghost",
     "games/veil",
     "games/huss_dash",
+    "games/huss_lunge",
     "games/huss",
     "init",
 ]

@@ -81,6 +81,7 @@ local files = {
     { "games.veil_ghost",          "games/veil_ghost.lua" },
     { "games.veil",                "games/veil.lua" },
     { "games.huss_dash",           "games/huss_dash.lua" },
+    { "games.huss_lunge",          "games/huss_lunge.lua" },
     { "games.huss",                "games/huss.lua" },
     { "init",                      "init.lua" },
 }

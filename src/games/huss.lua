@@ -28,6 +28,7 @@ local state     = require("modules.aim.state")
 local log       = require("core.log")
 local notify    = require("ui.notify")
 local dash      = require("games.huss_dash")
+local lunge     = require("games.huss_lunge")
 
 local HUSS_IDS = { 10764627709, 107535308163741 }
 local AUTO = "Auto (the other team)"
@@ -230,6 +231,7 @@ function Huss.register()
     }).root)
 
     box:add(feature.declare(dash.feature()).root)
+    box:add(feature.declare(lunge.feature()).root)
 
     box:add(feature.declare({
         id          = "huss.auto_close_results",
@@ -249,6 +251,7 @@ end
 
 function Huss.destroy()
     pcall(dash.stop)
+    pcall(lunge.stop)
     pcall(setCloser, false)
     if removeFilter then
         pcall(removeFilter)
