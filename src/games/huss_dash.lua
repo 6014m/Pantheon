@@ -53,7 +53,8 @@ local LP = Players.LocalPlayer
 
 local Dash = {}
 local METHOD_TURN, METHOD_KEYS = "Turn my heading", "Add movement keys"
-local CFG = { enabled = false, dives = true, grabs = true, near = 0, vary = true, method = METHOD_TURN, hold = 0.5 }
+local CFG = { enabled = false, dives = true, grabs = true, near = 0, vary = true, method = METHOD_TURN, hold = 0.5,
+              auto = true, warn = 0.25 }
 
 local DASH_DIST, DASH_TIME = 10.8, 0.28
 local DIVE_DIST, DIVE_SPEED = 15, 37.5
@@ -494,21 +495,73 @@ local function hookPlayer(plr)
     conns[#conns + 1] = plr.CharacterAdded:Connect(hook)
 end
 
--- optional: don't wait for the dive -- cut when a catcher is this close and closing in
-local function proximityStep()
-    if not CFG.enabled or CFG.near <= 0 or busy then return end
+-- Automatic detection (user 2026-10-03: "we need a better detection range somethin a lil more
+-- automatic") -- no fixed stud number. Two layers, don't wait for the dive:
+--   * GEOMETRY: a dive's catching reach depends on the catcher's speed (the game's own
+--     formula: up to 15 studs of dive + 5.5 of reach at full speed, ~7 total from a standstill).
+--     For every catcher heading at you, dash when they'll be within THEIR reach of you within
+--     the warning time -- a sprinting catcher triggers from ~25 studs, a walking one only up
+--     close, which is what a fixed slider could never do.
+--   * THE GAME'S OWN THREAT METER: the client computes CatcherThreatIntensity for its warning
+--     ring (ThreatIndicatorModel: closest CLOSING catcher, 65 studs mapped to 0.2..1.0, height
+--     gated, saturating at 1.0 inside ~20 studs = exactly full dive range). Crossing 0.97 is
+--     "a closing catcher just entered dive range" -- and it sees what our scan can't (height,
+--     ability users). Fired on the rising edge only.
+-- The old fixed-distance slider stays as a manual extra (0 = off).
+
+-- a dive's full catching reach at this catcher's current speed (the game's formula)
+local function diveReach(speed)
+    local ratio = math.clamp(speed / 37, 0, 1)
+    local dist, reach = 2.4, 4
+    if ratio >= 0.8 then dist, reach = 8.4, 5.5 elseif ratio >= 0.4 then dist, reach = 4.8, 4.75 end
+    return math.min(15, math.max(dist * 1.15, speed * 0.58)) + reach
+end
+
+local lastThreat, lastThreatFire = 0, -math.huge
+
+local function dangerStep()
+    if not CFG.enabled or busy then return end
     local root = myRoot()
     if not root then return end
+    local me, myVel = root.Position, flat(root.AssemblyLinearVelocity)
+
+    if CFG.auto then
+        local threat = LP:GetAttribute("CatcherThreatIntensity")
+        if type(threat) == "number" then
+            if threat >= 0.97 and lastThreat < 0.97 and os.clock() - lastThreatFire > 1.5 then
+                lastThreatFire = os.clock()
+                tryDash(string.format("threat meter hit %.2f", threat), "the game's threat ring")
+            end
+            lastThreat = threat
+        end
+    end
+
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LP and isCatcher(plr) then
             local croot = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
-            if croot then
-                local rel = flat(root.Position - croot.Position)
-                if rel.Magnitude > 1e-3 and rel.Magnitude <= CFG.near then
-                    local closing = flat(croot.AssemblyLinearVelocity - root.AssemblyLinearVelocity):Dot(rel.Unit)
-                    if closing > 4 then
-                        tryDash(string.format("close (%.0f studs, closing %.0f)", rel.Magnitude, closing), plr.Name)
+            if croot and math.abs(croot.Position.Y - me.Y) <= 12 then
+                local rel = flat(me - croot.Position)
+                local d = rel.Magnitude
+                if d > 1e-3 then
+                    local toMe = rel.Unit
+                    local cvel = flat(croot.AssemblyLinearVelocity)
+                    local closing = (cvel - myVel):Dot(toMe)
+                    -- manual extra: fixed distance, as before
+                    if CFG.near > 0 and d <= CFG.near and closing > 4 then
+                        tryDash(string.format("close (%.0f studs, closing %.0f)", d, closing), plr.Name)
                         return
+                    end
+                    -- automatic: they're actually coming at you, and within the warning time
+                    -- they'd have you inside their dive's reach
+                    if CFG.auto and closing >= 10 then
+                        local speed = cvel.Magnitude
+                        if cvel:Dot(toMe) >= speed * 0.5 then      -- heading at you, not past you
+                            local dEff = d - closing * LAG         -- they're really LAG ahead of what you see
+                            if dEff <= diveReach(speed) + closing * CFG.warn then
+                                tryDash(string.format("auto (%.0f studs, reach %.0f, closing %.0f)", d, diveReach(speed), closing), plr.Name)
+                                return
+                            end
+                        end
                     end
                 end
             end
@@ -545,10 +598,11 @@ function Dash.start()
         if list then for _, c in ipairs(list) do pcall(function() c:Disconnect() end) end end
         charConns[plr] = nil
     end)
+    lastThreat, lastThreatFire = 0, -math.huge
     local acc, flushAcc = 0, 0
     conns[#conns + 1] = RunService.Heartbeat:Connect(function(dt)
         acc += dt; flushAcc += dt
-        if acc >= 0.05 then acc = 0; pcall(proximityStep) end
+        if acc >= 0.05 then acc = 0; pcall(dangerStep) end
         if flushAcc >= 2 then flushAcc = 0; dlogFlush() end
     end)
     dlog("START dives=%s grabs=%s near=%s vary=%s", tostring(CFG.dives), tostring(CFG.grabs), tostring(CFG.near), tostring(CFG.vary))
@@ -580,7 +634,7 @@ function Dash.feature()
     return {
         id          = "huss.auto_dash",
         name        = "Auto Dash",
-        description = "As a Runner, cuts sideways the instant a catcher commits -- a dive that would reach you, or their close-range grab picking you -- and chooses the side: it works out where every catcher near you will be over the next half second and takes the cut that leaves you furthest from all of them, prefers cutting against a chaser's own sideways momentum (so they have to stop and turn back), avoids walls, and won't keep going the same way. \"Turn my heading\" swings the direction you're facing so the keys you're holding point along the cut (left, right, or back the way you came), dashes, runs that way for a moment, then eases your view back. \"Add movement keys\" presses A / D on top of your keys instead (left / right only). Each attempt is logged to workspace/Huss_Recon.",
+        description = "As a Runner, cuts sideways the instant a catcher commits -- a dive that would reach you, their close-range grab picking you, or (automatic detection) a catcher about to have you inside their dive's reach, judged from how fast THEY are moving (a sprinter's dive reaches ~20 studs, a walker's ~7) plus the game's own threat meter -- and chooses the side: it works out where every catcher near you will be over the next half second and takes the cut that leaves you furthest from all of them, prefers cutting against a chaser's own sideways momentum (so they have to stop and turn back), avoids walls, and won't keep going the same way. \"Turn my heading\" swings the direction you're facing so the keys you're holding point along the cut (left, right, or back the way you came), dashes, runs that way for a moment, then eases your view back. \"Add movement keys\" presses A / D on top of your keys instead (left / right only). Each attempt is logged to workspace/Huss_Recon.",
         default     = false,
         onToggle    = function(v)
             CFG.enabled = v and true or false
@@ -597,11 +651,16 @@ function Dash.feature()
               onChange = function(v) CFG.dives = v and true or false end },
             { type = "toggle", name = "Dash when a grab targets you", key = "grabs", default = true,
               onChange = function(v) CFG.grabs = v and true or false end },
-            { type = "slider", name = "Also dash when a catcher closes within (studs, 0 = off)", key = "near",
+            { type = "slider", name = "Manual extra: dash when a catcher closes within (studs, 0 = off)", key = "near",
               min = 0, max = 25, step = 1, default = 0,
               onChange = function(v) CFG.near = v end },
             { type = "toggle", name = "Don't repeat the same side (stay unpredictable)", key = "vary", default = true,
               onChange = function(v) CFG.vary = v and true or false end },
+            { type = "toggle", name = "Automatic detection (dash when a dive could land on you)", key = "auto", default = true,
+              onChange = function(v) CFG.auto = v and true or false end },
+            { type = "slider", name = "Warning time (seconds before they'd have you in reach)", key = "warn",
+              min = 0.1, max = 0.8, step = 0.05, default = 0.25,
+              onChange = function(v) CFG.warn = v end },
         },
     }
 end
