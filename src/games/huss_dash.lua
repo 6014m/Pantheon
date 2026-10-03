@@ -29,13 +29,17 @@
 --   * dashing the same side as last time costs more each time in a row, and a little randomness
 --     breaks near-ties -- so there is no pattern to read.
 --
--- INPUT: only ever ADDS movement keys (camera-relative) on top of what you hold, taps Space, and
--- lets the added keys go. It never releases a key your finger is on (a fake release can't be
--- handed back safely if you let go meanwhile). So a back cut is only possible when you aren't
--- holding forward; normally the choice is the left cut or the right cut.
+-- INPUT, two methods (the "How to cut" setting):
+--   * "Turn my heading" (default): swings the camera heading about your character so the keys
+--     you already hold point along the cut, waits out the swing, taps Space, runs the new way
+--     for the hold time, then eases the view back. No key is ever touched (W is pressed only
+--     when you hold nothing), and every direction is reachable -- including the back cuts.
+--   * "Add movement keys": presses A / D on top of what you hold (left / right only). It never
+--     releases a key your finger is on (a fake release can't be handed back safely), which is
+--     why holding W+A used to leave no side available -- the reason the turn method exists.
 --
--- Every attempt is logged to workspace/Huss_Recon/autodash_<time>.log: both sides' scores, the
--- side taken, whether the dash came out and whether you were caught anyway.
+-- Every attempt is logged to workspace/Huss_Recon/autodash_<time>.log: every cut's score, the
+-- cut taken, whether the dash came out and whether you were caught anyway.
 
 local Players    = game:GetService("Players")
 local UIS        = game:GetService("UserInputService")
@@ -400,9 +404,19 @@ local function tryDash(reason, catcherName)
     local session = generation
     task.spawn(function()
         for _, k in ipairs(combo) do send(k, true) end
-        if turning then steer(theta, CFG.hold) end
-        RunService.Heartbeat:Wait()          -- let the game read the new direction
-        RunService.Heartbeat:Wait()
+        if turning then
+            steer(theta, CFG.hold)
+            -- Space BEFORE the swing finishes would dash the wrong way: the game buffers Space
+            -- 0.18 s and consumes it the moment the input is 35 deg off travel, so a back cut
+            -- pressed mid-swing fires as a side cut. Wait out the swing (90 deg ~ 0.06 s).
+            local deadline = os.clock() + 0.25
+            repeat RunService.Heartbeat:Wait()
+            until math.abs(STEER.theta - STEER.target) < math.rad(8) or os.clock() > deadline
+                  or session ~= generation
+        else
+            RunService.Heartbeat:Wait()          -- let the game read the new direction
+            RunService.Heartbeat:Wait()
+        end
         if session ~= generation then return end      -- switched off (or restarted) meanwhile
         pcall(function() VIM:SendKeyEvent(true, Enum.KeyCode.Space, false, game) end)
         task.wait(0.03)

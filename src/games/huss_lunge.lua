@@ -191,15 +191,24 @@ end
 local function solve(me, speed, troot)
     local dist, dur, reach = diveProfile(speed)
     local v = flat(troot.AssemblyLinearVelocity)
-    local p = troot.Position + v * SEEN_LATE
-    local t = 0.06
-    while t <= dur + 0.001 do
-        local at = p + v * t
-        local need = flat(at - me).Magnitude - reach
-        if need <= dist * math.min(1, t / dur) - AUTO.margin then return at, t end
-        t += 0.04
+    local function connects(vel)
+        local p = troot.Position + vel * SEEN_LATE
+        local t = 0.06
+        while t <= dur + 0.001 do
+            local at = p + vel * t
+            local need = flat(at - me).Magnitude - reach
+            if need <= dist * math.min(1, t / dur) - AUTO.margin then return at, t end
+            t += 0.04
+        end
+        return nil
     end
-    return nil
+    local point, t = connects(v)
+    if not point then return nil end
+    -- A connect that only works if the runner keeps closing at full speed is a bet on them not
+    -- juking (live: fired at a runner 29.9 studs out, they turned, 1.1 s gone). It must still
+    -- land with them slowed to 40% -- harmless for runners moving away (that makes them easier).
+    if not connects(v * 0.4) then return nil end
+    return point, t
 end
 
 local function autoStep()
