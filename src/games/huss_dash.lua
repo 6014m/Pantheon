@@ -1,26 +1,41 @@
--- Huss Valley: Auto Dash (runner side). Dashes out of the way the moment a catcher commits.
+-- Huss Valley: Auto Dash (runner side). Dashes the moment a catcher commits, and picks the side
+-- that leaves the most catchers flat-footed.
 --
--- What the first recording showed (2026-10-03, Huss_Recon/rec_1003_160229):
---   * A catcher's DIVE is announced on their character the instant it starts: attribute
---     TackleDirection, then TackleActive = true. The dive covers ~14 studs in ~0.33 s and
---     catches within TackleReach (4.5 / 5.5 / 6.5 studs). The user was caught 0.25 s after one
---     started 23 studs out, 27 degrees off them, with their dash ready.
---   * A catcher's close-range GRAB names its target: ReachTargetUserId = your UserId, with
---     ReachPhase Tracking -> Windup -> Active.
---   * Your DASH is Space (ContextActionService "CoHBoost"), 8-9 studs, 1.1 s cooldown
---     (character attributes DashReady / DashCooldown / DashCount).
---   * User: "the dash is directional but if you're running straight you can't really dash
---     straight, it has to be another direction" -- it goes where your movement keys point, and
---     that must differ from where you're already heading.
+-- The game's rules (its own scripts, pulled 2026-10-03: MovementConfig.Dash, MovementModel,
+-- DashAnimationPolicy, GameConfig.Tackle, ContactCatchConfig):
+--   * DASH = Space ("CoHBoost"): 10.8 studs in 0.28 s, 1.1 s cooldown. It only fires as a
+--     REDIRECT: your input must point at least 35 degrees away from where you have been
+--     travelling (looked back 0.38 s; Space itself is buffered 0.18 s). The dash then goes
+--     along the part of your input that is sideways to your travel -- i.e. a hard cut LEFT or
+--     RIGHT (input more than 90 degrees off travel goes where the input points: back cuts).
+--     That is the user's "you can't dash straight, it has to be another direction".
+--   * A catcher's DIVE is announced on their character the instant it starts (TackleDirection,
+--     then TackleActive = true): fixed direction, up to 15 studs in <= 0.4 s, catching 4-5.5
+--     studs ahead in a 3.4-wide lane, then ~0.6 s of recovery where they can't do anything.
+--   * A catcher's automatic close-range GRAB names its target (ReachTargetUserId) and goes
+--     Tracking -> Windup 0.12 s -> Active 0.18 s; it commits from ~10.5 studs.
+--   * Catchers run 37 stud/s and turn at 300 degrees/s; runners 35.6.
 --
--- So: when a dive is aimed at you (or a grab targets you), work out the sideways direction that
--- takes you off the catcher's line, ADD the movement keys that lean your input that way
--- (relative to the camera; on top of whatever you're holding), tap Space, and let the added
--- keys go. Everything is done with key presses, the same inputs a player makes.
+-- WHICH SIDE (user 2026-10-03: "it needs to really focus on breaking people's ankles and
+-- disorientating groups because eventually it's me vs like 20 ... if I'm always dashing the same
+-- way I'm likely to get caught"). Both sides are scored and the better one is taken:
+--   * where EVERY catcher within 45 studs will be over the next 0.6 s (a diving one along its
+--     dive line, the rest along their current run) against where the dash would put you --
+--     being near any of them costs, being within catching reach costs a lot. This is what
+--     steers you out of a pack instead of into the next catcher;
+--   * ankle breaker: cutting AGAINST a chasing catcher's sideways motion scores extra -- they
+--     have to stop and turn back (300 deg/s), which is the stumble;
+--   * a wall or prop in the way within the dash's length costs;
+--   * dashing the same side as last time costs more each time in a row, and a little randomness
+--     breaks near-ties -- so there is no pattern to read.
 --
--- NOT yet proven live: that the dash clears a dive in time, and the danger-zone sizes below.
--- Every trigger is logged to workspace/Huss_Recon/autodash_<time>.log with whether the dash
--- went out and whether you were caught anyway -- tune from that.
+-- INPUT: only ever ADDS movement keys (camera-relative) on top of what you hold, taps Space, and
+-- lets the added keys go. It never releases a key your finger is on (a fake release can't be
+-- handed back safely if you let go meanwhile). So a back cut is only possible when you aren't
+-- holding forward; normally the choice is the left cut or the right cut.
+--
+-- Every attempt is logged to workspace/Huss_Recon/autodash_<time>.log: both sides' scores, the
+-- side taken, whether the dash came out and whether you were caught anyway.
 
 local Players    = game:GetService("Players")
 local UIS        = game:GetService("UserInputService")
@@ -33,16 +48,25 @@ local log = require("core.log")
 local LP = Players.LocalPlayer
 
 local Dash = {}
-local CFG = { enabled = false, dives = true, grabs = true, near = 0 }
+local CFG = { enabled = false, dives = true, grabs = true, near = 0, vary = true }
 
-local DIVE_AHEAD = 28     -- studs along the dive line that count as "aimed at you" (dive ~14 + run-in)
-local DIVE_WIDTH = 12     -- studs either side of that line (reach 6.5 + how far you both move)
-local GRAB_RANGE = 16     -- a grab only matters this close
-local STRAIGHT   = 0.8    -- a key direction this aligned with your travel counts as "straight" (~37 deg)
-local RETRIGGER  = 0.3    -- seconds between two of our own dash attempts
+local DASH_DIST, DASH_TIME = 10.8, 0.28
+local DIVE_DIST, DIVE_SPEED = 15, 37.5
+local CATCH_RANGE = 8.5     -- studs: closer than this to a diving catcher's path = caught (reach 5.5 + your body + lag)
+local DIVE_AHEAD  = 30      -- a dive further than this along its line can't reach you
+local GRAB_RANGE  = 16      -- a grab only matters this close
+local AWARE       = 45      -- catchers within this many studs are weighed when picking a side
+local MIN_INTENT  = 0.766   -- cos(40 deg): the input must be at least this far off your travel (game needs 35)
+local RETRIGGER   = 0.3     -- seconds between two of our own dash attempts
+-- Other players reach your client LATE. Recording 1: the user was caught 0.25 s after a dive
+-- appeared to start 23 studs away -- a dive covers 15 studs in 0.4 s, so the catcher was really
+-- ~10 studs closer than shown and the dive already under way. Every catcher is therefore
+-- treated as this far ahead of where it appears, along its own motion.
+local LAG         = 0.25
 
 local KEYS  = { W = Enum.KeyCode.W, A = Enum.KeyCode.A, S = Enum.KeyCode.S, D = Enum.KeyCode.D }
 local ORDER = { "W", "A", "S", "D" }
+local OPPOSITE = { W = "S", S = "W", A = "D", D = "A" }
 
 local running = false
 local conns, charConns = {}, {}
@@ -50,7 +74,9 @@ local realHeld = { W = false, A = false, S = false, D = false }   -- YOUR finger
 local fakeDown, fakeUp = { W = 0, A = 0, S = 0, D = 0 }, { W = 0, A = 0, S = 0, D = 0 }
 local fakeAt = 0
 local busy, lastTry = false, -math.huge
+local lastSide, streak = nil, 0      -- "left" / "right" and how many times in a row
 local logPath, logBuf = nil, {}
+local rayParams = RaycastParams.new()
 
 local function dlog(fmt, ...)
     logBuf[#logBuf + 1] = string.format("%.3f ", os.clock()) .. string.format(fmt, ...)
@@ -98,16 +124,96 @@ local function send(name, down)
     pcall(function() VIM:SendKeyEvent(down, KEYS[name], false, game) end)
 end
 
-local OPPOSITE = { W = "S", S = "W", A = "D", D = "A" }
+--------------------------------------------------------------------- the catchers around you
 
--- Which movement keys to ADD to the ones you're holding so your input leans towards `desired`.
--- Keys are only ever added, never taken away: a key you are physically holding can't be
--- "released" for you and handed back safely (if you let go meanwhile the game never hears it
--- and the re-press would stick). The recorded dashes were all a 90-degree sidestep to one side
--- or the other, so leaning the input to the right side is what picks the dash direction.
--- If the result would still be straight along your travel (the game won't dash straight), the
--- sideways key that takes you away from the catcher is added too.
-local function pickKeys(desired, away, travel)
+local function isCatcher(plr) return plr:GetAttribute("GameRole") == "Catcher" end
+
+-- every catcher within AWARE studs: where it is, how it's moving, and its dive line if diving
+local function catchersNear(me)
+    local list, chars = {}, {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local char = plr.Character
+        if char then chars[#chars + 1] = char end
+        if plr ~= LP and char and isCatcher(plr) then
+            local root = char:FindFirstChild("HumanoidRootPart")
+            if root and flat(root.Position - me).Magnitude <= AWARE then
+                local c = { name = plr.Name, pos = root.Position, vel = flat(root.AssemblyLinearVelocity), diving = false }
+                if char:GetAttribute("TackleActive") == true then
+                    local dir = char:GetAttribute("TackleDirection")
+                    if typeof(dir) ~= "Vector3" then dir = root.CFrame.LookVector end
+                    dir = flat(dir)
+                    if dir.Magnitude > 1e-3 then c.diving, c.dir = true, dir.Unit end
+                end
+                list[#list + 1] = c
+            end
+        end
+    end
+    return list, chars
+end
+
+-- where a catcher will be `t` seconds from now
+local function catcherAt(c, t)
+    if c.diving then return c.pos + c.dir * (DIVE_SPEED * LAG + math.min(DIVE_DIST, DIVE_SPEED * t)) end
+    return c.pos + c.vel * (t + LAG)
+end
+
+-- where you'd be `t` seconds from now if you cut along `dir` now (dash, then run on)
+local function meAt(me, dir, speed, t)
+    if t <= DASH_TIME then return me + dir * (DASH_DIST * t / DASH_TIME) end
+    return me + dir * (DASH_DIST + speed * 0.85 * (t - DASH_TIME))
+end
+
+local SAMPLES = { 0.1, 0.2, 0.3, 0.45, 0.6 }
+
+-- Higher = better. See the header for what goes into it.
+local function scoreCut(dir, side, me, speed, list, chars)
+    local score, closest = 0, math.huge
+    for _, t in ipairs(SAMPLES) do
+        local mine = meAt(me, dir, speed, t)
+        for _, c in ipairs(list) do
+            local d = flat(mine - catcherAt(c, t)).Magnitude
+            if d < closest then closest = d end
+            if d < 18 then
+                local w = ((18 - d) / 18) ^ 2
+                if d < CATCH_RANGE then w = w * 4 end      -- inside catching reach
+                if c.diving then w = w * 1.5 end           -- a dive can't be out-run, only left
+                score -= w
+            end
+        end
+    end
+    -- ankle breaker: go against each chaser's sideways motion (relative to the line from it to you)
+    for _, c in ipairs(list) do
+        if not c.diving then
+            local rel = flat(me - c.pos)
+            local d = rel.Magnitude
+            if d > 1 and d < 30 then
+                local toMe = rel.Unit
+                local sideways = c.vel - toMe * c.vel:Dot(toMe)
+                if sideways.Magnitude > 3 then
+                    score += -sideways.Unit:Dot(dir) * math.min(1, sideways.Magnitude / 20) * (1 - d / 30) * 1.5
+                end
+            end
+        end
+    end
+    -- something solid in the way
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    rayParams.FilterDescendantsInstances = chars
+    local hit = Workspace:Raycast(me, dir * (DASH_DIST + 2), rayParams)
+    if hit then score -= (1 - (hit.Position - me).Magnitude / (DASH_DIST + 2)) * 5 + 1 end
+    -- no pattern
+    if CFG.vary then
+        if side == lastSide then score -= 0.45 * math.min(streak, 3) end
+        score += (math.random() - 0.5) * 0.3
+    end
+    return score, closest
+end
+
+--------------------------------------------------------------------- turning a side into keys
+
+-- The keys to ADD so the game cuts towards `dir`: the input (held + added) must be at least 40
+-- degrees off `travel`, and its sideways part must point along `dir`. Returns nil if what you're
+-- holding makes that side impossible without releasing a key.
+local function keysFor(dir, travel)
     local cam = Workspace.CurrentCamera
     if not cam then return nil end
     local f = flat(cam.CFrame.LookVector)
@@ -115,70 +221,89 @@ local function pickKeys(desired, away, travel)
     f = f.Unit
     local r = Vector3.new(-f.Z, 0, f.X)
     local dirs = { W = f, S = -f, D = r, A = -r }
-    local adds = {}
-    local function free(k) return not realHeld[k] and not adds[k] and not realHeld[OPPOSITE[k]] and not adds[OPPOSITE[k]] end
-    local function input()
-        local v = Vector3.new(0, 0, 0)
-        for _, k in ipairs(ORDER) do if realHeld[k] or adds[k] then v = v + dirs[k] end end
-        return v
-    end
+    local free = {}
     for _, k in ipairs(ORDER) do
-        if free(k) and dirs[k]:Dot(desired) > 0.35 then adds[k] = true end
+        if not realHeld[k] and not realHeld[OPPOSITE[k]] then free[#free + 1] = k end
     end
-    local v = input()
-    if v.Magnitude < 0.1 or (travel and v.Unit:Dot(travel) > STRAIGHT) then
-        local best, bestScore
-        for _, k in ipairs(ORDER) do
-            if free(k) and (not travel or math.abs(dirs[k]:Dot(travel)) < 0.5) then
-                local score = dirs[k]:Dot(desired) + 0.5 * dirs[k]:Dot(away)
-                if not bestScore or score > bestScore then best, bestScore = k, score end
+    local options = { {} }
+    for i, a in ipairs(free) do
+        options[#options + 1] = { a }
+        for j = i + 1, #free do
+            if free[j] ~= OPPOSITE[a] then options[#options + 1] = { a, free[j] } end
+        end
+    end
+    local best, bestFit
+    for _, adds in ipairs(options) do
+        local v = Vector3.new(0, 0, 0)
+        for _, k in ipairs(ORDER) do if realHeld[k] then v = v + dirs[k] end end
+        for _, k in ipairs(adds) do v = v + dirs[k] end
+        if v.Magnitude > 0.1 then
+            local input = v.Unit
+            local along = input:Dot(travel)
+            if along <= MIN_INTENT then
+                local cut = along > 0 and (input - travel * along) or input   -- the game's own rule
+                if cut.Magnitude > 0.01 then
+                    local fit = cut.Unit:Dot(dir)
+                    -- fewest extra keys wins a tie (0.05 per key), so we don't press more than needed
+                    local value = fit - 0.05 * #adds
+                    if fit > 0.5 and (not bestFit or value > bestFit) then best, bestFit = adds, value end
+                end
             end
         end
-        if best then adds[best] = true end
-        v = input()
     end
-    local list = {}
-    for _, k in ipairs(ORDER) do if adds[k] then list[#list + 1] = k end end
-    return list, (v.Magnitude > 0.1) and v.Unit:Dot(desired) or 0
+    return best
 end
 
--- Sideways off the threat's line, on the side you're already on (or already moving towards).
-local function escapeDir(threatPos, threatDir, me, myVel)
-    local T = flat(threatDir)
-    if T.Magnitude < 1e-3 then return nil end
-    T = T.Unit
-    local P = Vector3.new(-T.Z, 0, T.X)
-    local rel = flat(me - threatPos)
-    local side = P:Dot(rel)
-    if math.abs(side) < 1.5 then side = P:Dot(flat(myVel)) end   -- dead on its line: keep your sideways momentum
-    if side < 0 then P = -P end
-    return P
-end
+--------------------------------------------------------------------- the dash
 
-local function tryDash(reason, catcher, threatPos, threatDir)
+local function tryDash(reason, catcherName)
     if busy or os.clock() - lastTry < RETRIGGER then return end
     local ok, why = canDash()
     local root = myRoot()
     if not ok or not root then
-        if why ~= "not an active runner" then dlog("SKIP %s from %s (%s)", reason, catcher, tostring(why)) end
+        if why ~= "not an active runner" then dlog("SKIP %s from %s (%s)", reason, catcherName, tostring(why)) end
         return
     end
+    local me = root.Position
     local vel = flat(root.AssemblyLinearVelocity)
-    local travel = vel.Magnitude > 5 and vel.Unit or nil
-    local desired = escapeDir(threatPos, threatDir, root.Position, vel)
-    local awayVec = flat(root.Position - threatPos)
-    local away = awayVec.Magnitude > 1e-3 and awayVec.Unit or (desired or Vector3.new(0, 0, 0))
-    local combo, score
-    if desired then combo, score = pickKeys(desired, away, travel) end
-    if not combo then dlog("SKIP %s from %s (no direction)", reason, catcher); return end
+    if vel.Magnitude < 4 then
+        dlog("SKIP %s from %s (standing still: the game only dashes as a change of direction)", reason, catcherName)
+        return
+    end
+    local travel, speed = vel.Unit, vel.Magnitude
+    local right = Vector3.new(-travel.Z, 0, travel.X)
+    local list, chars = catchersNear(me)
+
+    local cuts = {
+        { side = "right", dir = right },
+        { side = "left",  dir = -right },
+    }
+    for _, c in ipairs(cuts) do
+        c.score, c.closest = scoreCut(c.dir, c.side, me, speed, list, chars)
+        c.keys = keysFor(c.dir, travel)
+    end
+    table.sort(cuts, function(a, b) return a.score > b.score end)
+    local pick = cuts[1].keys and cuts[1] or (cuts[2].keys and cuts[2]) or nil
+    local note = ""
+    if pick and pick ~= cuts[1] then note = "  (better side blocked by the keys you're holding)" end
+    if not pick then
+        -- neither side can be made with added keys: press Space anyway and let your own input decide
+        pick = { side = "yours", dir = right, keys = {}, score = 0, closest = 0 }
+        note = "  (no side possible with added keys)"
+    end
 
     busy, lastTry = true, os.clock()
+    if pick.side == lastSide then streak += 1 else lastSide, streak = pick.side, 1 end
     local char = LP.Character
     local before = char and char:GetAttribute("DashCount")
-    dlog("DASH %s from %s  dist %.1f  adding %s (fit %.2f)  held %s%s%s%s", reason, catcher,
-        awayVec.Magnitude, #combo > 0 and table.concat(combo, "+") or "nothing", score,
-        realHeld.W and "W" or "", realHeld.A and "A" or "", realHeld.S and "S" or "", realHeld.D and "D" or "")
+    dlog("DASH %s from %s  catchers %d  right %.2f (closest %.0f) / left %.2f (closest %.0f)  -> %s x%d  adding %s  held %s%s%s%s%s",
+        reason, catcherName, #list,
+        (cuts[1].side == "right" and cuts[1] or cuts[2]).score, (cuts[1].side == "right" and cuts[1] or cuts[2]).closest,
+        (cuts[1].side == "left" and cuts[1] or cuts[2]).score, (cuts[1].side == "left" and cuts[1] or cuts[2]).closest,
+        pick.side, streak, #pick.keys > 0 and table.concat(pick.keys, "+") or "nothing",
+        realHeld.W and "W" or "", realHeld.A and "A" or "", realHeld.S and "S" or "", realHeld.D and "D" or "", note)
 
+    local combo = pick.keys
     task.spawn(function()
         for _, k in ipairs(combo) do send(k, true) end
         RunService.Heartbeat:Wait()          -- let the game read the new direction
@@ -201,9 +326,9 @@ local function tryDash(reason, catcher, threatPos, threatDir)
     end)
 end
 
-local function isCatcher(plr) return plr:GetAttribute("GameRole") == "Catcher" end
+--------------------------------------------------------------------- triggers
 
--- a dive just started on this catcher: is its line coming through you?
+-- a dive just started: will it come within catching range of where you're heading?
 local function onDive(plr, char)
     if not (CFG.enabled and CFG.dives) or not isCatcher(plr) then return end
     local croot = char:FindFirstChild("HumanoidRootPart")
@@ -215,10 +340,17 @@ local function onDive(plr, char)
     if T.Magnitude < 1e-3 then return end
     T = T.Unit
     local rel = flat(root.Position - croot.Position)
-    local along = rel:Dot(T)
-    local lateral = (rel - T * along).Magnitude
-    if along < -2 or along > DIVE_AHEAD or lateral > DIVE_WIDTH then return end
-    tryDash(string.format("dive (%.0f ahead, %.0f off line)", along, lateral), plr.Name, croot.Position, T)
+    if rel:Dot(T) < -2 or rel:Dot(T) > DIVE_AHEAD + DIVE_SPEED * LAG then return end
+    -- closest the dive gets to you if you just keep running (the catcher taken as LAG ahead)
+    local vel = flat(root.AssemblyLinearVelocity)
+    local c = { pos = croot.Position, dir = T, diving = true }
+    local closest = math.huge
+    for t = 0, 0.45, 0.05 do
+        local d = flat((root.Position + vel * t) - catcherAt(c, t)).Magnitude
+        if d < closest then closest = d end
+    end
+    if closest > CATCH_RANGE then return end
+    tryDash(string.format("dive (would pass %.0f studs from you)", closest), plr.Name)
 end
 
 local function onGrab(plr, char)
@@ -229,9 +361,9 @@ local function onGrab(plr, char)
     local croot = char:FindFirstChild("HumanoidRootPart")
     local root = myRoot()
     if not (croot and root) then return end
-    local rel = flat(root.Position - croot.Position)
-    if rel.Magnitude > GRAB_RANGE or rel.Magnitude < 1e-3 then return end
-    tryDash("grab (" .. tostring(phase) .. ")", plr.Name, croot.Position, rel)
+    local d = flat(root.Position - croot.Position).Magnitude
+    if d > GRAB_RANGE then return end
+    tryDash(string.format("grab (%s, %.0f studs)", tostring(phase), d), plr.Name)
 end
 
 local function hookPlayer(plr)
@@ -251,7 +383,7 @@ local function hookPlayer(plr)
     conns[#conns + 1] = plr.CharacterAdded:Connect(hook)
 end
 
--- optional: don't wait for the dive -- dash when a catcher is this close and closing in
+-- optional: don't wait for the dive -- cut when a catcher is this close and closing in
 local function proximityStep()
     if not CFG.enabled or CFG.near <= 0 or busy then return end
     local root = myRoot()
@@ -264,7 +396,7 @@ local function proximityStep()
                 if rel.Magnitude > 1e-3 and rel.Magnitude <= CFG.near then
                     local closing = flat(croot.AssemblyLinearVelocity - root.AssemblyLinearVelocity):Dot(rel.Unit)
                     if closing > 4 then
-                        tryDash(string.format("close (%.0f studs, closing %.0f)", rel.Magnitude, closing), plr.Name, croot.Position, rel)
+                        tryDash(string.format("close (%.0f studs, closing %.0f)", rel.Magnitude, closing), plr.Name)
                         return
                     end
                 end
@@ -276,6 +408,7 @@ end
 function Dash.start()
     Dash.stop()
     running = true
+    lastSide, streak = nil, 0
     for _, k in ipairs(ORDER) do realHeld[k] = UIS:IsKeyDown(KEYS[k]); fakeDown[k], fakeUp[k] = 0, 0 end
     if type(writefile) == "function" then
         if makefolder and isfolder and not isfolder("Huss_Recon") then pcall(makefolder, "Huss_Recon") end
@@ -307,7 +440,7 @@ function Dash.start()
         if acc >= 0.05 then acc = 0; pcall(proximityStep) end
         if flushAcc >= 2 then flushAcc = 0; dlogFlush() end
     end)
-    dlog("START dives=%s grabs=%s near=%s", tostring(CFG.dives), tostring(CFG.grabs), tostring(CFG.near))
+    dlog("START dives=%s grabs=%s near=%s vary=%s", tostring(CFG.dives), tostring(CFG.grabs), tostring(CFG.near), tostring(CFG.vary))
     log.info("[AutoDash] on")
 end
 
@@ -334,20 +467,22 @@ function Dash.feature()
     return {
         id          = "huss.auto_dash",
         name        = "Auto Dash",
-        description = "As a Runner, dashes sideways out of a catcher's way the instant they commit: when a dive is aimed at you, or their close-range grab picks you as its target. It adds the movement key that leans you off the catcher's line on top of whatever you're holding (and a sideways one if that would still be straight ahead, since the game won't dash straight), taps Space, then lets the added key go. It never releases a key you're holding. Only acts while your dash is ready. Each attempt is logged to workspace/Huss_Recon so it can be tuned.",
+        description = "As a Runner, cuts sideways the instant a catcher commits -- a dive that would reach you, or their close-range grab picking you -- and chooses the side: it works out where every catcher near you will be over the next half second and takes the cut that leaves you furthest from all of them, prefers cutting against a chaser's own sideways momentum (so they have to stop and turn back), avoids walls, and won't keep going the same way. It adds the movement key for that cut on top of what you're holding, taps Space, and lets the key go; it never releases a key you're holding. Each attempt is logged to workspace/Huss_Recon.",
         default     = false,
         onToggle    = function(v)
             CFG.enabled = v and true or false
             if CFG.enabled then Dash.start() else Dash.stop() end
         end,
         settings = {
-            { type = "toggle", name = "Dash when a dive is aimed at you", key = "dives", default = true,
+            { type = "toggle", name = "Dash when a dive would reach you", key = "dives", default = true,
               onChange = function(v) CFG.dives = v and true or false end },
             { type = "toggle", name = "Dash when a grab targets you", key = "grabs", default = true,
               onChange = function(v) CFG.grabs = v and true or false end },
             { type = "slider", name = "Also dash when a catcher closes within (studs, 0 = off)", key = "near",
               min = 0, max = 25, step = 1, default = 0,
               onChange = function(v) CFG.near = v end },
+            { type = "toggle", name = "Don't repeat the same side (stay unpredictable)", key = "vary", default = true,
+              onChange = function(v) CFG.vary = v and true or false end },
         },
     }
 end

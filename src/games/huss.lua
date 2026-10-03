@@ -232,6 +232,7 @@ function Huss.register()
 
     box:add(feature.declare(dash.feature()).root)
     box:add(feature.declare(lunge.feature()).root)
+    box:add(feature.declare(lunge.autoFeature()).root)
 
     box:add(feature.declare({
         id          = "huss.auto_close_results",
