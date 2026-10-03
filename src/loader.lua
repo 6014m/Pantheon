@@ -77,6 +77,7 @@ local files = {
     { "games.veil_weave",          "games/veil_weave.lua" },
     { "games.veil_sprint",         "games/veil_sprint.lua" },
     { "games.veil_m1",             "games/veil_m1.lua" },
+    { "games.veil_ghost",          "games/veil_ghost.lua" },
     { "games.veil",                "games/veil.lua" },
     { "init",                      "init.lua" },
 }
