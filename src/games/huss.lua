@@ -25,6 +25,7 @@ local feature   = require("ui.feature")
 local state     = require("modules.aim.state")
 local log       = require("core.log")
 local notify    = require("ui.notify")
+local dash      = require("games.huss_dash")
 
 local HUSS_IDS = { 10764627709, 107535308163741 }
 local AUTO = "Auto (the other team)"
@@ -191,10 +192,13 @@ function Huss.register()
         },
     }).root)
 
-    log.info("Huss Valley module registered -- team-aware Lock-On")
+    box:add(feature.declare(dash.feature()).root)
+
+    log.info("Huss Valley module registered -- team-aware Lock-On + Auto Dash")
 end
 
 function Huss.destroy()
+    pcall(dash.stop)
     if removeFilter then
         pcall(removeFilter)
         removeFilter = nil
