@@ -29,6 +29,7 @@ local log       = require("core.log")
 local notify    = require("ui.notify")
 local dash      = require("games.huss_dash")
 local lunge     = require("games.huss_lunge")
+local antiafk   = require("games.huss_afk")
 
 local HUSS_IDS = { 10764627709, 107535308163741 }
 local AUTO = "Auto (the other team)"
@@ -233,6 +234,7 @@ function Huss.register()
     box:add(feature.declare(dash.feature()).root)
     box:add(feature.declare(lunge.feature()).root)
     box:add(feature.declare(lunge.autoFeature()).root)
+    box:add(feature.declare(antiafk.feature()).root)
 
     box:add(feature.declare({
         id          = "huss.auto_close_results",
@@ -253,6 +255,7 @@ end
 function Huss.destroy()
     pcall(dash.stop)
     pcall(lunge.stop)
+    pcall(antiafk.stop)
     pcall(setCloser, false)
     if removeFilter then
         pcall(removeFilter)
