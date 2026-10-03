@@ -46,7 +46,8 @@ local function cameraStep(dt)
     -- latency after the weld breaks is imperceptible next to the saved work.
     if state.isGrabbing() then return end
 
-    local tRoot = rootOf(targetCharacter())
+    local tChar = targetCharacter()
+    local tRoot = rootOf(tChar)
     if not tRoot then return end
 
     local camPos = cam.CFrame.Position
@@ -55,8 +56,11 @@ local function cameraStep(dt)
     -- target is several studs behind where they actually are -- that's
     -- the "insanely inaccurate" feedback. AssemblyLinearVelocity is the
     -- right velocity source for a HumanoidRootPart in a movable assembly.
+    -- Game modules may move the aim point itself (state.addAimPoint -- e.g.
+    -- The Veil aims its giant bosses at their feet); lead and the manual
+    -- offsets apply on top of whatever base they choose.
     local tVel = tRoot.AssemblyLinearVelocity
-    local lookPos = tRoot.Position
+    local lookPos = (state.aimPointFor(tChar, tRoot) or tRoot.Position)
         + (tVel * state.getLeadTime())
         + Vector3.new(0, state.lockHeightOffset or 0, 0)
     -- side offset: shift the camera's aim point sideways, perpendicular to the camera->target

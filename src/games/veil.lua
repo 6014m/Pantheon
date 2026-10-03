@@ -131,6 +131,35 @@ local function setClearFog(on)
     end
 end
 
+-- ---- Aim at big enemies' feet ------------------------------------------------
+-- Veil bosses stand many times player height, so a camera locked on their root keeps your view
+-- craned upward the whole fight (user 2026-10-03: "for large enemies in that game we need to
+-- aim towards the bottom of their feet"). For NPC targets taller than the slider, lock-on aims
+-- just above the BOTTOM of their bounding box instead -- the camera stays level and the arena
+-- (dodging room, other mobs) stays on screen. The offset is cached per model for a second
+-- (GetBoundingBox walks every part) and rides the root, so it tracks a moving boss.
+local FEET = { on = true, min = 9 }
+local feetCache = setmetatable({}, { __mode = "k" })   -- model -> { off, at }
+local removeAimPoint
+
+local function feetAim(model, root)
+    if not FEET.on or not model or not root then return nil end
+    if Players:GetPlayerFromCharacter(model) then return nil end
+    local rec = feetCache[model]
+    if not rec or os.clock() - rec.at > 1 then
+        local off = nil
+        local ok, cf, size = pcall(model.GetBoundingBox, model)
+        if ok and size and size.Y >= FEET.min then
+            local bottom = cf.Position.Y - size.Y / 2
+            off = bottom + math.clamp(size.Y * 0.08, 0.5, 3) - root.Position.Y
+        end
+        rec = { off = off, at = os.clock() }
+        feetCache[model] = rec
+    end
+    if not rec.off then return nil end
+    return root.Position + Vector3.new(0, rec.off, 0)
+end
+
 -- Weak keys: despawned models drop out on their own.
 local seenAt      = setmetatable({}, { __mode = "k" })   -- model -> { pos, moved }
 local promptCache = setmetatable({}, { __mode = "k" })   -- model -> { has, t }
@@ -263,6 +292,8 @@ function Veil.register()
 
     if removeFilter then removeFilter() end
     removeFilter = state.addNpcFilter(npcFilter)
+    if removeAimPoint then removeAimPoint() end
+    removeAimPoint = state.addAimPoint(feetAim)
 
     local box = container.new(window.parent(), "The Veil")
     box:add(feature.declare({
@@ -308,6 +339,19 @@ function Veil.register()
         },
     }).root)
 
+    box:add(feature.declare({
+        id          = "veil.feet_aim",
+        name        = "Lock-On: aim at big enemies' feet",
+        description = "Stops the locked camera craning upward at The Veil's giant enemies: when the target is an NPC taller than the slider, Lock-On aims just above the bottom of them -- their feet -- instead of their middle, so your view stays level and you can still see the arena, the attacks and everything else around you. Players and normal-sized mobs are aimed exactly as before.",
+        default     = true,
+        onToggle    = function(v) FEET.on = v and true or false end,
+        settings = {
+            { type = "slider", name = "Counts as big when taller than (studs)", key = "feet_min",
+              min = 5, max = 30, step = 1, default = 9,
+              onChange = function(v) FEET.min = v end },
+        },
+    }).root)
+
     weave.loadSaved(persist)
     box:add(feature.declare(weave.feature()).root)
     box:add(feature.declare(sprint.feature()).root)
@@ -331,6 +375,11 @@ function Veil.destroy()
         pcall(removeFilter)
         removeFilter = nil
     end
+    if removeAimPoint then
+        pcall(removeAimPoint)
+        removeAimPoint = nil
+    end
+    table.clear(feetCache)
     table.clear(seenAt)
     table.clear(promptCache)
     table.clear(summonCache)

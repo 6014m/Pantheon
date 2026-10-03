@@ -186,6 +186,29 @@ function state.isPlayerExcluded(plr)
     return false
 end
 
+-- Aim-point adjusters: game modules replace WHERE lock-on aims on a target. The Veil's giant
+-- bosses are the case in point: aiming at the root of a 25-stud mob keeps the camera craned
+-- upward the whole fight, so its module aims big enemies at their feet. fn(model, root)
+-- returns an aim position or nil to keep the default (the root); first non-nil wins.
+state.aimPointFns = {}
+
+function state.addAimPoint(fn)
+    state.aimPointFns[#state.aimPointFns + 1] = fn
+    return function()
+        for i, f in ipairs(state.aimPointFns) do
+            if f == fn then table.remove(state.aimPointFns, i); break end
+        end
+    end
+end
+
+function state.aimPointFor(model, root)
+    for _, fn in ipairs(state.aimPointFns) do
+        local ok, p = pcall(fn, model, root)
+        if ok and p then return p end
+    end
+    return nil
+end
+
 -- Summons that belong to you or a friendly are never Bot Mode targets
 -- (Target Select setting "Skip your + friendlies' summons").
 state.skipFriendlySummons = true
