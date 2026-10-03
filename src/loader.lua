@@ -68,6 +68,7 @@ local files = {
     { "modules.aesthetic",         "modules/aesthetic.lua" },
     { "modules.misc.faketab",      "modules/misc/faketab.lua" },
     { "modules.misc.freecam",      "modules/misc/freecam.lua" },
+    { "modules.misc.musicmute",    "modules/misc/musicmute.lua" },
     { "modules.misc.init",         "modules/misc/init.lua" },
     { "modules.addons.api",        "modules/addons/api.lua" },
     { "modules.addons.init",       "modules/addons/init.lua" },

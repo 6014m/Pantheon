@@ -17,6 +17,8 @@
 
 local Players   = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
+local UIS       = game:GetService("UserInputService")
+local VIM       = game:GetService("VirtualInputManager")
 
 local registry  = require("games.registry")
 local window    = require("ui.window")
@@ -167,6 +169,41 @@ local function showTeams()
     notify.info(text, 8)
 end
 
+-- ---- Auto Close Results -----------------------------------------------------------
+-- The end-of-match recap ("press Enter to close") sets the Player attribute
+-- MatchSummaryVisible = true while it is up, and the game binds Enter to close it
+-- (ContextActionService "CoHDismissRecap" -> Return). So: when the attribute turns true, wait
+-- the chosen delay and press Enter, again every half second until the game says it's gone.
+local CLOSER = { on = false, delay = 1, conn = nil, busy = false }
+
+local function closeResults()
+    if CLOSER.busy or not CLOSER.on then return end
+    if LP:GetAttribute("MatchSummaryVisible") ~= true then return end
+    CLOSER.busy = true
+    task.spawn(function()
+        task.wait(CLOSER.delay)
+        for _ = 1, 8 do
+            if not CLOSER.on or LP:GetAttribute("MatchSummaryVisible") ~= true then break end
+            if not UIS:GetFocusedTextBox() then      -- never press Enter into a chat box you're typing in
+                pcall(function() VIM:SendKeyEvent(true, Enum.KeyCode.Return, false, game) end)
+                task.wait(0.05)
+                pcall(function() VIM:SendKeyEvent(false, Enum.KeyCode.Return, false, game) end)
+            end
+            task.wait(0.5)
+        end
+        CLOSER.busy = false
+    end)
+end
+
+local function setCloser(on)
+    CLOSER.on = on and true or false
+    if CLOSER.conn then CLOSER.conn:Disconnect(); CLOSER.conn = nil end
+    if CLOSER.on then
+        CLOSER.conn = LP:GetAttributeChangedSignal("MatchSummaryVisible"):Connect(closeResults)
+        closeResults()      -- already on screen
+    end
+end
+
 function Huss.register()
     log.info("Huss Valley module REGISTER on PlaceId=" .. tostring(game.PlaceId) .. " GameId=" .. tostring(game.GameId))
 
@@ -194,11 +231,25 @@ function Huss.register()
 
     box:add(feature.declare(dash.feature()).root)
 
+    box:add(feature.declare({
+        id          = "huss.auto_close_results",
+        name        = "Auto Close Results",
+        description = "Closes the end-of-match results screen for you (the one that says press Enter to close): as soon as it appears it waits the delay below and presses Enter. It won't press Enter while you're typing in a text box.",
+        default     = false,
+        onToggle    = function(v) setCloser(v) end,
+        settings = {
+            { type = "slider", name = "Wait before closing (seconds)", key = "close_delay",
+              min = 0, max = 10, step = 0.5, default = 1,
+              onChange = function(v) CLOSER.delay = v end },
+        },
+    }).root)
+
     log.info("Huss Valley module registered -- team-aware Lock-On + Auto Dash")
 end
 
 function Huss.destroy()
     pcall(dash.stop)
+    pcall(setCloser, false)
     if removeFilter then
         pcall(removeFilter)
         removeFilter = nil
