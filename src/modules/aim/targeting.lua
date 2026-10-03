@@ -163,7 +163,7 @@ end
 local function eachCandidate(fn)
     local localPlayer = Players.LocalPlayer
     for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= localPlayer and not state.isFriendly(plr) then
+        if plr ~= localPlayer and not state.isFriendly(plr) and not state.isPlayerExcluded(plr) then
             fn(plr, "player", plr.Character)
         end
     end

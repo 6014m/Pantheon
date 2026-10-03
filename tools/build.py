@@ -57,6 +57,7 @@ BUILD_ORDER = [
     "games/veil_loot",
     "games/veil_ghost",
     "games/veil",
+    "games/huss",
     "init",
 ]
 

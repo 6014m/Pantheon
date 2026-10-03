@@ -164,6 +164,28 @@ function state.isNpcExcluded(model)
     return false
 end
 
+-- Player filters: the same idea for PLAYERS. A game module registers fn(player) that returns
+-- true to hide that player from every targeting feature (e.g. Huss Valley hides your own team,
+-- which the game marks with an outline colour instead of Roblox Teams).
+state.playerFilters = {}
+
+function state.addPlayerFilter(fn)
+    state.playerFilters[#state.playerFilters + 1] = fn
+    return function()
+        for i, f in ipairs(state.playerFilters) do
+            if f == fn then table.remove(state.playerFilters, i); break end
+        end
+    end
+end
+
+function state.isPlayerExcluded(plr)
+    for _, fn in ipairs(state.playerFilters) do
+        local ok, skip = pcall(fn, plr)
+        if ok and skip then return true end
+    end
+    return false
+end
+
 -- Summons that belong to you or a friendly are never Bot Mode targets
 -- (Target Select setting "Skip your + friendlies' summons").
 state.skipFriendlySummons = true
