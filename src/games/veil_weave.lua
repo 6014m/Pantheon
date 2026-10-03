@@ -2131,6 +2131,82 @@ local function watchForDeath(model, hum, mroot)
     end)
 end
 
+-- ---- The Masquerade (sound-cued) ---------------------------------------------------
+-- Four masks sharing one health bar (models "The Angry / Sleeping / Weeping / Laughing Mask",
+-- MobType "The Masquerade"). Their dangerous attacks have NO attack animation and NO hitbox
+-- part -- the only tell is the indicator SOUND the mask plays, same names as The Bell's:
+--   WeaveIndi / DodgeIndi (the chasing Angry Mask): its ChaseSlash sound follows 0.62 s later,
+--     at any distance (43 cues over 3 fights, 0.47-0.68, sd 0.03), and the 33 / 38 hit lands
+--     with it -> cue + 0.69 (32 hits, median 0.685). It only lands when the mask is on you at
+--     the slash: hits had it within ~25 studs, misses 26+ -> only acted on while it's close
+--     (it can be 30 out at the cue and on you 0.6 s later, so that is checked late, not at the cue).
+--     The further out it slashes from, the later the hit: 0.62-0.65 at 4-8 studs, ~0.70 at 10,
+--     ~0.82 at 17-20, 0.87-0.94 at 24-30 (27 hits) -> cue + 0.575 + 0.0125 x studs.
+--   JumpIndi (the diving Sleeping Mask): 55 + knock-up 0.79-1.00 s after the cue (6 hits,
+--     median 0.84) -> double jump.
+-- The rush tracker used to see these as "The Angry Mask rushing through you" with 0.01 s to
+-- go (22 CANTs in one fight); it is held off the mask while a cued attack is pending.
+local MASQ = {
+    jump = 0.84,
+    reach = 30, jumpReach = 36,
+    slashAt = function(studs) return 0.575 + 0.0125 * studs end,   -- seconds from cue to hit
+    cues  = { WeaveIndi = "weave", DodgeIndi = "dash", JumpIndi = "jump" },
+    last  = setmetatable({}, { __mode = "k" }),   -- model -> { cue name -> when it last fired }
+}
+
+function MASQ.is(model)
+    return model:GetAttribute("MobType") == "The Masquerade" or string.match(model.Name, "^The %a+ Mask$") ~= nil
+end
+
+function MASQ.cue(model, mroot, name)
+    if not (running and CFG.enabled and CFG.melee) then return end
+    local what = MASQ.cues[name]
+    if not what or not mroot.Parent then return end
+    local t = now()
+    local seen = MASQ.last[model]
+    if not seen then seen = {}; MASQ.last[model] = seen end
+    if t - (seen[name] or -math.huge) < 0.35 then return end   -- Played + IsPlaying can both report one cue
+    seen[name] = t
+    local me = root()
+    if not me then return end
+    local reach = what == "jump" and MASQ.jumpReach or MASQ.reach
+    local d0 = (mroot.Position - me.Position).Magnitude
+    local h = { t = t + (what == "jump" and MASQ.jump or MASQ.slashAt(math.min(d0, reach))), kind = "melee",
+                from = mroot.Position, faceRoot = mroot, key = "masq:" .. what }
+    if what == "jump" then
+        h.reason, h.jump, h.double = model.Name .. " dive (JumpIndi)", true, true
+    elseif what == "dash" then
+        h.reason, h.unweavable, h.dashDir = model.Name .. " slash (DodgeIndi)", true, "setting"
+    else
+        h.reason = model.Name .. " slash (WeaveIndi)"
+    end
+    -- asked every frame by the planner: is the mask close enough to land it? While it is, the
+    -- slash is re-timed from how far away the mask is right now.
+    h.cond = function()
+        local r = root()
+        if not (r and mroot.Parent) then return false end
+        local d = (mroot.Position - r.Position).Magnitude
+        if d > reach then return false end
+        if what ~= "jump" then h.t = t + MASQ.slashAt(d) end
+        return true
+    end
+    channelUntil[model] = math.max(channelUntil[model] or 0, t + 1.4)   -- its lunge IS this attack
+    impacts[#impacts + 1] = h
+    DASH.own(h, model)
+    dlog("CUE %s %s at %.0f studs -> %s, lands in %.2f", model.Name, name, d0, what, h.t - t)
+end
+
+function MASQ.hook(model, mroot, list)
+    local function watch(d)
+        if d:IsA("Sound") and MASQ.cues[d.Name] then
+            list[#list + 1] = d.Played:Connect(function() pcall(MASQ.cue, model, mroot, d.Name) end)
+            if d.IsPlaying then pcall(MASQ.cue, model, mroot, d.Name) end
+        end
+    end
+    for _, d in ipairs(model:GetDescendants()) do watch(d) end
+    list[#list + 1] = model.DescendantAdded:Connect(watch)
+end
+
 local function hookMob(model)
     if mobConns[model] or not model:IsA("Model") then return end
     -- summons are hooked too: an enemy player's (or a mob's) summon attacks like any mob.
@@ -2156,6 +2232,7 @@ local function hookMob(model)
         end
         if not ok and CFG.verbose then log.warn("[Weave] anim: " .. tostring(err)) end
     end) end
+    if MASQ.is(model) then MASQ.hook(model, mroot, list) end
     if deathBlastReach(model.Name) then
         list[#list + 1] = watchForDeath(model, hum, mroot)
         local fired = false
