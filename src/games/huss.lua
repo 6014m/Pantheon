@@ -6,11 +6,14 @@
 -- So this registers a player filter (state.addPlayerFilter) that hides your own team from
 -- Lock-On / Target Select: anyone whose outline is the same colour as yours.
 --
--- NOT yet confirmed against the live game: where the outline lives (inside the character, or a
--- Highlight elsewhere pointing at it with Adornee) and its exact colours. Both layouts are
--- handled, colours are compared by hue rather than exact values, and anyone whose colour can't
--- be read stays targetable -- so a wrong guess can only fail towards "targets everyone", never
--- towards "targets nobody". "Show teams" in the settings prints what it sees.
+-- From the first recording (2026-10-03, Huss_Recon/rec_1003_160229): the outline is a Highlight
+-- named "RoleOutline" inside each character -- RED (255,85,85) = Catcher, BLUE (75,170,255) =
+-- Runner, GREEN (90,230,145) = a runner the game marks differently mid-round (most likely one
+-- who has already made the crossing; unconfirmed), ORANGE (255,202,86) rare, meaning unknown.
+-- The game also publishes the roles outright as Player attributes (GameRole, RunState), so the
+-- filter goes by role first and falls back to comparing outline hues. Anyone it can't read
+-- stays targetable -- a wrong guess can only fail towards "targets everyone", never towards
+-- "targets nobody". "Show teams" in the settings prints what it sees.
 
 local Players   = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -27,7 +30,7 @@ local HUSS_IDS = { 10764627709, 107535308163741 }
 local AUTO = "Auto (the other team)"
 
 local Huss = {}
-local CFG = { enabled = true, target = AUTO, useTeams = true }
+local CFG = { enabled = true, target = AUTO, useTeams = true, skipSafe = true }
 
 local LP = Players.LocalPlayer
 local removeFilter
@@ -102,7 +105,14 @@ local function colourName(hue)
     return "Purple/Pink"
 end
 
--- true = hide this player from targeting (a teammate)
+-- The game's own role flags (Player attributes, replicated to everyone): GameRole = "Runner" /
+-- "Catcher" / "Lobby", RunState = "Waiting" / "Active" / "Caught" / "Lobby".
+local function roleOf(plr)
+    local r = plr:GetAttribute("GameRole")
+    return (r == "Runner" or r == "Catcher") and r or nil
+end
+
+-- true = hide this player from targeting
 local function playerFilter(plr)
     if not CFG.enabled then return false end
     local char = plr.Character
@@ -116,8 +126,21 @@ local function playerFilter(plr)
     local mine = myChar and hueOf(myChar)
     if mine ~= lastMine then
         lastMine = mine
-        log.info("[Huss] your outline: " .. colourName(mine))
+        log.info("[Huss] your outline: " .. colourName(mine) .. ", role " .. tostring(LP:GetAttribute("GameRole")))
     end
+    -- by role when the game says what everyone is (recorded 2026-10-03): a Catcher hunts Runners
+    -- that can still be caught, a Runner watches the Catchers
+    local myRole, role = roleOf(LP), roleOf(plr)
+    if myRole and role then
+        if role == myRole then return true end
+        if myRole == "Catcher" then
+            local st = plr:GetAttribute("RunState")
+            if st == "Caught" or st == "Lobby" then return true end
+            if CFG.skipSafe and theirs and colourName(theirs) == "Green" then return true end
+        end
+        return false
+    end
+    if myRole and plr:GetAttribute("GameRole") == "Lobby" then return true end   -- not in the round
     if mine and theirs then return sameHue(mine, theirs) end
     -- no outlines to go by: fall back to Roblox Teams if the game happens to set them
     if CFG.useTeams and not mine and not theirs and LP.Team and plr.Team then return plr.Team == LP.Team end
@@ -160,6 +183,8 @@ function Huss.register()
             { type = "dropdown", name = "Target team", key = "target_team", default = AUTO,
               options = { AUTO, "Red", "Blue" },
               onChange = function(v) CFG.target = v or AUTO end },
+            { type = "toggle", name = "As Catcher, skip green-outlined runners", key = "skip_safe", default = true,
+              onChange = function(v) CFG.skipSafe = v and true or false end },
             { type = "toggle", name = "Use Roblox Teams when nobody has an outline", key = "use_teams", default = true,
               onChange = function(v) CFG.useTeams = v and true or false end },
             { type = "button", name = "Show teams", onClick = showTeams },
