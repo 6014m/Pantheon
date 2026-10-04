@@ -21,6 +21,7 @@ LUA = r"""
 table.clear = table.clear or function(t) for k in pairs(t) do t[k] = nil end end
 table.pack = table.pack or function(...) return { n = select('#', ...), ... } end
 table.unpack = table.unpack or unpack
+task = { defer = function(f) f() end, spawn = function(f) f() end, wait = function() end }
 
 -- controllable randomness: a queue of [0,1) values
 local randq = {}
@@ -245,7 +246,22 @@ lua("_G.ncm = 'FireServer'; _G.fired = nil")
 lua("hookFn(myRemote, 'equip', 1)")
 check("non-release untouched", rt.eval("fired[1]") == "equip")
 
-# -- 11. toggle off -> inert
+# -- 11. unrecorded arg shape -> untouched (quick throws / variants must never be rewritten)
+lua("""
+  _G.ncm = 'FireServer'; _G.fired = nil
+  hookFn(myRemote, 'release', 1, 12345.6, false, V(0,2,0), V(10,3,0), { Me = V(0,2,0) }, 'aabb')
+""")  # 8 args, no trailing boolean
+check("unrecorded release shape -> untouched", rt.eval("fired.n") == 8 and aim() == (10, 0))
+
+# -- 12. dry run: decision logged, args untouched
+lua("featDef.settings[5].onChange(true)")   # Dry run on
+lua("pushRand(0.10); pushRand(0.10)")
+lua("throw(myRemote, 10, 0)")
+check("dry run -> untouched", aim() == (10, 0))
+check("dry run -> verdict toasted", any("DRY RUN" in str(t) for t in rt.eval("toasts").values()))
+lua("featDef.settings[5].onChange(false)")
+
+# -- 13. toggle off -> inert
 lua("featDef.onToggle(false)")
 lua("throw(myRemote, 10, 0)")
 check("toggle off -> untouched", aim() == (10, 0))
