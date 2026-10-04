@@ -77,6 +77,13 @@ function INST:IsDescendantOf(anc)
   while p do if p == anc then return true end; p = p.Parent end
   return false
 end
+function INST:GetBoundingBox()
+  local b = self._box
+  if b then return { Position = b.pos }, b.size end
+  local root = self:FindFirstChild("HumanoidRootPart")
+  local p = root and root.Position or V(0, 0, 0)
+  return { Position = p }, V(4, 5, 4)
+end
 local function new(cls, name, parent)
   local o = setmetatable({ ClassName = cls, Name = name or cls, _list = {} }, INST)
   if parent then o.Parent = parent; parent._list[#parent._list + 1] = o end
@@ -238,6 +245,21 @@ check("outside Monsters + moving -> press", sent() == [True])
 lua("bones._root.Position = V(0, 0, 80); bones._root.AssemblyLinearVelocity = V(0,0,0)")
 step(2)
 check("moved-once mob stays an enemy (release = out of range only)", sent() == [True, False])
+
+# -- 4b. TALL mob (Ancient Bones report, round 2): root 12 studs up, body reaches the
+#        ground; root-to-root distance would be ~13 (> range 10), the box gap is ~1
+clear_sent()
+lua("""
+  tall = mob('Tall Bones', 0, 5)
+  tall._root.Position = V(0, 12, 5)
+  tall._box = { pos = V(0, 8, 5), size = V(8, 16, 8) }
+""")
+step(2)
+check("tall mob (high root) in reach via bounding box", sent() == [True])
+lua("tall._root.Position = V(0, 12, 60); tall._box = { pos = V(0, 8, 60), size = V(8, 16, 8) }")
+lua("tick(6)")   # outlive the 5 s box cache
+step(2)
+check("tall mob far -> released", sent() == [True, False])
 
 # -- 5. keeps swinging while tabbed out (report 10-04)
 clear_sent()
