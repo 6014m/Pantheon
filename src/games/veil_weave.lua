@@ -1023,6 +1023,12 @@ local function guardM1(secs)
     end)
 end
 
+-- Auto Swing asks before injecting a press: while the guard is up its click would be
+-- sunk anyway, and pressing right after would eat the jump the guard protects.
+function Weave.m1Guarded()
+    return DASH.m1On == true
+end
+
 -- a swing sets JumpPower 0 and the Doing flag while it plays; a Space press then does
 -- nothing (user-verified test): wait until jumping is allowed again before each tap
 local function canJump(hum)

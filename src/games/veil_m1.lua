@@ -77,6 +77,7 @@ local function blocked()
     if hum.PlatformStand then return true end
     return DOWN_STATES[hum:GetState()] == true
 end
+M1.isBlocked = blocked   -- shared with Auto Swing: same "can't attack right now" answer
 
 -- Start the hold again: a release then a press, so the game sees a brand new click that is
 -- still down. Nothing happens unless you're really holding the button and can attack.
