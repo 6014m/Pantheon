@@ -51,6 +51,7 @@ BUILD_ORDER = [
     "modules/addons/init",
     "games/jjs",
     "games/evilplate",
+    "games/bp2",
     "games/gakuran",
     "games/veil_weave",
     "games/veil_sprint",

@@ -74,6 +74,7 @@ local files = {
     { "modules.addons.init",       "modules/addons/init.lua" },
     { "games.jjs",                 "games/jjs.lua" },
     { "games.evilplate",           "games/evilplate.lua" },
+    { "games.bp2",                 "games/bp2.lua" },
     { "games.gakuran",             "games/gakuran.lua" },
     { "games.veil_weave",          "games/veil_weave.lua" },
     { "games.veil_sprint",         "games/veil_sprint.lua" },
