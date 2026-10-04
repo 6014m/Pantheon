@@ -57,9 +57,12 @@ local function mark(model)
     local part = anchorPart(model)
     if not part then return false end
 
-    gui = Instance.new("Folder")          -- plain holder: a Highlight and a BillboardGui both draw from here
+    -- Camera children render but never replicate (the game parks its own client effects there
+    -- too). The executor's hidden GUI container did NOT render 3D adornments like Highlights --
+    -- found when the Loot ESP addon's marks never appeared (2026-10-03).
+    gui = Instance.new("Folder")
     gui.Name = "PantheonGhostESP"
-    gui.Parent = env.guiParent()
+    gui.Parent = Workspace.CurrentCamera or env.guiParent()
 
     hl = Instance.new("Highlight")
     hl.Adornee = model
