@@ -3,10 +3,20 @@
 -- HELD left button by itself (that's what M1 Continuation leans on), so one virtual hold
 -- is both the most natural-looking and the least input spam.
 --
--- What counts as an enemy: a living mob in workspace.Monsters, minus the friendly stuff
--- that lives in there too (the digits-named summon containers, "Runner", the "Explorer"
--- escort). With "Also swing at players" on, other players outside your party (different
--- Team value, not a Pantheon friend) count as well -- for PvP.
+-- What counts as an enemy (user 2026-10-04: Ancient Bones was missed -- not every mob
+-- lives in workspace.Monsters, so the scan covers the whole Workspace like Bot Mode's):
+--   * any model with a Humanoid + HumanoidRootPart that isn't a player, your character,
+--     "Runner", the "Explorer" escort, or a summon (digits-named model / container,
+--     PlayerID value, SummonNameGui);
+--   * inside workspace.Monsters it counts straight away; anywhere else it must have been
+--     seen MOVING first (velocity or a 1.5-stud drift from where Pantheon first saw it),
+--     which keeps shopkeepers, trainers and quest NPCs off the swing list -- the same
+--     rule Bot Mode's Veil filter uses. The list is rebuilt once a second.
+--   * with "Also swing at players" on, players outside your party too (different Team
+--     value, not a Pantheon friend) -- for PvP.
+--
+-- Keeps swinging while you're tabbed out (user 2026-10-04): the hold is ours, not your
+-- finger's, so alt-tab only resets the real-finger tracker and farming continues.
 --
 -- Plays nice with the rest of the kit:
 --   * every injected press/release is announced to M1 Continuation (noteFake), so it
@@ -16,7 +26,7 @@
 --     the button for the game;
 --   * your real hold always wins: if your finger is on the button we inject nothing, and
 --     we never send a release for a press that was yours;
---   * ragdoll / stun / death / alt-tab / typing in a textbox all drop the hold.
+--   * ragdoll / stun / death / typing in a textbox all drop the hold.
 
 local Players    = game:GetService("Players")
 local UIS        = game:GetService("UserInputService")
@@ -38,7 +48,6 @@ local conns = {}
 local running  = false
 local ourHold  = false     -- the button is down because WE put it down
 local userHeld = false     -- your real finger (our own injected events are filtered out)
-local focused  = true
 local lastEval = 0
 
 -- our injected events come back through InputBegan/InputEnded like real ones; count them
@@ -68,15 +77,70 @@ local function stringChild(model, name)
     return (v and v:IsA("ValueBase")) and tostring(v.Value) or nil
 end
 
--- summon containers / summons in workspace.Monsters: model named <UserId> (all digits)
--- or carrying the PlayerID value from the 09-19 dump. Cached: this runs per mob per tick.
+-- summons: a digits-named model or ancestor container (Workspace.Monsters.<UserId>[.pet]),
+-- the PlayerID value from the 09-19 dump, or the SummonNameGui nameplate. Cached per model.
 local summonCache = setmetatable({}, { __mode = "k" })
 local function isSummonish(model)
     local c = summonCache[model]
     if c and os.clock() - c.t < 5 then return c.v end
-    local v = string.match(model.Name, "^%d+$") ~= nil or stringChild(model, "PlayerID") ~= nil
+    local v = stringChild(model, "PlayerID") ~= nil
+              or model:FindFirstChild("SummonNameGui") ~= nil
+    if not v then
+        local p = model
+        while p and p ~= Workspace do
+            if string.match(p.Name, "^%d+$") then v = true; break end
+            p = p.Parent
+        end
+    end
     summonCache[model] = { v = v, t = os.clock() }
     return v
+end
+
+-- outside workspace.Monsters a model must move before it counts (idle townsfolk never do)
+local seenAt = setmetatable({}, { __mode = "k" })
+local function hasMoved(model, root)
+    local rec = seenAt[model]
+    if not rec then
+        seenAt[model] = { pos = root.Position, moved = false }
+        return false
+    end
+    if rec.moved then return true end
+    local vel = root.AssemblyLinearVelocity
+    if (vel and vel.Magnitude > 2) or (root.Position - rec.pos).Magnitude > 1.5 then
+        rec.moved = true
+        return true
+    end
+    return false
+end
+
+-- living-mob cache, rebuilt once a second (a full GetDescendants walk each tick would be
+-- brutal; Bot Mode's own NPC scan runs at 0.5 s with the same shape)
+local mobList, mobStamp = {}, 0
+local function getMobs()
+    if mobStamp ~= 0 and os.clock() - mobStamp < 1 then return mobList end
+    mobStamp = os.clock()
+    local out, seen = {}, {}
+    local myChar = LP.Character
+    local monsters = Workspace:FindFirstChild("Monsters")
+    for _, d in ipairs(Workspace:GetDescendants()) do
+        if d:IsA("Humanoid") then
+            local model = d.Parent
+            if model and not seen[model] and model ~= myChar
+               and not Players:GetPlayerFromCharacter(model)
+               and model.Name ~= "Runner" and model.Name ~= "Explorer" then
+                seen[model] = true
+                local root = model:FindFirstChild("HumanoidRootPart")
+                if root and not isSummonish(model) then
+                    local inMonsters = monsters ~= nil and model:IsDescendantOf(monsters)
+                    if inMonsters or hasMoved(model, root) then
+                        out[#out + 1] = { hum = d, root = root }
+                    end
+                end
+            end
+        end
+    end
+    mobList = out
+    return mobList
 end
 
 local function myTeam()
@@ -96,17 +160,9 @@ end
 local function enemyInRange(myRoot)
     local mypos = myRoot.Position
     local look  = myRoot.CFrame.LookVector
-    local monsters = Workspace:FindFirstChild("Monsters")
-    if monsters then
-        for _, mdl in ipairs(monsters:GetChildren()) do
-            if mdl:IsA("Model") and mdl.Name ~= "Runner" and mdl.Name ~= "Explorer"
-               and not isSummonish(mdl) then
-                local root = mdl:FindFirstChild("HumanoidRootPart")
-                local hum  = mdl:FindFirstChildOfClass("Humanoid")
-                if root and hum and hum.Health > 0 and inReach(mypos, look, root) then
-                    return true
-                end
-            end
+    for _, rec in ipairs(getMobs()) do
+        if rec.root.Parent and rec.hum.Health > 0 and inReach(mypos, look, rec.root) then
+            return true
         end
     end
     if CFG.players then
@@ -136,7 +192,7 @@ local function step()
     if ourHold and not actual then ourHold = false end   -- jump guard let it go: resync
 
     local desired = false
-    if running and CFG.enabled and focused and not UIS:GetFocusedTextBox() then
+    if running and CFG.enabled and not UIS:GetFocusedTextBox() then
         local guarded = false
         pcall(function() guarded = weave.m1Guarded() end)
         local blockedNow = false
@@ -158,9 +214,9 @@ end
 function AS.start()
     AS.stop()
     running = true
-    focused = true
     userHeld = UIS:IsMouseButtonPressed(MB1)
     fakeDowns, fakeUps = 0, 0
+    mobStamp = 0
     conns[#conns + 1] = UIS.InputBegan:Connect(function(input)
         if input.UserInputType ~= MB1 or ownFakeEvent(true) then return end
         userHeld = true
@@ -169,12 +225,8 @@ function AS.start()
         if input.UserInputType ~= MB1 or ownFakeEvent(false) then return end
         userHeld = false
     end)
-    conns[#conns + 1] = UIS.WindowFocusReleased:Connect(function()
-        focused = false
-        userHeld = false
-        if ourHold then send(false) end
-    end)
-    conns[#conns + 1] = UIS.WindowFocused:Connect(function() focused = true end)
+    -- alt-tab eats real releases: forget the finger, but KEEP swinging (tabbed-out farming)
+    conns[#conns + 1] = UIS.WindowFocusReleased:Connect(function() userHeld = false end)
     conns[#conns + 1] = RunService.Heartbeat:Connect(step)
     log.info("[Auto Swing] on")
 end
@@ -190,7 +242,7 @@ function AS.feature()
     return {
         id          = "veil.auto_swing",
         name        = "Auto Swing",
-        description = "Swings your weapon for you: whenever a living enemy is within reach, your left click is held down (the game combos a held M1 by itself) and released the moment nothing is in range. You just move. Skips Runners, the Explorer and summons; your own real clicks always take priority, and it backs off while Auto Weave blocks clicks for a jump. Swing range = how far an enemy can be (studs) -- match it to your weapon's reach. Only in front = ignore enemies behind you.",
+        description = "Swings your weapon for you: whenever a living enemy is within reach, your left click is held down (the game combos a held M1 by itself) and released the moment nothing is in range. You just move. Enemies are found everywhere, not just the Monsters folder -- anything outside it counts once it's been seen moving, which keeps shopkeepers and quest NPCs safe. Skips Runners, the Explorer and summons; keeps swinging while you're tabbed out; your own real clicks always take priority, and it backs off while Auto Weave blocks clicks for a jump. Swing range = how far an enemy can be (studs) -- match it to your weapon's reach. Only in front = ignore enemies behind you.",
         default     = false,
         onToggle    = function(v)
             CFG.enabled = v and true or false

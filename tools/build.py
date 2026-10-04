@@ -56,6 +56,7 @@ BUILD_ORDER = [
     "games/veil_sprint",
     "games/veil_m1",
     "games/veil_autoswing",
+    "games/veil_autopotion",
     "games/veil_loot",
     "games/veil_ghost",
     "games/veil",
