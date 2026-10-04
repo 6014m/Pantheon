@@ -186,7 +186,10 @@ local MODS = {
     isBlocked = function() return _G.m1stub.blocked end,
   },
   ["games.veil_weave"] = { m1Guarded = function() return _G.weavestub.guarded end },
-  ["modules.aim.state"] = { isFriendly = function(p) return p._friendly == true end },
+  ["modules.aim.state"] = {
+    isFriendly = function(p) return p._friendly == true end,
+    strafeFace = nil, strafeFaceUntil = 0, dashBodyUntil = 0,
+  },
 }
 function require(name)
   if MODS[name] then return MODS[name] end
@@ -197,6 +200,8 @@ end
 
 AS = require("games.veil_autoswing")
 feat = AS.feature()
+aimstate = MODS["modules.aim.state"]
+_G.aimstate = aimstate
 """
 rt.execute(LUA)
 
@@ -271,16 +276,22 @@ step(2)
 check("alt-tab -> hold kept, no release", sent() == [True])
 
 # -- 6. behind + frontOnly on -> ignored; frontOnly off -> press
+#       (the front gate only applies with Auto rotate OFF -- rotating faces them anyway)
 lua("wolf._root.Position = V(0, 0, 50)")
 step()
 clear_sent()
+lua("feat.settings[2].onChange(false)")   # Auto rotate = off
 lua("wolf._root.Position = V(0, 0, -5)")
 step(2)
 check("behind + front-only -> no press", sent() == [])
-lua("feat.settings[2].onChange(false)")   # Only enemies in front = off
+lua("feat.settings[3].onChange(false)")   # Only enemies in front = off
 step(2)
 check("front-only off -> press", sent() == [True])
-lua("feat.settings[2].onChange(true); wolf._root.Position = V(0, 0, 50)")
+lua("feat.settings[2].onChange(true)")    # behind + front-only ON but auto rotate on -> still presses
+lua("feat.settings[3].onChange(true)")
+step()
+check("auto rotate on -> front gate waived", sent()[-1] == True or sent() == [True])
+lua("wolf._root.Position = V(0, 0, 50)")
 step()
 
 # -- 7. skips: Runner, Explorer, summon container, nested summon, dead mob
@@ -346,7 +357,7 @@ lua("""
 """)
 step(2)
 check("player + PvP off -> ignored", sent() == [])
-lua("feat.settings[3].onChange(true)")
+lua("feat.settings[4].onChange(true)")
 step()
 check("player + PvP on -> press", sent() == [True])
 lua("foe._friendly = true")
@@ -354,13 +365,49 @@ lua("tick(6)")  # outlive caches
 step()
 check("Pantheon friend -> released", sent() == [True, False])
 
-# -- 13. toggle off releases and stops
-clear_sent()
-lua("foe._friendly = false; tick(6)")
+# -- 13. auto rotate: claims the strafeFace channel for the nearest target,
+#        yields to another writer (a weave dash), clears when nothing's in range
+lua("feat.settings[4].onChange(false)")   # PvP back off
+lua("tick(6)")
 step()
-check("hostile again -> held", sent() == [True])
+clear_sent()
+lua("wolf._root.Position = V(0, 0, 5)")
+step()
+check("rotate: strafeFace = target root", rt.eval("aimstate.strafeFace == wolf._root"))
+check("rotate: claim is fresh", rt.eval("aimstate.strafeFaceUntil > os.clock()"))
+lua("""
+  other = newInst('Part', 'SomeAttacker')
+  aimstate.strafeFace = other
+  aimstate.strafeFaceUntil = os.clock() + 0.4
+""")
+lua("tick(0.15); heartbeat:Fire()")        # small tick: the other claim must still be live
+check("rotate: another writer keeps the channel", rt.eval("aimstate.strafeFace == other"))
+step()                                     # their claim expired -> ours again
+check("rotate: reclaimed after theirs expired", rt.eval("aimstate.strafeFace == wolf._root"))
+lua("aimstate.dashBodyUntil = os.clock() + 5")
+step()
+check("rotate: escape dash owns the body -> released", rt.eval("aimstate.strafeFace == nil"))
+lua("aimstate.dashBodyUntil = 0")
+step()
+lua("wolf._root.Position = V(0, 0, 50)")
+step(2)
+check("rotate: no target -> channel cleared", rt.eval("aimstate.strafeFace == nil"))
+lua("feat.settings[2].onChange(false)")    # Auto rotate off
+lua("wolf._root.Position = V(0, 0, 5)")
+step()
+check("rotate off -> channel untouched, still swings", rt.eval("aimstate.strafeFace == nil") and sent()[-1] == True)
+lua("feat.settings[2].onChange(true); wolf._root.Position = V(0, 0, 50)")
+step()
+
+# -- 14. toggle off releases, stops, and clears the rotate channel
+clear_sent()
+lua("wolf._root.Position = V(0, 0, 5)")
+step()
+check("held before toggle-off", sent() == [True])
+check("rotating before toggle-off", rt.eval("aimstate.strafeFace == wolf._root"))
 lua("feat.onToggle(false)")
 check("toggle off -> released", sent() == [True, False])
+check("toggle off -> rotate channel cleared", rt.eval("aimstate.strafeFace == nil"))
 step(2)
 check("off -> no more presses", sent() == [True, False])
 
