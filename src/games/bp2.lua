@@ -58,19 +58,21 @@ local shot = 0          -- position in the 3-throw cycle (advances only on count
 -- kills the throw ("flat out breaks my knife", 2026-10-04). Toasts and the aim log are
 -- queued here and flushed from a deferred thread instead.
 local logq = {}
+local logAll = ""   -- writefile fallback keeps the whole log in memory
 local function qlog(msg, toastIt)
     logq[#logq + 1] = { msg = msg, toast = toastIt and CFG.toasts }
     task.defer(function()
         for _, e in ipairs(logq) do
             log.info("[bp2] " .. e.msg)
-            pcall(function()
-                if writefile and (appendfile or readfile) then
-                    local line = string.format("%.3f %s\n", os.clock(), e.msg)
-                    if appendfile then
-                        pcall(appendfile, "Pantheon/bp2_aim.log", line)
-                    end
-                end
-            end)
+            local line = string.format("%.3f %s\n", os.clock(), e.msg)
+            local wrote = false
+            if type(appendfile) == "function" then
+                wrote = pcall(appendfile, "Pantheon/bp2_aim.log", line)
+            end
+            if not wrote and type(writefile) == "function" then
+                logAll = logAll .. line
+                pcall(writefile, "Pantheon/bp2_aim.log", logAll)
+            end
             if e.toast then pcall(function() notify.info("[BP2 Aim] " .. e.msg, 3) end) end
         end
         table.clear(logq)
@@ -199,6 +201,9 @@ function BP2.register()
     log.info("[bp2] register on PlaceId=" .. tostring(game.PlaceId)
         .. " GameId=" .. tostring(game.GameId))
     local hooked = installHook()
+    -- the log's first line proves WHICH build ran (stale-cache tests have no line)
+    qlog("registered, build " .. tostring(rawget(_G, "PANTHEON_BUILD") or "?")
+        .. ", hooked=" .. tostring(hooked))
 
     local box = container.new(window.parent(), "Breaking Point 2")
     box:add(feature.declare({
