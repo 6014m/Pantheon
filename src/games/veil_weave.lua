@@ -2462,16 +2462,23 @@ end
 --   LEAP variant (no LinearVelocity): Whoosh at +0.5, it lands on you (BodyPosition again) with
 --     HalloweenExplosion1/2 + Noise2 at +1.2-1.4 and 41.25 + burn at +1.28-1.52 (6 samples),
 --     then the fire where it landed keeps hitting 41.25 every ~0.65 s while you stand in it
---     (1076.7 / 1077.5 / 1078.1) -> DASH at +1.40, then FLEE the tree until 30 studs clear.
+--     (1076.7 / 1077.5 / 1078.1) -> DASH, then FLEE the tree until 30 studs clear.
+--     Run 2 (autoweave_1010_182253, LIVE): the leap is DISTANCE-timed -- cued 10-13 studs out it
+--     hit 41.25 at +0.73-0.76 (5 of 5; the +1.40 dash came after the hit and was refused in the
+--     hitstun), cued 23-52 out the dashes at +1.18-1.23 were clean -> +0.75 within 18 studs, else
+--     +1.40. Rush variant live: 8 of 8 dashes went out clean, the one NODASH (stamina 49) was hit.
 --   Its fire bombs (HalloweenFireBombBlast parts, 41.25 at 59-84 studs from it, 3 hits) are
 --     not visible in flight on the client -> unmapped.
 -- WITCH: "Shoot" sound (3 per burst, 0.1 s apart) -> homing StarProjectile (anchored, moved by
 -- the game) -> 12.38 at +0.7-1.0 after the shot (median 0.85; 32 of 89 shots hit, 9 of 34 hits
 -- ragdolled you) and the user's manual weaves CAUGHT them (26 shots) -> WEAVE at Shoot + 0.85
 -- within 40 studs. The ragdoll chain from stacked witches is what kills on late waves.
+-- Run 2 (LIVE, 0 cues): the Shoot sound is NOT inside her model -- the recorder logged it as a
+-- workspace sound (wsound, id 77776681500888) -- so it is watched on Workspace and credited to
+-- the nearest hooked Witch within reach.
 DASH.tree = {
     name = "Haunted Tree",
-    rush = 0.85, leap = 1.40, reach = 70, fleeClear = 30,
+    rush = 0.85, leap = 1.40, leapClose = 0.75, closeStuds = 18, reach = 70, fleeClear = 30,
     pending = setmetatable({}, { __mode = "k" }),   -- model -> the queued hit of its current charge
 }
 DASH.bossNames[DASH.tree.name] = true
@@ -2487,8 +2494,9 @@ function DASH.tree.charge(model, mroot)
     local me = root()
     if not me then return end
     local d0 = (mroot.Position - me.Position).Magnitude
-    local h = { t = t + T.leap, cue = t, kind = "melee", from = mroot.Position, faceRoot = mroot, key = "tree:leap",
-                reason = T.name .. " leap (Charge)", unweavable = true, dashDir = "Away from the attack" }
+    local leapAt = d0 <= T.closeStuds and T.leapClose or T.leap
+    local h = { t = t + leapAt, cue = t, kind = "melee", from = mroot.Position, faceRoot = mroot, key = "tree:leap",
+                reason = string.format("%s leap (Charge, %.0f studs)", T.name, d0), unweavable = true, dashDir = "Away from the attack" }
     h.cond = function()
         local r = root()
         if not (r and mroot.Parent) then return false end
@@ -2499,7 +2507,7 @@ function DASH.tree.charge(model, mroot)
     DASH.own(h, model)
     channelUntil[model] = math.max(channelUntil[model] or 0, t + 1.6)   -- not the rush tracker's business
     -- the fire it leaves: get clear of it (only if the leap went ahead as a leap)
-    task.delay(T.leap + 0.1, function()
+    task.delay(leapAt + 0.1, function()
         if T.pending[model] ~= h or h.key ~= "tree:leap" then return end
         if not (running and CFG.enabled and mroot.Parent) then return end
         local r = root()
@@ -2532,7 +2540,8 @@ function DASH.tree.hook(model, mroot, list)
     list[#list + 1] = model.DescendantAdded:Connect(watch)
 end
 
-DASH.witch = { name = "Witch", shot = 0.85, reach = 40, last = setmetatable({}, { __mode = "k" }) }
+DASH.witch = { name = "Witch", shot = 0.85, reach = 40, soundId = "77776681500888",
+               last = setmetatable({}, { __mode = "k" }), wsHooked = false }
 function DASH.witch.is(model)
     return model.Name == DASH.witch.name
 end
@@ -2552,14 +2561,32 @@ function DASH.witch.shoot(model, mroot)
     DASH.own(h, model)
     dlog("CUE Witch Shoot at %.0f studs -> weave in %.2f", d0, Wc.shot)
 end
-function DASH.witch.hook(model, mroot, list)
-    local function watch(d)
-        if d:IsA("Sound") and d.Name == "Shoot" then
-            list[#list + 1] = d.Played:Connect(function() pcall(DASH.witch.shoot, model, mroot) end)
+function DASH.witch.nearest()
+    local me = root()
+    if not me then return nil end
+    local best, bestD = nil, DASH.witch.reach
+    for model, mroot in pairs(mobRoots) do
+        if model.Name == DASH.witch.name and mroot.Parent then
+            local d = (mroot.Position - me.Position).Magnitude
+            if d < bestD then best, bestD = model, d end
         end
     end
-    for _, d in ipairs(model:GetDescendants()) do watch(d) end
-    list[#list + 1] = model.DescendantAdded:Connect(watch)
+    return best, best and mobRoots[best]
+end
+function DASH.witch.workspaceSound(d)
+    if not (d:IsA("Sound") and d.Name == "Shoot") then return end
+    if not string.find(tostring(d.SoundId), DASH.witch.soundId, 1, true) then return end
+    conns[#conns + 1] = d.Played:Connect(function()
+        local model, mroot = DASH.witch.nearest()
+        if model then pcall(DASH.witch.shoot, model, mroot) end
+    end)
+end
+function DASH.witch.hook(model, mroot, list)
+    if DASH.witch.wsHooked then return end
+    DASH.witch.wsHooked = true
+    -- one Workspace watch for the whole keep run (the sounds are spawned per shot)
+    for _, d in ipairs(Workspace:GetDescendants()) do pcall(DASH.witch.workspaceSound, d) end
+    conns[#conns + 1] = Workspace.DescendantAdded:Connect(function(d) pcall(DASH.witch.workspaceSound, d) end)
 end
 
 local function hookMob(model)
