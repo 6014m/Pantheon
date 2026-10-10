@@ -2216,6 +2216,104 @@ function MASQ.hook(model, mroot, list)
     list[#list + 1] = model.DescendantAdded:Connect(watch)
 end
 
+-- ---- The Cell Of Life ----------------------------------------------------------------
+-- Fight 2026-10-10 (session 1010_150715, 153 s, died at t 656.98). A FLYING boss: its one
+-- animation 86195874830911 loops the whole fight (88 plays, 0.83 s), so nothing of it can be
+-- timed from animations. Its two killers are announced by a SOUND the moment they start:
+--   "Indicator2" = CHARGE. 0.50 s after the cue a LinearVelocity lands on it (7/7) and it flies
+--     through you at 200 stud/s (the RTW/LTW/RMW/LMW/RBW/LBW wing parts trail it); 41-51 dmg
+--     when it passes. Hits landed 0.62 s after a cue from 45 studs, 0.71 from 65; the user's
+--     MANUAL weaves caught it (WeaveBuffEvent) 0.79-0.82 after cues from 60-76 studs -> it is
+--     weavable, timed cue + 0.45 + studs/200 while it hovers, then from its real closing speed
+--     once it has taken off. The rush tracker only saw these with 0.07-0.14 s to go and sent
+--     dashes that the game refused mid double jump (3/3) -> held off for a cued charge.
+--   "Indicator" (+ a BodyPosition child on the same frame, 6/6) = DIVE SLAM. It rises 0.63 s
+--     (Smash sound), drops at 150-200 stud/s and lands 103 (+300.7 the time it killed) 0.73-0.92 s
+--     after the cue, from 35-40 studs. 3 of 6 cued slams hit; the misses started 45-78 studs out.
+--     A single jump did not save the 524.45 hit -> DOUBLE JUMP for cue + 0.80 (airborne ~0.30-1.25).
+--     The death: slam 2 came 1.87 s after slam 1's cue, the user's double jump was still on its 2 s
+--     cooldown (DJCD) -> 103 + 300.7. Nothing more to do about a cooldown; a DASH is tried when
+--     the jump can't go (its reach from the root is ~40, so a dash away may still clear it).
+-- UNMAPPED: one slam from 139 studs out with NO cue at all (603.26 Smash, 103 dmg 0.09 s later;
+-- it hovered rising at 7-27 stud/s for 1.1 s, then dropped at 667 stud/s). Its orb rings
+-- (FireBurstCharge + OrbRingChargeFX, 10 WhiteOrbBombs each), beams (BeamHitbox 15x15x70 +
+-- EndFireBall2), tornadoes and ShatterProjectiles never landed a hit in this fight; the chip was
+-- WhiteFire ticks (9.6) and Dissonant death blasts (handled above).
+-- Not a new local (this chunk sits at the local limit): lives on DASH.
+DASH.cell = {
+    name = "The Cell Of Life",
+    chargeAt = function(studs) return 0.45 + studs / 200 end,   -- seconds from the cue to the pass
+    chargeReach = 90, chargeSpeed = 100,                         -- flying faster than this = it has taken off
+    slam = 0.80, slamReach = 70,
+    hold = 1.2,                                                  -- rush tracker held off this long after a cue
+    last = setmetatable({}, { __mode = "k" }),                   -- model -> { cue -> when it last fired }
+}
+function DASH.cell.is(model)
+    return model.Name == DASH.cell.name
+end
+function DASH.cell.cue(model, mroot, name)
+    local C = DASH.cell
+    if not (running and CFG.enabled and CFG.melee) then return end
+    if not (name == "Indicator" or name == "Indicator2") or not mroot.Parent then return end
+    local t = now()
+    local seen = C.last[model]
+    if not seen then seen = {}; C.last[model] = seen end
+    if t - (seen[name] or -math.huge) < 0.35 then return end   -- Played + IsPlaying / sound + BodyPosition = one cue
+    seen[name] = t
+    local me = root()
+    if not me then return end
+    local d0 = (mroot.Position - me.Position).Magnitude
+    local h
+    if name == "Indicator" then
+        h = { t = t + C.slam, kind = "melee", from = mroot.Position, faceRoot = mroot, key = "cell:slam",
+              reason = C.name .. " dive slam (Indicator)", jump = true, double = true, unweavable = true,
+              dashDir = "Away from the attack" }
+        h.cond = function()
+            local r = root()
+            if not (r and mroot.Parent) then return false end
+            return (mroot.Position - r.Position).Magnitude <= C.slamReach
+        end
+    else
+        h = { t = t + C.chargeAt(math.min(d0, C.chargeReach)), kind = "melee", from = mroot.Position,
+              faceRoot = mroot, key = "cell:charge", reason = C.name .. " charge (Indicator2)" }
+        -- asked every frame by the planner: still coming? While it hovers the pass is re-timed from
+        -- how far it is now; once it flies (>= chargeSpeed) from how fast it is really closing.
+        h.cond = function()
+            local r = root()
+            if not (r and mroot.Parent) then return false end
+            local rel = r.Position - mroot.Position
+            local d = rel.Magnitude
+            if d > C.chargeReach then return false end
+            local v = mroot.AssemblyLinearVelocity
+            local closing = d > 0.5 and (v.X * rel.X + v.Y * rel.Y + v.Z * rel.Z) / d or 0
+            if v.Magnitude >= C.chargeSpeed then
+                if closing < 10 then return false end             -- flying away: it has passed
+                h.t = now() + math.max(0.02, (d - 10) / closing - pingExtra())
+            else
+                h.t = t + C.chargeAt(d)
+            end
+            return true
+        end
+        channelUntil[model] = math.max(channelUntil[model] or 0, t + C.hold)
+    end
+    impacts[#impacts + 1] = h
+    DASH.own(h, model)
+    dlog("CUE %s %s at %.0f studs -> %s, lands in %.2f", model.Name, name, d0,
+         name == "Indicator" and "double jump" or "weave", h.t - t)
+end
+function DASH.cell.hook(model, mroot, list)
+    local function watch(d)
+        if d:IsA("Sound") and (d.Name == "Indicator" or d.Name == "Indicator2") then
+            list[#list + 1] = d.Played:Connect(function() pcall(DASH.cell.cue, model, mroot, d.Name) end)
+            if d.IsPlaying then pcall(DASH.cell.cue, model, mroot, d.Name) end
+        elseif d:IsA("BodyPosition") then
+            pcall(DASH.cell.cue, model, mroot, "Indicator")
+        end
+    end
+    for _, d in ipairs(model:GetDescendants()) do watch(d) end
+    list[#list + 1] = model.DescendantAdded:Connect(watch)
+end
+
 local function hookMob(model)
     if mobConns[model] or not model:IsA("Model") then return end
     -- summons are hooked too: an enemy player's (or a mob's) summon attacks like any mob.
@@ -2242,6 +2340,7 @@ local function hookMob(model)
         if not ok and CFG.verbose then log.warn("[Weave] anim: " .. tostring(err)) end
     end) end
     if MASQ.is(model) then MASQ.hook(model, mroot, list) end
+    if DASH.cell.is(model) then DASH.cell.hook(model, mroot, list) end
     if deathBlastReach(model.Name) then
         list[#list + 1] = watchForDeath(model, hum, mroot)
         local fired = false
