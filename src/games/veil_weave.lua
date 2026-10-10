@@ -2241,7 +2241,9 @@ end
 --     once it has taken off. The rush tracker only saw these with 0.07-0.14 s to go and sent
 --     dashes that the game refused mid double jump (3/3) -> held off for a cued charge.
 --   "Indicator" (+ a BodyPosition child on the same frame, 6/6) = DIVE SLAM. It rises 0.63 s
---     (Smash sound), drops at 150-200 stud/s and lands 103 (+300.7 the time it killed) 0.73-0.92 s
+--     (Smash sound), drops at 150-200 stud/s and lands 103 dmg 0.73-0.92 s (the "300.7" that
+--     followed the killing 103 is NOT an attack: it is the game zeroing your HP on death --
+--     DeathProcessed + AuthMaxHealth attributes land on the same frame; same 290 in the keep)
 --     after the cue, from 35-40 studs. 3 of 6 cued slams hit; the misses started 45-78 studs out.
 --     A single jump did not save the 524.45 hit -> DOUBLE JUMP for cue + 0.80 (airborne ~0.30-1.25).
 --     The death: slam 2 came 1.87 s after slam 1's cue, the user's double jump was still on its 2 s
@@ -2446,6 +2448,120 @@ function DASH.jack.hook(model, mroot, list)
     list[#list + 1] = model.DescendantAdded:Connect(watch)
 end
 
+-- ---- Haunted Keep: Haunted Tree + Witch ------------------------------------------------------
+-- Keep run 2026-10-10 (events_1010_175601 t 700-1193, died on a late wave). Every hit over 25 in
+-- the whole run came from the HAUNTED TREE (19 of them); witches, crows, reapers, vampires and
+-- mummies only chipped (the crows' feather bolts never landed once). The tree is a 7x7x4 R6
+-- that walks on CStomp1-4 footsteps and has one move, announced by its model attribute
+-- CurrentMove = "Charge" (+ AIHold + a BodyPosition; a DodgeIndi sound on most of them):
+--   RUSH variant: a LinearVelocity appears on the same frame (life 0.5 s) and it flies through
+--     you; Whoosh, HalloweenExplosion2 at +0.72, a 50-stud BigHalloweenExplosionPart at +0.87
+--     and 61.88 + a burn at +0.83-0.86 (4 of 4 with the LinearVelocity; the one that missed had
+--     a dash up at +0.29). The game cue is DodgeIndi = DASH -> at +0.85, unweavable (two weaves
+--     pressed 0.43-0.46 s before the hit were hit through).
+--   LEAP variant (no LinearVelocity): Whoosh at +0.5, it lands on you (BodyPosition again) with
+--     HalloweenExplosion1/2 + Noise2 at +1.2-1.4 and 41.25 + burn at +1.28-1.52 (6 samples),
+--     then the fire where it landed keeps hitting 41.25 every ~0.65 s while you stand in it
+--     (1076.7 / 1077.5 / 1078.1) -> DASH at +1.40, then FLEE the tree until 30 studs clear.
+--   Its fire bombs (HalloweenFireBombBlast parts, 41.25 at 59-84 studs from it, 3 hits) are
+--     not visible in flight on the client -> unmapped.
+-- WITCH: "Shoot" sound (3 per burst, 0.1 s apart) -> homing StarProjectile (anchored, moved by
+-- the game) -> 12.38 at +0.7-1.0 after the shot (median 0.85; 32 of 89 shots hit, 9 of 34 hits
+-- ragdolled you) and the user's manual weaves CAUGHT them (26 shots) -> WEAVE at Shoot + 0.85
+-- within 40 studs. The ragdoll chain from stacked witches is what kills on late waves.
+DASH.tree = {
+    name = "Haunted Tree",
+    rush = 0.85, leap = 1.40, reach = 70, fleeClear = 30,
+    pending = setmetatable({}, { __mode = "k" }),   -- model -> the queued hit of its current charge
+}
+DASH.bossNames[DASH.tree.name] = true
+function DASH.tree.is(model)
+    return model.Name == DASH.tree.name
+end
+function DASH.tree.charge(model, mroot)
+    local T = DASH.tree
+    if not (running and CFG.enabled and CFG.melee) or not mroot.Parent then return end
+    local t = now()
+    local old = T.pending[model]
+    if old and t - old.cue < 0.5 then return end
+    local me = root()
+    if not me then return end
+    local d0 = (mroot.Position - me.Position).Magnitude
+    local h = { t = t + T.leap, cue = t, kind = "melee", from = mroot.Position, faceRoot = mroot, key = "tree:leap",
+                reason = T.name .. " leap (Charge)", unweavable = true, dashDir = "Away from the attack" }
+    h.cond = function()
+        local r = root()
+        if not (r and mroot.Parent) then return false end
+        return (mroot.Position - r.Position).Magnitude <= T.reach
+    end
+    T.pending[model] = h
+    impacts[#impacts + 1] = h
+    DASH.own(h, model)
+    channelUntil[model] = math.max(channelUntil[model] or 0, t + 1.6)   -- not the rush tracker's business
+    -- the fire it leaves: get clear of it (only if the leap went ahead as a leap)
+    task.delay(T.leap + 0.1, function()
+        if T.pending[model] ~= h or h.key ~= "tree:leap" then return end
+        if not (running and CFG.enabled and mroot.Parent) then return end
+        local r = root()
+        if r and (mroot.Position - r.Position).Magnitude <= T.fleeClear + 10 then
+            DASH.flee = { root = mroot, from = now(), till = now() + 2.2, clear = T.fleeClear, name = T.name .. " fire" }
+            dlog("FLEE %s fire for 2.2 s (clear %d)", T.name, T.fleeClear)
+        end
+    end)
+    dlog("CUE %s Charge at %.0f studs -> dash (leap) in %.2f", model.Name, d0, h.t - t)
+end
+function DASH.tree.rushing(model)
+    -- a LinearVelocity right after the cue = the rush variant: earlier hit, bigger blast
+    local T = DASH.tree
+    local h = T.pending[model]
+    if not h or h.key ~= "tree:leap" or now() - h.cue > 0.25 then return end
+    h.key, h.t, h.reason = "tree:rush", h.cue + T.rush, T.name .. " rush (Charge + LinearVelocity)"
+    dlog("CUE %s rush variant -> dash in %.2f", model.Name, h.t - now())
+end
+function DASH.tree.hook(model, mroot, list)
+    list[#list + 1] = model:GetAttributeChangedSignal("CurrentMove"):Connect(function()
+        if model:GetAttribute("CurrentMove") == "Charge" then pcall(DASH.tree.charge, model, mroot) end
+    end)
+    local function watch(d)
+        if d:IsA("LinearVelocity") then pcall(DASH.tree.rushing, model)
+        elseif d:IsA("Sound") and d.Name == "DodgeIndi" then
+            list[#list + 1] = d.Played:Connect(function() pcall(DASH.tree.charge, model, mroot) end)
+        end
+    end
+    for _, d in ipairs(model:GetDescendants()) do watch(d) end
+    list[#list + 1] = model.DescendantAdded:Connect(watch)
+end
+
+DASH.witch = { name = "Witch", shot = 0.85, reach = 40, last = setmetatable({}, { __mode = "k" }) }
+function DASH.witch.is(model)
+    return model.Name == DASH.witch.name
+end
+function DASH.witch.shoot(model, mroot)
+    local Wc = DASH.witch
+    if not (running and CFG.enabled and CFG.projectiles) or not mroot.Parent then return end
+    local t = now()
+    if t - (Wc.last[model] or -math.huge) < 0.35 then return end   -- a burst of 3 shots = one star volley
+    Wc.last[model] = t
+    local me = root()
+    if not me then return end
+    local d0 = (mroot.Position - me.Position).Magnitude
+    if d0 > Wc.reach then return end
+    local h = { t = t + Wc.shot, kind = "land", from = mroot.Position, faceRoot = mroot, key = "witch:star",
+                reason = "Witch star (Shoot, " .. math.floor(d0) .. " studs)" }
+    impacts[#impacts + 1] = h
+    DASH.own(h, model)
+    dlog("CUE Witch Shoot at %.0f studs -> weave in %.2f", d0, Wc.shot)
+end
+function DASH.witch.hook(model, mroot, list)
+    local function watch(d)
+        if d:IsA("Sound") and d.Name == "Shoot" then
+            list[#list + 1] = d.Played:Connect(function() pcall(DASH.witch.shoot, model, mroot) end)
+        end
+    end
+    for _, d in ipairs(model:GetDescendants()) do watch(d) end
+    list[#list + 1] = model.DescendantAdded:Connect(watch)
+end
+
 local function hookMob(model)
     if mobConns[model] or not model:IsA("Model") then return end
     -- summons are hooked too: an enemy player's (or a mob's) summon attacks like any mob.
@@ -2474,6 +2590,8 @@ local function hookMob(model)
     if MASQ.is(model) then MASQ.hook(model, mroot, list) end
     if DASH.cell.is(model) then DASH.cell.hook(model, mroot, list) end
     if DASH.jack.is(model) then DASH.jack.hook(model, mroot, list) end
+    if DASH.tree.is(model) then DASH.tree.hook(model, mroot, list) end
+    if DASH.witch.is(model) then DASH.witch.hook(model, mroot, list) end
     if deathBlastReach(model.Name) then
         list[#list + 1] = watchForDeath(model, hum, mroot)
         local fired = false
