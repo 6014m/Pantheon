@@ -341,6 +341,14 @@ local DASH_ATTACKS = {
     -- Smelter fire burst (80-stud cube, 55-57.75 dmg at ~1.6 s): dashed 13/13 while it was
     -- learned unweavable; once that learning reset it was treated as weavable -> CANT + 2 hits
     ["91349317972378"]  = { impact = 1.60, range = 45, name = "Smelter Demon fire burst" },
+    -- Jack O' Mare GRAB 90848503781983 (4.6 s; 20 plays over 2026-10-10): Grab sound at +1.00,
+    -- caught at +1.25 (PlatformStanding + StunUntil, a second BodyPosition on it = it holds
+    -- you), GrabStab +1.8, Laugh +1.94, then 20 ticks of 3.3 (66 total) to +3.85 and a throw at
+    -- +4.2 that ragdolls you (ImmuneUntil after). Caught from 3-19 studs; it MISSED every time a
+    -- dash's DodgeUntil covered +1.0..+1.3 (dashes at +0.68 and at the cue) and whenever you were
+    -- 22+ out -> dashed before it closes. While held nothing helps (that is the "grab still
+    -- lands": nothing was mapped for it until now).
+    ["90848503781983"]  = { impact = 1.05, range = 30, name = "Jack O' Mare grab" },
 }
 local extra = {}   -- user-added "id=seconds" pairs from the settings textbox
 
@@ -2361,9 +2369,9 @@ end
 --     HalloweenExplosionPart cube and 28.88 dmg (+0.11 after the part showed, covered you).
 --     Fight 3: HeadShoot -> blast at +1.39 / +1.40, hit at +1.53.
 --     -> WEAVE at HeadShoot + 1.45 while the head is within 18 studs of you at that moment.
---   Grab 90848503781983 (4.6 s, 1 play): Grab sound +1.0, GrabStab +1.8, Laugh, ThrowSound
---     +4.2; only 16.5 + 5 dmg recorded -> left to the learner for now (Discord: "grabbed me and
---     did 250" -- unverified, may be the keep boss).
+--   Grab 90848503781983 (4.6 s): Grab sound +1.0, caught +1.25, 20 x 3.3 ticks, throw + ragdoll
+--     at +4.2 -> DASH_ATTACKS (dash at +1.05 within 30; every grab a dash's i-frames covered
+--     at +1.0-1.3 missed). (Discord's "grabbed me and did 250" was the keep's 290 death artefact.)
 -- Lives on DASH (no new main-chunk local).
 DASH.jack = {
     name = "Jack O' Mare",
