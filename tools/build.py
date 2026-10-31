@@ -49,6 +49,7 @@ BUILD_ORDER = [
     "modules/misc/init",
     "modules/addons/api",
     "modules/addons/init",
+    "games/jjs_flash",
     "games/jjs",
     "games/evilplate",
     "games/bp2",

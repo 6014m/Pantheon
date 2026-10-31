@@ -23,6 +23,7 @@ local targeting  = require("modules.aim.targeting")
 local shiftlock  = require("modules.aim.shiftlock")
 local log        = require("core.log")
 local notify     = require("ui.notify")
+local flash      = require("games.jjs_flash")
 
 local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
@@ -530,6 +531,7 @@ function JJS.register()
     shiftlock.setShiftlockMirror(true)
 
     local box = container.new(window.parent(), "Jujutsu Shenanigans")
+    box:add(feature.declare(flash.feature()).root)
     box:add(feature.declare({
         id          = "jjs.nanami_special",
         name        = "Nanami Perfect Special",
@@ -631,6 +633,7 @@ end
 -- keybinds.destroy; what's left is the module-level state below.
 function JJS.destroy()
     enabled = false
+    pcall(flash.stop)
     lastScanReport = -1
     -- stop the Auto QTE reader and clear its per-QTE state
     qte.enabled = false
