@@ -24,7 +24,7 @@ local function char(name,x,z,hp)
           FindFirstChildOfClass=function(_,c) return c=="Humanoid" and hum or nil end}
 end
 ME = char("me",0,0)
-A, B, FAR, DEAD = char("A",10,2), char("B",2,10), char("FAR",0,80), char("DEAD",5,0,0)
+A, B, FAR, DEAD = char("A",10,2), char("B",2,10), char("FAR",0,400), char("DEAD",5,0,0)
 local chars={GetChildren=function() return {ME,A,B,FAR,DEAD} end}
 local services={
   Players={LocalPlayer={Character=ME}, GetPlayers=function() return {} end},

@@ -18,7 +18,7 @@ local Workspace  = game:GetService("Workspace")
 local LP = Players.LocalPlayer
 
 local Flash = {}
-local CFG = { enabled = false, reach = 4.5, dashTime = 0.08, range = 45, through = true }
+local CFG = { enabled = false, reach = 4.5, dashTime = 0.08, range = 250, through = true }
 
 local ATTACK_KEYS = { [Enum.KeyCode.One] = true, [Enum.KeyCode.Two] = true, [Enum.KeyCode.Three] = true,
                       [Enum.KeyCode.Four] = true, [Enum.KeyCode.R] = true }
@@ -94,8 +94,39 @@ local function disengage()
     hpConn, engaged = nil, nil
 end
 
+-- Face lock: while engaged, pin the body's yaw at the target every frame AFTER the game's
+-- shiftlock (RenderStepped at Camera+150) and before physics (Stepped), plus an
+-- AlignOrientation so physics agrees. Same method as modules.aim.rotation_lock; shiftlock
+-- on or off makes no difference.
+local faceChar, faceUntil, align, attach, wasFacing = nil, 0, nil, nil, false
+local BIND = "PantheonFlashStrikeFace"
+local function faceStep()
+    local char = LP.Character
+    local root, hum = rootOf(char), char and char:FindFirstChildOfClass("Humanoid")
+    local tRoot = faceChar and os.clock() < faceUntil and alive(faceChar) and rootOf(faceChar)
+    if not (root and hum and tRoot) then
+        if align then align.Enabled = false end
+        if wasFacing and hum then hum.AutoRotate = true; wasFacing = false end
+        return
+    end
+    local f = flat(tRoot.Position - root.Position)
+    if f.Magnitude < 0.001 then return end
+    if not (attach and attach.Parent == root) then
+        attach = Instance.new("Attachment"); attach.Name = "PantheonFlashStrikeAttach"; attach.Parent = root
+        align = Instance.new("AlignOrientation"); align.Name = "PantheonFlashStrikeAlign"
+        align.Mode = Enum.OrientationAlignmentMode.OneAttachment; align.Attachment0 = attach
+        align.RigidityEnabled = true; align.Responsiveness = 200; align.MaxTorque = math.huge; align.Parent = root
+    end
+    hum.AutoRotate = false; wasFacing = true
+    align.Enabled = true; align.CFrame = CFrame.lookAt(Vector3.zero, f)
+    local _, yaw = CFrame.lookAt(root.Position, root.Position + f):ToEulerAnglesYXZ()
+    root.CFrame = CFrame.new(root.Position) * CFrame.Angles(0, yaw, 0)
+end
+local function faceFor(tChar) faceChar = tChar; faceUntil = os.clock() + HIT_WINDOW end
+
 local function onHit(tChar)
     recent[tChar] = os.clock()
+    faceFor(tChar)
     disengage()
     if not CFG.through then return end
     local me, tRoot = rootOf(LP.Character), rootOf(tChar)
@@ -119,6 +150,7 @@ local function onAttack()
     local tChar = Flash.pick(me.Position, cam.CFrame.LookVector, now)
     if not tChar then return end
     local tRoot = rootOf(tChar)
+    faceFor(tChar)
     glide(Flash.spot(tRoot.Position, me.Position - tRoot.Position, CFG.reach))
 
     disengage()
@@ -161,6 +193,8 @@ function Flash.start()
     end)
     watchMyHealth(LP.Character)
     conns[#conns + 1] = LP.CharacterAdded:Connect(watchMyHealth)
+    RunService:BindToRenderStep(BIND, Enum.RenderPriority.Camera.Value + 150, faceStep)
+    conns[#conns + 1] = RunService.Stepped:Connect(faceStep)
 end
 
 function Flash.stop()
@@ -169,13 +203,17 @@ function Flash.stop()
     disengage()
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     table.clear(conns)
+    pcall(function() RunService:UnbindFromRenderStep(BIND) end)
+    faceChar = nil; pcall(faceStep) -- hands AutoRotate back, disables the align
+    if align then pcall(function() align:Destroy() end) end
+    if attach then pcall(function() attach:Destroy() end) end
 end
 
 function Flash.feature()
     return {
         id          = "jjs.flash_strike",
         name        = "Flash Strike",
-        description = "Every attack (M1, 1-4, R) flashes you to just in front of whoever you're looking at, facing them; when the hit lands you flash through to their far side. Targets whoever is nearest your crosshair, preferring people you've recently traded damage with. Won't flash into walls.",
+        description = "Every attack (M1, 1-4, R) flashes you to just in front of whoever you're looking at, facing them (face-locked on them for the follow-ups, shiftlock or not); when the hit lands you flash through to their far side. Targets whoever is nearest your crosshair, preferring people you've recently traded damage with. Won't flash into walls.",
         default     = false,
         onToggle    = function(v)
             CFG.enabled = v and true or false
@@ -187,7 +225,7 @@ function Flash.feature()
             { type = "slider", name = "Flash duration (seconds)", key = "dash_time",
               min = 0.02, max = 0.25, step = 0.01, default = 0.08, onChange = function(v) CFG.dashTime = v end },
             { type = "slider", name = "Target range (studs)", key = "range",
-              min = 10, max = 100, step = 5, default = 45, onChange = function(v) CFG.range = v end },
+              min = 10, max = 500, step = 10, default = 250, onChange = function(v) CFG.range = v end },
             { type = "toggle", name = "Flash through on hit", key = "through", default = true,
               onChange = function(v) CFG.through = v and true or false end },
         },
