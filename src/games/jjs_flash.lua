@@ -113,11 +113,21 @@ local function route(from, pos, rp)
     if not Workspace:Raycast(from, pos - from, rp) then return { pos } end
     local path = PathfindingService:CreatePath({ AgentRadius = 2, AgentHeight = 5, AgentCanJump = true, WaypointSpacing = 4 })
     local ok = pcall(path.ComputeAsync, path, from, pos)
-    if not (ok and path.Status == Enum.PathStatus.Success) then return nil end
-    local pts = {}
-    for _, wp in ipairs(path:GetWaypoints()) do pts[#pts + 1] = wp.Position + Vector3.new(0, 2.5, 0) end -- waypoints sit on the floor
-    pts[#pts + 1] = pos
-    return pts
+    if ok and path.Status == Enum.PathStatus.Success then
+        local pts = {}
+        for _, wp in ipairs(path:GetWaypoints()) do pts[#pts + 1] = wp.Position + Vector3.new(0, 2.5, 0) end -- waypoints sit on the floor
+        pts[#pts + 1] = pos
+        return pts
+    end
+    -- no walkable route (rooftops, gaps): arc over the top at the lowest height whose three legs are clear
+    for _, h in ipairs({ 6, 12, 24, 48, 90 }) do
+        local up = Vector3.new(0, h, 0)
+        local a, b = from + up, pos + up
+        if not Workspace:Raycast(from, up, rp) and not Workspace:Raycast(a, b - a, rp) and not Workspace:Raycast(b, pos - b, rp) then
+            return { a, b, pos }
+        end
+    end
+    return nil
 end
 -- returns dir, waypoint list (last point = the spot) or nil when nothing around the target is reachable
 local function plan(tChar, dir, dist, lift)
@@ -132,7 +142,7 @@ local function plan(tChar, dir, dist, lift)
             local pts = route(me.Position, cf.Position, rp)
             if pts then return d, pts end
             tries = tries + 1
-            if tries >= 3 then break end -- shortcut: 3 pathfinds max per flash, raise if it keeps refusing reachable spots
+            if tries >= 4 then break end -- shortcut: 4 route attempts max per flash, raise if it keeps refusing reachable spots
         end
     end
     return nil
