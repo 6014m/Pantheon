@@ -75,13 +75,14 @@ local function blocked(tChar, cf)
     return Workspace:Raycast(tRoot.Position, cf.Position - tRoot.Position, params) ~= nil
 end
 
-local function glide(cf)
+-- dest() is re-evaluated every frame so the landing spot follows a moving target
+local function glide(dest)
     local r = rootOf(LP.Character); if not r then return end
     local from, t0, gen = r.CFrame, os.clock(), generation
     moving = true
     local c; c = RunService.Heartbeat:Connect(function()
-        local r2 = rootOf(LP.Character)
-        if not r2 or gen ~= generation then c:Disconnect(); moving = false; return end
+        local r2, cf = rootOf(LP.Character), dest()
+        if not (r2 and cf) or gen ~= generation then c:Disconnect(); moving = false; return end
         local a = math.min((os.clock() - t0) / CFG.dashTime, 1)
         r2.CFrame = from:Lerp(cf, a)
         r2.AssemblyLinearVelocity = Vector3.zero
@@ -132,13 +133,12 @@ local function onHit(tChar)
     local me, tRoot = rootOf(LP.Character), rootOf(tChar)
     if not (me and tRoot) then return end
     -- far side = mirror of where I am across them
-    local cf = Flash.spot(tRoot.Position, tRoot.Position - me.Position, CFG.exit)
-    if blocked(tChar, cf) then
-        local side = flat(me.Position - tRoot.Position):Cross(Vector3.yAxis)
-        cf = Flash.spot(tRoot.Position, side, CFG.exit)
-        if blocked(tChar, cf) then return end
+    local dir = tRoot.Position - me.Position
+    if blocked(tChar, Flash.spot(tRoot.Position, dir, CFG.exit)) then
+        dir = flat(me.Position - tRoot.Position):Cross(Vector3.yAxis)
+        if blocked(tChar, Flash.spot(tRoot.Position, dir, CFG.exit)) then return end
     end
-    glide(cf)
+    glide(function() local tr = rootOf(tChar); return tr and Flash.spot(tr.Position, dir, CFG.exit) end)
 end
 
 local function onAttack()
@@ -151,7 +151,8 @@ local function onAttack()
     if not tChar then return end
     local tRoot = rootOf(tChar)
     faceFor(tChar)
-    glide(Flash.spot(tRoot.Position, me.Position - tRoot.Position, CFG.reach))
+    local dir = me.Position - tRoot.Position
+    glide(function() local tr = rootOf(tChar); return tr and Flash.spot(tr.Position, dir, CFG.reach) end)
 
     disengage()
     local hum = tChar:FindFirstChildOfClass("Humanoid")
