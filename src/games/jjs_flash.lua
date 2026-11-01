@@ -67,22 +67,43 @@ function Flash.spot(tPos, dir, reach)
     return CFrame.lookAt(pos, Vector3.new(tPos.X, pos.Y, tPos.Z))
 end
 
-local function blocked(tChar, cf)
-    local tRoot = rootOf(tChar)
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = { tChar, LP.Character }
-    return Workspace:Raycast(tRoot.Position, cf.Position - tRoot.Position, params) ~= nil
+-- Terrain: first free angle around the target (preferred first, then widening). A spot is free when
+-- the ray target->spot is clear (not inside a wall), the ray me->spot is clear (no warping through
+-- geometry) and no solid part overlaps the landing box.
+local ANGLES = { 0, 45, -45, 90, -90, 135, -135, 180 }
+local function clearDir(tChar, dir, dist)
+    local me, tRoot = rootOf(LP.Character), rootOf(tChar)
+    if not (me and tRoot) then return nil end
+    local rp = RaycastParams.new(); rp.FilterType = Enum.RaycastFilterType.Exclude; rp.FilterDescendantsInstances = { tChar, LP.Character }
+    local op = OverlapParams.new(); op.FilterType = Enum.RaycastFilterType.Exclude; op.FilterDescendantsInstances = { tChar, LP.Character }
+    for _, deg in ipairs(ANGLES) do
+        local d = CFrame.Angles(0, math.rad(deg), 0) * flat(dir)
+        local cf = Flash.spot(tRoot.Position, d, dist)
+        local free = not Workspace:Raycast(tRoot.Position, cf.Position - tRoot.Position, rp)
+            and not Workspace:Raycast(me.Position, cf.Position - me.Position, rp)
+        if free then
+            for _, part in ipairs(Workspace:GetPartBoundsInBox(cf, Vector3.new(2, 4, 2), op)) do
+                if part.CanCollide then free = false; break end
+            end
+        end
+        if free then return d end
+    end
+    return nil
 end
 
 -- dest() is re-evaluated every frame so the landing spot follows a moving target
+local faceChar -- the current target (assigned by faceFor below)
 local function glide(dest)
     local r = rootOf(LP.Character); if not r then return end
     local from, t0, gen = r.CFrame, os.clock(), generation
+    local pathParams = RaycastParams.new(); pathParams.FilterType = Enum.RaycastFilterType.Exclude
+    pathParams.FilterDescendantsInstances = { LP.Character, faceChar }
     moving = true
     local c; c = RunService.Heartbeat:Connect(function()
         local r2, cf = rootOf(LP.Character), dest()
-        if not (r2 and cf) or gen ~= generation then c:Disconnect(); moving = false; return end
+        if not (r2 and cf) or gen ~= generation or Workspace:Raycast(r2.Position, cf.Position - r2.Position, pathParams) then
+            c:Disconnect(); moving = false; return -- done, stopped, or a wall moved into the path: stop here
+        end
         local a = math.min((os.clock() - t0) / CFG.dashTime, 1)
         r2.CFrame = from:Lerp(cf, a)
         r2.AssemblyLinearVelocity = Vector3.zero
@@ -99,7 +120,7 @@ end
 -- shiftlock (RenderStepped at Camera+150) and before physics (Stepped), plus an
 -- AlignOrientation so physics agrees. Same method as modules.aim.rotation_lock; shiftlock
 -- on or off makes no difference.
-local faceChar, faceUntil, align, attach, wasFacing = nil, 0, nil, nil, false
+local faceUntil, align, attach, wasFacing = 0, nil, nil, false
 local BIND = "PantheonFlashStrikeFace"
 local function faceStep()
     local char = LP.Character
@@ -133,11 +154,8 @@ local function onHit(tChar)
     local me, tRoot = rootOf(LP.Character), rootOf(tChar)
     if not (me and tRoot) then return end
     -- far side = mirror of where I am across them
-    local dir = tRoot.Position - me.Position
-    if blocked(tChar, Flash.spot(tRoot.Position, dir, CFG.exit)) then
-        dir = flat(me.Position - tRoot.Position):Cross(Vector3.yAxis)
-        if blocked(tChar, Flash.spot(tRoot.Position, dir, CFG.exit)) then return end
-    end
+    local dir = clearDir(tChar, tRoot.Position - me.Position, CFG.exit)
+    if not dir then return end
     glide(function() local tr = rootOf(tChar); return tr and Flash.spot(tr.Position, dir, CFG.exit) end)
 end
 
@@ -151,7 +169,8 @@ local function onAttack()
     if not tChar then return end
     local tRoot = rootOf(tChar)
     faceFor(tChar)
-    local dir = me.Position - tRoot.Position
+    local dir = clearDir(tChar, me.Position - tRoot.Position, CFG.reach)
+    if not dir then return end
     glide(function() local tr = rootOf(tChar); return tr and Flash.spot(tr.Position, dir, CFG.reach) end)
 
     disengage()
