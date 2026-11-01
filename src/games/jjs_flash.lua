@@ -89,7 +89,10 @@ local function airborne(c)
 end
 
 local STEP = 2    -- studs per physics frame along the route (same pace as Blink Push mode)
-local HOLD = 0.6  -- s to keep tracking the stand-off spot after arriving, so the hit frame still connects
+local CREEP = 8   -- studs/s drifting through the hit zone while the attack is active
+local LEAD, TAIL = 0.10, 0.25 -- reach the stand-off spot LEAD s before the hit; keep creeping TAIL s past it if no hit yet
+local DEFAULT_H = 0.35 -- hit delay (s after input) for moves not learned yet
+local "Pantheon/flash_timings.json" = "FlashStrike_timings.json"
 
 -- Terrain. A landing spot is open when the ray target->spot is clear (not inside a wall) and no solid
 -- part overlaps the landing box. The route to it is the straight line when clear, else a navmesh path
@@ -151,42 +154,6 @@ local function plan(tChar, dir, dist, lift)
     return nil
 end
 
--- Travel the waypoints in `dur` seconds; the LAST point is dest() re-read every frame so it follows a
--- moving target. Then, while keep() holds, stay pinned on dest() (the tracking hold through the hit frame).
-local function glide(pts, dest, keep, onArrive)
-    local r = rootOf(LP.Character); if not r then moving = false; return end
-    local gen, trav, arrived = generation, 0, false
-    local rp = excl(faceChar)
-    local nodes = { r.Position }
-    for i = 1, #pts - 1 do nodes[#nodes + 1] = pts[i] end
-    moving = true
-    local c; c = RunService.Heartbeat:Connect(function()
-        local r2, cf = rootOf(LP.Character), dest()
-        if not (r2 and cf) or gen ~= generation then c:Disconnect(); moving = false; return end
-        nodes[#pts + 1] = cf.Position -- live final point
-        local total, segs = 0, {}
-        for i = 1, #nodes - 1 do local l = (nodes[i + 1] - nodes[i]).Magnitude; segs[i] = l; total = total + l end
-        trav = trav + math.min(STEP, total / 3) -- Blink pace: STEP studs per physics frame, never fewer than 3 frames
-        local a = math.min(trav / math.max(total, 0.001), 1)
-        local p
-        if a < 1 then
-            local sdist = a * total
-            p = nodes[#nodes]
-            for i = 1, #segs do
-                if sdist <= segs[i] then p = nodes[i]:Lerp(nodes[i + 1], segs[i] > 0 and sdist / segs[i] or 1); break end
-                sdist = sdist - segs[i]
-            end
-        else
-            if not arrived then arrived = true; if onArrive then task.spawn(onArrive) end end
-            if not (keep and keep()) then c:Disconnect(); moving = false; return end
-            if Workspace:Raycast(r2.Position, cf.Position - r2.Position, rp) then c:Disconnect(); moving = false; return end -- a wall moved between us
-            p = cf.Position
-        end
-        r2.CFrame = CFrame.new(p) * cf.Rotation
-        r2.AssemblyLinearVelocity = Vector3.zero
-    end)
-end
-
 local function disengage()
     if hpConn then pcall(hpConn.Disconnect, hpConn) end
     hpConn, engaged = nil, nil
@@ -221,22 +188,93 @@ local function faceStep()
 end
 local function faceFor(tChar) faceChar = tChar; faceUntil = os.clock() + HIT_WINDOW end
 
-local function travel(tChar, dir, dist, keep, lift, onArrive)
-    local d, pts = plan(tChar, dir, dist, lift)
-    if not d then moving = false; if onArrive then task.spawn(onArrive) end; return false end
-    -- flurry: bow a clear straight line sideways so the flash reads as a curve, not a back-and-forth
-    if CFG.flurry and #pts == 1 then
-        local me = rootOf(LP.Character).Position
-        local seg = pts[1] - me
-        if seg.Magnitude > 8 then
-            local side = flat(seg):Cross(Vector3.yAxis).Unit * (math.random() < 0.5 and 1 or -1) * seg.Magnitude * (0.25 + math.random() * 0.25)
-            local bend = me + seg * 0.5 + side
-            local rp = excl(tChar)
-            if not Workspace:Raycast(me, bend - me, rp) and not Workspace:Raycast(bend, pts[1] - bend, rp) then table.insert(pts, 1, bend) end
+-- Hit timing, learned from our own hits: input time -> first HP drop on the target, per animation id
+-- (M1 combo steps and skills each play their own animation). Persisted in the executor workspace.
+local HttpService = game:GetService("HttpService")
+local timings, keyAnim = {}, {} -- animId -> { d = delay, n = samples } ; input name -> last animId it produced
+pcall(function() if isfile and isfile("Pantheon/flash_timings.json") then timings = HttpService:JSONDecode(readfile("Pantheon/flash_timings.json")) end end)
+local function saveTimings() pcall(function() if writefile then writefile("Pantheon/flash_timings.json", HttpService:JSONEncode(timings)) end end) end
+local function hitDelayFor(animId) local t = animId and timings[animId]; return t and t.d or DEFAULT_H end
+local function learn(animId, delay)
+    if not animId or delay <= 0 or delay > 1.5 then return end
+    local t = timings[animId] or { d = delay, n = 0 }
+    t.d = (t.n == 0) and delay or (t.d * 0.6 + delay * 0.4); t.n = t.n + 1
+    timings[animId] = t; saveTimings()
+end
+Flash.timings = timings
+
+-- Motion: one Heartbeat loop per attack running phases in order. A phase returns the position for this
+-- frame, or nil when it is finished. Facing is always at the target (tilted when they are above/below).
+local function run(tChar, phases)
+    local gen, i = generation, 1
+    moving = true
+    local c; c = RunService.Heartbeat:Connect(function(dt)
+        local r2, tr = rootOf(LP.Character), rootOf(tChar)
+        if not (r2 and tr) or gen ~= generation then c:Disconnect(); moving = false; return end
+        local pos
+        while i <= #phases do
+            pos = phases[i](dt, r2, tr)
+            if pos then break end
+            i = i + 1
         end
+        if not pos then c:Disconnect(); moving = false; return end
+        local f = tr.Position - pos
+        if not (CFG.flurry and math.abs(f.Y) > 3) then f = flat(f) end
+        if f.Magnitude > 0.01 then r2.CFrame = CFrame.lookAt(pos, pos + f) else r2.CFrame = CFrame.new(pos) * r2.CFrame.Rotation end
+        r2.AssemblyLinearVelocity = Vector3.zero
+    end)
+end
+
+-- Phase: travel the waypoints to the live spot. dueAt() = arrive exactly then (slides in slowly when close);
+-- nil = Blink pace. The last point is re-read every frame so it follows a moving target.
+local function approach(pts, dest, dueAt)
+    local nodes, trav, done = nil, 0, false
+    return function(dt, r2, tr)
+        if done then return nil end
+        local cf = dest(tr); if not cf then return nil end
+        if not nodes then nodes = { r2.Position }; for i = 1, #pts - 1 do nodes[#nodes + 1] = pts[i] end end
+        nodes[#pts + 1] = cf.Position
+        local total, segs = 0, {}
+        for i = 1, #nodes - 1 do local l = (nodes[i + 1] - nodes[i]).Magnitude; segs[i] = l; total = total + l end
+        local step = math.min(STEP, total / 3)
+        local due = dueAt and dueAt()
+        if due then
+            local left = due - os.clock()
+            if left > dt then step = math.min(step, (total - trav) * dt / left) end -- pace it to land on time
+        end
+        trav = trav + step
+        if trav >= total then done = true; return cf.Position end
+        local sdist, p = trav, nodes[#nodes]
+        for i = 1, #segs do
+            if sdist <= segs[i] then p = nodes[i]:Lerp(nodes[i + 1], segs[i] > 0 and sdist / segs[i] or 1); break end
+            sdist = sdist - segs[i]
+        end
+        return p
     end
-    glide(pts, function() local tr = rootOf(tChar); return tr and Flash.spot(tr.Position, d, dist, lift) end, keep, onArrive)
-    return true
+end
+
+-- Phase: drift toward the target through the hit zone until stop() says so, never closer than 1.5 studs.
+local function creep(stop)
+    return function(dt, r2, tr)
+        if stop() then return nil end
+        local to = flat(tr.Position - r2.Position)
+        local d = to.Magnitude
+        local move = math.min(CREEP * dt, math.max(d - 1.5, 0))
+        return r2.Position + (d > 0.01 and to.Unit * move or Vector3.zero)
+    end
+end
+
+-- Exit spot without pathfinding (we are next to them): first angle whose straight line from here is clear.
+local function exitSpot(tChar, dir, dist)
+    local me, tRoot = rootOf(LP.Character), rootOf(tChar)
+    if not (me and tRoot) then return nil end
+    local rp, op = excl(tChar)
+    for _, deg in ipairs(ANGLES) do
+        local d = CFrame.Angles(0, math.rad(deg), 0) * flat(dir)
+        local cf = Flash.spot(tRoot.Position, d, dist)
+        if openSpot(tChar, cf, rp, op) and not Workspace:Raycast(me.Position, cf.Position - me.Position, rp) then return d end
+    end
+    return nil
 end
 
 local burstLeft, lastExit = 0, -1e9
@@ -244,26 +282,10 @@ local function onHit(tChar)
     recent[tChar] = os.clock()
     setLock(tChar, recent[tChar])
     faceFor(tChar)
-    disengage()
-    if not CFG.through then return end
-    local now = os.clock()
-    local deg = 0
-    if CFG.flurry then
-        -- rhythm: a flash, then ~PAUSE s of hits landed in place, then BURST flashes back to back
-        if burstLeft > 0 then burstLeft = burstLeft - 1
-        elseif now - lastExit > PAUSE then burstLeft = math.random(BURST_MIN, BURST_MAX) - 1
-        else return end -- stay: the hold has already ended, you are standing in front of them
-        deg = ({ 0, 30, -30, 60, -60 })[math.random(5)] -- not a flat mirror every time
-    end
-    lastExit = now
-    generation = generation + 1 -- cut the tracking hold
-    local me, tRoot = rootOf(LP.Character), rootOf(tChar)
-    if not (me and tRoot) then return end
-    travel(tChar, CFrame.Angles(0, math.rad(deg), 0) * flat(tRoot.Position - me.Position), CFG.exit) -- far side, CFG.exit studs out
 end
 
--- Click gate: your attack input is swallowed, you travel, and the SAME input is re-sent the frame you
--- arrive, so the swing always starts from the stand-off spot. Inputs we re-send pass straight through.
+-- Click gate: when you are too far to slide in before the hit frame, the input is swallowed, you travel,
+-- and the SAME input is re-sent the frame you arrive. Inputs we re-send pass straight through.
 local replayUntil = 0
 local function replay(input)
     replayUntil = os.clock() + 0.15
@@ -276,6 +298,7 @@ local function replay(input)
     end
 end
 
+-- returns true when the input was swallowed (gate mode)
 local function onAttack(input)
     if moving then return false end
     local me, cam = rootOf(LP.Character), Workspace.CurrentCamera
@@ -287,28 +310,89 @@ local function onAttack(input)
     moving = true -- claimed now: plan() may yield on pathfinding
     faceFor(tChar)
     disengage()
+
+    local keyName = (input and input.UserInputType ~= Enum.UserInputType.MouseButton1) and input.KeyCode.Name or "M1"
+    local animId = keyAnim[keyName]
+    local H = hitDelayFor(animId)
+    local t0, hitAt = nil, nil
+
+    -- entry side + lift (flurry: their back when they face me; above/below when airborne)
+    local dir, lift = me.Position - tRoot.Position, 0
+    if CFG.flurry then
+        if tRoot.CFrame.LookVector:Dot(flat(me.Position - tRoot.Position).Unit) > 0.5 then dir = -tRoot.CFrame.LookVector end
+        if airborne(tChar) then lift = ({ -4, 0, 4 })[math.random(3)] end
+    end
+
+    -- gate decision has to be synchronous: too far to reach the spot before the hit frame -> swallow the click
+    local dist0 = math.max((tRoot.Position - me.Position).Magnitude - CFG.reach, 0)
+    local rp = excl(tChar)
+    if Workspace:Raycast(me.Position, tRoot.Position - me.Position, rp) then dist0 = dist0 * 1.6 end -- blocked: a route is longer
+    local gated = dist0 / (STEP * math.max(Workspace:GetRealPhysicsFPS(), 30)) > math.max(H - LEAD, 0.05)
+    if not gated then t0 = now end
+
+    -- hit watch: first HP drop after t0 = the hit; learn the delay for this animation
     local hum = tChar:FindFirstChildOfClass("Humanoid")
     local last = hum.Health
     engaged = tChar
     hpConn = hum.HealthChanged:Connect(function(h)
         local dropped = h < last
         last = h
-        if dropped and engaged == tChar and os.clock() - now < HIT_WINDOW then task.spawn(onHit, tChar) end
+        if dropped and engaged == tChar and t0 and not hitAt then
+            hitAt = os.clock()
+            learn(animId, hitAt - t0)
+            task.spawn(onHit, tChar)
+        end
     end)
-    local holdEnd = now + HIT_WINDOW -- becomes arrival + HOLD once we get there
-    local function arrive()
-        holdEnd = os.clock() + HOLD
-        task.delay(HIT_WINDOW, function() if engaged == tChar then disengage() end end)
-        replay(input)
+    -- animation watch: the first non-looped track our humanoid starts after t0 names the move
+    local myHum = LP.Character:FindFirstChildOfClass("Humanoid")
+    local animConn
+    local function watchAnim()
+        if not myHum or animConn then return end
+        animConn = myHum.AnimationPlayed:Connect(function(track)
+            if track.Looped or not t0 or os.clock() - t0 > 0.4 then return end
+            animId = track.Animation and track.Animation.AnimationId or animId
+            keyAnim[keyName] = animId
+            H = hitDelayFor(animId)
+            animConn:Disconnect(); animConn = nil
+        end)
+        task.delay(0.5, function() if animConn then animConn:Disconnect(); animConn = nil end end)
     end
-    local dir, lift = me.Position - tRoot.Position, 0
-    if CFG.flurry then
-        -- block-smart: a guard only covers their front, so when they face me, enter from their back
-        if tRoot.CFrame.LookVector:Dot(flat(me.Position - tRoot.Position).Unit) > 0.5 then dir = -tRoot.CFrame.LookVector end
-        if airborne(tChar) then lift = ({ -4, 0, 4 })[math.random(3)] end -- airborne: come in from below / level / above
-    end
-    task.spawn(travel, tChar, dir, CFG.reach, function() return engaged == tChar and os.clock() < holdEnd end, lift, arrive)
-    return true
+    if t0 then watchAnim() end
+
+    task.spawn(function()
+        local d, pts = plan(tChar, dir, CFG.reach, lift)
+        if not d then
+            moving = false
+            if gated then replay(input) end -- never eat the click
+            return
+        end
+        local dest = function(tr) return Flash.spot(tr.Position, d, CFG.reach, lift) end
+        local phases = {
+            approach(pts, dest, (not gated) and function() return t0 + H - LEAD end or nil),
+            function() if gated and not t0 then t0 = os.clock(); replay(input); watchAnim() end return nil end,
+            creep(function() return hitAt ~= nil or (t0 and os.clock() > t0 + H + TAIL) end),
+            function(dt, r2, tr) -- exit: full distance in a burst, a short pass-through during the pause
+                local nowc = os.clock()
+                local far = true
+                if CFG.flurry then
+                    if burstLeft > 0 then burstLeft = burstLeft - 1
+                    elseif nowc - lastExit > PAUSE then burstLeft = math.random(BURST_MIN, BURST_MAX) - 1
+                    else far = false end
+                end
+                if not CFG.through then return nil end
+                lastExit = nowc
+                local deg = CFG.flurry and ({ 0, 30, -30, 60, -60 })[math.random(5)] or 0
+                local ed = exitSpot(tChar, CFrame.Angles(0, math.rad(deg), 0) * flat(tr.Position - r2.Position), far and CFG.exit or CFG.reach + 2)
+                if not ed then return nil end
+                local edist = far and CFG.exit or CFG.reach + 2
+                phases[#phases + 1] = approach({ Vector3.zero }, function(t) return Flash.spot(t.Position, ed, edist) end, nil)
+                return nil
+            end,
+        }
+        run(tChar, phases)
+    end)
+    task.delay(HIT_WINDOW + 1, function() if engaged == tChar then disengage() end end)
+    return gated
 end
 
 -- Whoever hurts me becomes "recent": blame the nearest enemy.
