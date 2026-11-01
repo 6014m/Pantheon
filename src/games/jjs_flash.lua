@@ -92,7 +92,6 @@ local STEP = 2    -- studs per physics frame along the route (same pace as Blink
 local CREEP = 8   -- studs/s drifting through the hit zone while the attack is active
 local LEAD, TAIL = 0.10, 0.25 -- reach the stand-off spot LEAD s before the hit; keep creeping TAIL s past it if no hit yet
 local DEFAULT_H = 0.35 -- hit delay (s after input) for moves not learned yet
-local "Pantheon/flash_timings.json" = "FlashStrike_timings.json"
 
 -- Terrain. A landing spot is open when the ray target->spot is clear (not inside a wall) and no solid
 -- part overlaps the landing box. The route to it is the straight line when clear, else a navmesh path
