@@ -18,7 +18,7 @@ local Workspace  = game:GetService("Workspace")
 local LP = Players.LocalPlayer
 
 local Flash = {}
-local CFG = { enabled = false, reach = 4.5, dashTime = 0.08, range = 250, through = true }
+local CFG = { enabled = false, reach = 4.5, dashTime = 0.08, range = 250, through = true, exit = 17 }
 
 local ATTACK_KEYS = { [Enum.KeyCode.One] = true, [Enum.KeyCode.Two] = true, [Enum.KeyCode.Three] = true,
                       [Enum.KeyCode.Four] = true, [Enum.KeyCode.R] = true }
@@ -132,10 +132,10 @@ local function onHit(tChar)
     local me, tRoot = rootOf(LP.Character), rootOf(tChar)
     if not (me and tRoot) then return end
     -- far side = mirror of where I am across them
-    local cf = Flash.spot(tRoot.Position, tRoot.Position - me.Position, CFG.reach)
+    local cf = Flash.spot(tRoot.Position, tRoot.Position - me.Position, CFG.exit)
     if blocked(tChar, cf) then
         local side = flat(me.Position - tRoot.Position):Cross(Vector3.yAxis)
-        cf = Flash.spot(tRoot.Position, side, CFG.reach)
+        cf = Flash.spot(tRoot.Position, side, CFG.exit)
         if blocked(tChar, cf) then return end
     end
     glide(cf)
@@ -213,7 +213,7 @@ function Flash.feature()
     return {
         id          = "jjs.flash_strike",
         name        = "Flash Strike",
-        description = "Every attack (M1, 1-4, R) flashes you to just in front of whoever you're looking at, facing them (face-locked on them for the follow-ups, shiftlock or not); when the hit lands you flash through to their far side. Targets whoever is nearest your crosshair, preferring people you've recently traded damage with. Won't flash into walls.",
+        description = "Every attack (M1, 1-4, R) flashes you to just in front of whoever you're looking at, facing them (face-locked on them for the follow-ups, shiftlock or not); when the hit lands you flash through to their far side, landing the exit distance away. Targets whoever is nearest your crosshair, preferring people you've recently traded damage with. Won't flash into walls.",
         default     = false,
         onToggle    = function(v)
             CFG.enabled = v and true or false
@@ -226,6 +226,8 @@ function Flash.feature()
               min = 0.02, max = 0.25, step = 0.01, default = 0.08, onChange = function(v) CFG.dashTime = v end },
             { type = "slider", name = "Target range (studs)", key = "range",
               min = 10, max = 500, step = 10, default = 250, onChange = function(v) CFG.range = v end },
+            { type = "slider", name = "Exit distance after the hit (studs)", key = "exit",
+              min = 5, max = 40, step = 1, default = 17, onChange = function(v) CFG.exit = v end },
             { type = "toggle", name = "Flash through on hit", key = "through", default = true,
               onChange = function(v) CFG.through = v and true or false end },
         },
