@@ -15,16 +15,16 @@ local UIS        = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local Workspace  = game:GetService("Workspace")
 local PathfindingService = game:GetService("PathfindingService")
+local CAS        = game:GetService("ContextActionService")
+local VIM        = game:GetService("VirtualInputManager")
 
 local LP = Players.LocalPlayer
 
 local Flash = {}
-local CFG = { enabled = false, reach = 4.5, range = 250, through = true, exit = 17, lockTimeout = 8, flurry = true }
+local CFG = { enabled = false, reach = 4.5, range = 250, through = true, exit = 22, lockTimeout = 8, flurry = true }
 
-local ATTACK_KEYS = { [Enum.KeyCode.One] = true, [Enum.KeyCode.Two] = true, [Enum.KeyCode.Three] = true,
-                      [Enum.KeyCode.Four] = true }
 local HIT_WINDOW, RECENT = 1.5, 6
-local PAUSE, BURST_MIN, BURST_MAX = 1.0, 4, 5 -- flurry rhythm: pause after a flash, then a burst of N flashes
+local PAUSE, BURST_MIN, BURST_MAX = 0.5, 4, 5 -- flurry rhythm: pause after a flash, then a burst of N flashes
 local INTERRUPT_RANGE = 12 -- someone this close who damages me steals the lock
 
 local conns, hpConn, engaged = {}, nil, nil
@@ -104,7 +104,7 @@ end
 local function openSpot(tChar, cf, rp, op)
     local tp = rootOf(tChar).Position
     if Workspace:Raycast(tp, cf.Position - tp, rp) then return false end
-    for _, part in ipairs(Workspace:GetPartBoundsInBox(cf, Vector3.new(2, 4, 2), op)) do
+    for _, part in ipairs(Workspace:GetPartBoundsInBox(cf, Vector3.new(2, 2, 2), op)) do
         if part.CanCollide then return false end
     end
     return true
@@ -135,14 +135,17 @@ local function plan(tChar, dir, dist, lift)
     if not (me and tRoot) then return nil end
     local rp, op = excl(tChar)
     local tries = 0
-    for _, deg in ipairs(ANGLES) do
-        local d = CFrame.Angles(0, math.rad(deg), 0) * flat(dir)
-        local cf = Flash.spot(tRoot.Position, d, dist, lift)
-        if openSpot(tChar, cf, rp, op) then
-            local pts = route(me.Position, cf.Position, rp)
-            if pts then return d, pts end
-            tries = tries + 1
-            if tries >= 4 then break end -- shortcut: 4 route attempts max per flash, raise if it keeps refusing reachable spots
+    -- pass 1 wants an open spot; pass 2 takes any reachable one (slopes / crowds fail the box test but are fine to land on)
+    for pass = 1, 2 do
+        for _, deg in ipairs(ANGLES) do
+            local d = CFrame.Angles(0, math.rad(deg), 0) * flat(dir)
+            local cf = Flash.spot(tRoot.Position, d, dist, lift)
+            if pass == 2 or openSpot(tChar, cf, rp, op) then
+                local pts = route(me.Position, cf.Position, rp)
+                if pts then return d, pts end
+                tries = tries + 1
+                if tries >= 4 then return nil end -- shortcut: 4 route attempts max per flash, raise if it keeps refusing reachable spots
+            end
         end
     end
     return nil
@@ -150,9 +153,9 @@ end
 
 -- Travel the waypoints in `dur` seconds; the LAST point is dest() re-read every frame so it follows a
 -- moving target. Then, while keep() holds, stay pinned on dest() (the tracking hold through the hit frame).
-local function glide(pts, dest, keep)
+local function glide(pts, dest, keep, onArrive)
     local r = rootOf(LP.Character); if not r then moving = false; return end
-    local gen, trav = generation, 0
+    local gen, trav, arrived = generation, 0, false
     local rp = excl(faceChar)
     local nodes = { r.Position }
     for i = 1, #pts - 1 do nodes[#nodes + 1] = pts[i] end
@@ -174,6 +177,7 @@ local function glide(pts, dest, keep)
                 sdist = sdist - segs[i]
             end
         else
+            if not arrived then arrived = true; if onArrive then task.spawn(onArrive) end end
             if not (keep and keep()) then c:Disconnect(); moving = false; return end
             if Workspace:Raycast(r2.Position, cf.Position - r2.Position, rp) then c:Disconnect(); moving = false; return end -- a wall moved between us
             p = cf.Position
@@ -217,9 +221,9 @@ local function faceStep()
 end
 local function faceFor(tChar) faceChar = tChar; faceUntil = os.clock() + HIT_WINDOW end
 
-local function travel(tChar, dir, dist, keep, lift)
+local function travel(tChar, dir, dist, keep, lift, onArrive)
     local d, pts = plan(tChar, dir, dist, lift)
-    if not d then moving = false; return false end
+    if not d then moving = false; if onArrive then task.spawn(onArrive) end; return false end
     -- flurry: bow a clear straight line sideways so the flash reads as a curve, not a back-and-forth
     if CFG.flurry and #pts == 1 then
         local me = rootOf(LP.Character).Position
@@ -231,7 +235,7 @@ local function travel(tChar, dir, dist, keep, lift)
             if not Workspace:Raycast(me, bend - me, rp) and not Workspace:Raycast(bend, pts[1] - bend, rp) then table.insert(pts, 1, bend) end
         end
     end
-    glide(pts, function() local tr = rootOf(tChar); return tr and Flash.spot(tr.Position, d, dist, lift) end, keep)
+    glide(pts, function() local tr = rootOf(tChar); return tr and Flash.spot(tr.Position, d, dist, lift) end, keep, onArrive)
     return true
 end
 
@@ -258,13 +262,27 @@ local function onHit(tChar)
     travel(tChar, CFrame.Angles(0, math.rad(deg), 0) * flat(tRoot.Position - me.Position), CFG.exit) -- far side, CFG.exit studs out
 end
 
-local function onAttack()
-    if moving then return end
+-- Click gate: your attack input is swallowed, you travel, and the SAME input is re-sent the frame you
+-- arrive, so the swing always starts from the stand-off spot. Inputs we re-send pass straight through.
+local replayUntil = 0
+local function replay(input)
+    replayUntil = os.clock() + 0.15
+    if not input then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        local m = UIS:GetMouseLocation()
+        VIM:SendMouseButtonEvent(m.X, m.Y, 0, true, game, 0); VIM:SendMouseButtonEvent(m.X, m.Y, 0, false, game, 0)
+    else
+        VIM:SendKeyEvent(true, input.KeyCode, false, game); VIM:SendKeyEvent(false, input.KeyCode, false, game)
+    end
+end
+
+local function onAttack(input)
+    if moving then return false end
     local me, cam = rootOf(LP.Character), Workspace.CurrentCamera
-    if not (me and cam and alive(LP.Character)) then return end
+    if not (me and cam and alive(LP.Character)) then return false end
     local now = os.clock()
     local tChar = pick(me.Position, cam.CFrame.LookVector, now)
-    if not tChar then return end
+    if not tChar then return false end
     local tRoot = rootOf(tChar)
     moving = true -- claimed now: plan() may yield on pathfinding
     faceFor(tChar)
@@ -277,15 +295,20 @@ local function onAttack()
         last = h
         if dropped and engaged == tChar and os.clock() - now < HIT_WINDOW then task.spawn(onHit, tChar) end
     end)
-    task.delay(HIT_WINDOW, function() if engaged == tChar then disengage() end end)
-    local holdEnd = now + HOLD
+    local holdEnd = now + HIT_WINDOW -- becomes arrival + HOLD once we get there
+    local function arrive()
+        holdEnd = os.clock() + HOLD
+        task.delay(HIT_WINDOW, function() if engaged == tChar then disengage() end end)
+        replay(input)
+    end
     local dir, lift = me.Position - tRoot.Position, 0
     if CFG.flurry then
         -- block-smart: a guard only covers their front, so when they face me, enter from their back
         if tRoot.CFrame.LookVector:Dot(flat(me.Position - tRoot.Position).Unit) > 0.5 then dir = -tRoot.CFrame.LookVector end
         if airborne(tChar) then lift = ({ -4, 0, 4 })[math.random(3)] end -- airborne: come in from below / level / above
     end
-    task.spawn(travel, tChar, dir, CFG.reach, function() return engaged == tChar and os.clock() < holdEnd end, lift)
+    task.spawn(travel, tChar, dir, CFG.reach, function() return engaged == tChar and os.clock() < holdEnd end, lift, arrive)
+    return true
 end
 
 -- Whoever hurts me becomes "recent": blame the nearest enemy.
@@ -313,10 +336,12 @@ end
 
 function Flash.start()
     Flash.stop()
-    conns[#conns + 1] = UIS.InputBegan:Connect(function(input, gp)
-        if gp or not CFG.enabled then return end
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or ATTACK_KEYS[input.KeyCode] then onAttack() end
-    end)
+    CAS:BindActionAtPriority("PantheonFlashStrikeGate", function(_, st, input)
+        if st ~= Enum.UserInputState.Begin or not CFG.enabled or os.clock() < replayUntil or UIS:GetFocusedTextBox() then
+            return Enum.ContextActionResult.Pass
+        end
+        return onAttack(input) and Enum.ContextActionResult.Sink or Enum.ContextActionResult.Pass
+    end, false, Enum.ContextActionPriority.High.Value + 500, Enum.UserInputType.MouseButton1, Enum.KeyCode.One, Enum.KeyCode.Two, Enum.KeyCode.Three, Enum.KeyCode.Four)
     watchMyHealth(LP.Character)
     conns[#conns + 1] = LP.CharacterAdded:Connect(function(c)
         generation = generation + 1; moving = false; disengage(); setLock(nil); burstLeft = 0
@@ -332,6 +357,7 @@ function Flash.stop()
     disengage()
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     table.clear(conns)
+    pcall(function() CAS:UnbindAction("PantheonFlashStrikeGate") end)
     pcall(function() RunService:UnbindFromRenderStep(BIND) end)
     faceChar = nil; pcall(faceStep) -- hands AutoRotate back, disables the align
     if align then pcall(function() align:Destroy() end) end
@@ -355,7 +381,7 @@ function Flash.feature()
             { type = "slider", name = "Target range (studs)", key = "range",
               min = 10, max = 500, step = 10, default = 250, onChange = function(v) CFG.range = v end },
             { type = "slider", name = "Exit distance after the hit (studs)", key = "exit",
-              min = 5, max = 40, step = 1, default = 17, onChange = function(v) CFG.exit = v end },
+              min = 5, max = 40, step = 1, default = 22, onChange = function(v) CFG.exit = v end },
             { type = "slider", name = "Drop the locked target after (s without landing a hit)", key = "lock_timeout",
               min = 2, max = 30, step = 1, default = 8, onChange = function(v) CFG.lockTimeout = v end },
             { type = "toggle", name = "Flurry (burst rhythm, varied angles, back entries, aerial)", key = "flurry", default = true,
