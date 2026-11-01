@@ -14,11 +14,12 @@ local Players    = game:GetService("Players")
 local UIS        = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local Workspace  = game:GetService("Workspace")
+local PathfindingService = game:GetService("PathfindingService")
 
 local LP = Players.LocalPlayer
 
 local Flash = {}
-local CFG = { enabled = false, reach = 4.5, dashTime = 0.08, range = 250, through = true, exit = 17 }
+local CFG = { enabled = false, reach = 4.5, range = 250, through = true, exit = 17 }
 
 local ATTACK_KEYS = { [Enum.KeyCode.One] = true, [Enum.KeyCode.Two] = true, [Enum.KeyCode.Three] = true,
                       [Enum.KeyCode.Four] = true, [Enum.KeyCode.R] = true }
@@ -67,59 +68,99 @@ function Flash.spot(tPos, dir, reach)
     return CFrame.lookAt(pos, Vector3.new(tPos.X, pos.Y, tPos.Z))
 end
 
--- Terrain: first free angle around the target (preferred first, then widening). A spot is free when
--- the ray target->spot is clear (not inside a wall), the ray me->spot is clear (no warping through
--- geometry) and no solid part overlaps the landing box.
+local STEP = 2    -- studs per physics frame along the route (same pace as Blink Push mode)
+local HOLD = 0.6  -- s to keep tracking the stand-off spot after arriving, so the hit frame still connects
+
+-- Terrain. A landing spot is open when the ray target->spot is clear (not inside a wall) and no solid
+-- part overlaps the landing box. The route to it is the straight line when clear, else a navmesh path
+-- (PathfindingService). Angles around the target are tried preferred-first until one is open + reachable.
 local ANGLES = { 0, 45, -45, 90, -90, 135, -135, 180 }
-local function clearDir(tChar, dir, dist)
-    local me, tRoot = rootOf(LP.Character), rootOf(tChar)
-    if not (me and tRoot) then return nil end
+local faceChar -- the current target (assigned by faceFor below)
+local function excl(tChar)
     local rp = RaycastParams.new(); rp.FilterType = Enum.RaycastFilterType.Exclude; rp.FilterDescendantsInstances = { tChar, LP.Character }
     local op = OverlapParams.new(); op.FilterType = Enum.RaycastFilterType.Exclude; op.FilterDescendantsInstances = { tChar, LP.Character }
+    return rp, op
+end
+local function openSpot(tChar, cf, rp, op)
+    local tp = rootOf(tChar).Position
+    if Workspace:Raycast(tp, cf.Position - tp, rp) then return false end
+    for _, part in ipairs(Workspace:GetPartBoundsInBox(cf, Vector3.new(2, 4, 2), op)) do
+        if part.CanCollide then return false end
+    end
+    return true
+end
+local function route(from, pos, rp)
+    if not Workspace:Raycast(from, pos - from, rp) then return { pos } end
+    local path = PathfindingService:CreatePath({ AgentRadius = 2, AgentHeight = 5, AgentCanJump = true, WaypointSpacing = 4 })
+    local ok = pcall(path.ComputeAsync, path, from, pos)
+    if not (ok and path.Status == Enum.PathStatus.Success) then return nil end
+    local pts = {}
+    for _, wp in ipairs(path:GetWaypoints()) do pts[#pts + 1] = wp.Position + Vector3.new(0, 2.5, 0) end -- waypoints sit on the floor
+    pts[#pts + 1] = pos
+    return pts
+end
+-- returns dir, waypoint list (last point = the spot) or nil when nothing around the target is reachable
+local function plan(tChar, dir, dist)
+    local me, tRoot = rootOf(LP.Character), rootOf(tChar)
+    if not (me and tRoot) then return nil end
+    local rp, op = excl(tChar)
+    local tries = 0
     for _, deg in ipairs(ANGLES) do
         local d = CFrame.Angles(0, math.rad(deg), 0) * flat(dir)
         local cf = Flash.spot(tRoot.Position, d, dist)
-        local free = not Workspace:Raycast(tRoot.Position, cf.Position - tRoot.Position, rp)
-            and not Workspace:Raycast(me.Position, cf.Position - me.Position, rp)
-        if free then
-            for _, part in ipairs(Workspace:GetPartBoundsInBox(cf, Vector3.new(2, 4, 2), op)) do
-                if part.CanCollide then free = false; break end
-            end
+        if openSpot(tChar, cf, rp, op) then
+            local pts = route(me.Position, cf.Position, rp)
+            if pts then return d, pts end
+            tries = tries + 1
+            if tries >= 3 then break end -- shortcut: 3 pathfinds max per flash, raise if it keeps refusing reachable spots
         end
-        if free then return d end
     end
     return nil
 end
 
--- dest() is re-evaluated every frame so the landing spot follows a moving target
-local faceChar -- the current target (assigned by faceFor below)
-local function glide(dest)
-    local r = rootOf(LP.Character); if not r then return end
-    local from, t0, gen = r.CFrame, os.clock(), generation
-    local pathParams = RaycastParams.new(); pathParams.FilterType = Enum.RaycastFilterType.Exclude
-    pathParams.FilterDescendantsInstances = { LP.Character, faceChar }
+-- Travel the waypoints in `dur` seconds; the LAST point is dest() re-read every frame so it follows a
+-- moving target. Then, while keep() holds, stay pinned on dest() (the tracking hold through the hit frame).
+local function glide(pts, dest, keep)
+    local r = rootOf(LP.Character); if not r then moving = false; return end
+    local gen, trav = generation, 0
+    local rp = excl(faceChar)
+    local nodes = { r.Position }
+    for i = 1, #pts - 1 do nodes[#nodes + 1] = pts[i] end
     moving = true
     local c; c = RunService.Heartbeat:Connect(function()
         local r2, cf = rootOf(LP.Character), dest()
-        if not (r2 and cf) or gen ~= generation or Workspace:Raycast(r2.Position, cf.Position - r2.Position, pathParams) then
-            c:Disconnect(); moving = false; return -- done, stopped, or a wall moved into the path: stop here
+        if not (r2 and cf) or gen ~= generation then c:Disconnect(); moving = false; return end
+        nodes[#pts + 1] = cf.Position -- live final point
+        local total, segs = 0, {}
+        for i = 1, #nodes - 1 do local l = (nodes[i + 1] - nodes[i]).Magnitude; segs[i] = l; total = total + l end
+        trav = trav + math.min(STEP, total / 3) -- Blink pace: STEP studs per physics frame, never fewer than 3 frames
+        local a = math.min(trav / math.max(total, 0.001), 1)
+        local p
+        if a < 1 then
+            local sdist = a * total
+            p = nodes[#nodes]
+            for i = 1, #segs do
+                if sdist <= segs[i] then p = nodes[i]:Lerp(nodes[i + 1], segs[i] > 0 and sdist / segs[i] or 1); break end
+                sdist = sdist - segs[i]
+            end
+        else
+            if not (keep and keep()) then c:Disconnect(); moving = false; return end
+            if Workspace:Raycast(r2.Position, cf.Position - r2.Position, rp) then c:Disconnect(); moving = false; return end -- a wall moved between us
+            p = cf.Position
         end
-        local a = math.min((os.clock() - t0) / CFG.dashTime, 1)
-        r2.CFrame = from:Lerp(cf, a)
+        r2.CFrame = CFrame.new(p) * cf.Rotation
         r2.AssemblyLinearVelocity = Vector3.zero
-        if a >= 1 then c:Disconnect(); moving = false end
     end)
 end
 
 local function disengage()
-    if hpConn then pcall(function() hpConn:Disconnect() end) end
+    if hpConn then pcall(hpConn.Disconnect, hpConn) end
     hpConn, engaged = nil, nil
 end
 
--- Face lock: while engaged, pin the body's yaw at the target every frame AFTER the game's
--- shiftlock (RenderStepped at Camera+150) and before physics (Stepped), plus an
--- AlignOrientation so physics agrees. Same method as modules.aim.rotation_lock; shiftlock
--- on or off makes no difference.
+-- Face lock: while engaged, pin the body yaw at the target every frame, AFTER the game shiftlock
+-- (RenderStepped at Camera+150) and before physics (Stepped), plus an AlignOrientation so physics
+-- agrees. Same method as Pantheon Rotation Lock; shiftlock on or off makes no difference.
 local faceUntil, align, attach, wasFacing = 0, nil, nil, false
 local BIND = "PantheonFlashStrikeFace"
 local function faceStep()
@@ -146,33 +187,34 @@ local function faceStep()
 end
 local function faceFor(tChar) faceChar = tChar; faceUntil = os.clock() + HIT_WINDOW end
 
+local function travel(tChar, dir, dist, keep)
+    local d, pts = plan(tChar, dir, dist)
+    if not d then moving = false; return false end
+    glide(pts, function() local tr = rootOf(tChar); return tr and Flash.spot(tr.Position, d, dist) end, keep)
+    return true
+end
+
 local function onHit(tChar)
     recent[tChar] = os.clock()
     faceFor(tChar)
     disengage()
     if not CFG.through then return end
+    generation = generation + 1 -- cut the tracking hold
     local me, tRoot = rootOf(LP.Character), rootOf(tChar)
     if not (me and tRoot) then return end
-    -- far side = mirror of where I am across them
-    local dir = clearDir(tChar, tRoot.Position - me.Position, CFG.exit)
-    if not dir then return end
-    glide(function() local tr = rootOf(tChar); return tr and Flash.spot(tr.Position, dir, CFG.exit) end)
+    travel(tChar, tRoot.Position - me.Position, CFG.exit) -- far side, CFG.exit studs out
 end
 
 local function onAttack()
     if moving then return end
-    local me = rootOf(LP.Character)
-    local cam = Workspace.CurrentCamera
+    local me, cam = rootOf(LP.Character), Workspace.CurrentCamera
     if not (me and cam and alive(LP.Character)) then return end
     local now = os.clock()
-    local tChar = Flash.pick(me.Position, cam.CFrame.LookVector, now)
+    local tChar = pick(me.Position, cam.CFrame.LookVector, now)
     if not tChar then return end
     local tRoot = rootOf(tChar)
+    moving = true -- claimed now: plan() may yield on pathfinding
     faceFor(tChar)
-    local dir = clearDir(tChar, me.Position - tRoot.Position, CFG.reach)
-    if not dir then return end
-    glide(function() local tr = rootOf(tChar); return tr and Flash.spot(tr.Position, dir, CFG.reach) end)
-
     disengage()
     local hum = tChar:FindFirstChildOfClass("Humanoid")
     local last = hum.Health
@@ -183,6 +225,8 @@ local function onAttack()
         if dropped and engaged == tChar and os.clock() - now < HIT_WINDOW then task.spawn(onHit, tChar) end
     end)
     task.delay(HIT_WINDOW, function() if engaged == tChar then disengage() end end)
+    local holdEnd = now + HOLD
+    task.spawn(travel, tChar, me.Position - tRoot.Position, CFG.reach, function() return engaged == tChar and os.clock() < holdEnd end)
 end
 
 -- Whoever hurts me becomes "recent": blame the nearest enemy.
@@ -233,7 +277,7 @@ function Flash.feature()
     return {
         id          = "jjs.flash_strike",
         name        = "Flash Strike",
-        description = "Every attack (M1, 1-4, R) flashes you to just in front of whoever you're looking at, facing them (face-locked on them for the follow-ups, shiftlock or not); when the hit lands you flash through to their far side, landing the exit distance away. Targets whoever is nearest your crosshair, preferring people you've recently traded damage with. Won't flash into walls.",
+        description = "Every attack (M1, 1-4, R) flashes you (Blink pace, pathfinding around walls) to just in front of whoever you're looking at, facing them (face-locked on them for the follow-ups, shiftlock or not); when the hit lands you flash through to their far side, landing the exit distance away. Targets whoever is nearest your crosshair, preferring people you've recently traded damage with. Won't flash into walls.",
         default     = false,
         onToggle    = function(v)
             CFG.enabled = v and true or false
@@ -242,8 +286,6 @@ function Flash.feature()
         settings = {
             { type = "slider", name = "Stand-off distance (studs)", key = "reach",
               min = 2, max = 8, step = 0.5, default = 4.5, onChange = function(v) CFG.reach = v end },
-            { type = "slider", name = "Flash duration (seconds)", key = "dash_time",
-              min = 0.02, max = 0.25, step = 0.01, default = 0.08, onChange = function(v) CFG.dashTime = v end },
             { type = "slider", name = "Target range (studs)", key = "range",
               min = 10, max = 500, step = 10, default = 250, onChange = function(v) CFG.range = v end },
             { type = "slider", name = "Exit distance after the hit (studs)", key = "exit",

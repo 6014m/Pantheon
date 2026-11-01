@@ -28,7 +28,7 @@ A, B, FAR, DEAD = char("A",10,2), char("B",2,10), char("FAR",0,400), char("DEAD"
 local chars={GetChildren=function() return {ME,A,B,FAR,DEAD} end}
 local services={
   Players={LocalPlayer={Character=ME}, GetPlayers=function() return {} end},
-  UserInputService={}, RunService={},
+  UserInputService={}, RunService={}, PathfindingService={},
   Workspace={FindFirstChild=function(_,n) return n=="Characters" and chars or nil end},
 }
 game={GetService=function(_,n) return services[n] end}
